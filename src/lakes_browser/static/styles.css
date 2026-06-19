@@ -1,0 +1,416 @@
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  color: #172018;
+  background: #f4f5f1;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid #d5d9cf;
+  background: #fbfbf8;
+}
+
+.sidebar-head {
+  padding: 18px 16px 12px;
+  border-bottom: 1px solid #dfe2da;
+}
+
+h1,
+h2 {
+  margin: 0;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+#search,
+.filters select {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #c9cfc2;
+  border-radius: 6px;
+  background: white;
+  font-size: 14px;
+}
+
+#search {
+  margin-top: 14px;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.filters select {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.count,
+.muted,
+.meta {
+  color: #667061;
+  font-size: 12px;
+}
+
+.count {
+  margin-top: 8px;
+}
+
+.lake-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 8px;
+  overscroll-behavior: contain;
+}
+
+.load-more {
+  margin: 8px;
+  height: 36px;
+  flex: 0 0 auto;
+  border: 1px solid #c5ccbf;
+  border-radius: 6px;
+  background: #fff;
+  color: #33402f;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.load-more:hover {
+  background: #eef1e9;
+}
+
+.load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.lake-item {
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lake-item:hover {
+  background: #eef1e9;
+}
+
+.lake-item.active {
+  border-color: #6b8f71;
+  background: #e6eee5;
+}
+
+.lake-item.loading {
+  border-color: #3f7fbd;
+  background: #e7f0f8;
+}
+
+.lake-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lake-id {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #dfe8dc;
+  color: #35573a;
+  font-size: 11px;
+}
+
+.lake-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+  margin-top: 7px;
+  color: #667061;
+  font-size: 12px;
+}
+
+.viewer {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #d5d9cf;
+  background: #f9faf6;
+}
+
+.sentinel-panel {
+  display: grid;
+  grid-template-columns: minmax(112px, 145px) minmax(190px, 1fr) auto auto auto auto auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 18px;
+  border-bottom: 1px solid #d5d9cf;
+  background: #fbfcf8;
+  color: #3d463a;
+  font-size: 12px;
+}
+
+.sentinel-panel select,
+.sentinel-panel input,
+.sentinel-panel button {
+  height: 30px;
+  border: 1px solid #c9cfc2;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font-size: 12px;
+}
+
+.sentinel-panel button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.cloud-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.cloud-input input {
+  width: 54px;
+  padding: 0 6px;
+}
+
+.sentinel-products {
+  grid-column: 1 / -1;
+  max-height: 96px;
+  overflow: auto;
+  color: #667061;
+}
+
+.sentinel-product {
+  display: grid;
+  grid-template-columns: 78px 50px 74px minmax(0, 1fr) 64px;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.sentinel-product span:nth-child(4) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sentinel-product button {
+  width: 64px;
+  height: 24px;
+}
+
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #3d463a;
+  font-size: 13px;
+}
+
+.tools label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.slider-tool input {
+  width: 120px;
+}
+
+.map-wrap {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: #dfe3db;
+  overscroll-behavior: contain;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.map-wrap.dragging {
+  cursor: grabbing;
+}
+
+.map {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  border: 1px solid #aeb7aa;
+  background: #111;
+  box-shadow: 0 8px 28px rgb(32 42 30 / 14%);
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.map img,
+.map svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.map img {
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.map svg {
+  pointer-events: none;
+}
+
+.polygon {
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.polygon-osm {
+  fill: rgb(0 166 255 / 20%);
+  stroke: #00a6ff;
+}
+
+.polygon-hydro {
+  fill: rgb(255 212 71 / 18%);
+  stroke: #ffd447;
+}
+
+.polygon-esa {
+  fill: rgb(255 79 179 / 30%);
+  stroke: #ff4fb3;
+}
+
+.polygon-jrc {
+  fill: rgb(44 214 137 / 24%);
+  stroke: #1ab878;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: #667061;
+  font-size: 15px;
+}
+
+.loading {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  background: rgb(244 245 241 / 72%);
+  color: #273223;
+  font-size: 14px;
+  pointer-events: none;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  justify-self: center;
+  border: 3px solid rgb(61 70 58 / 20%);
+  border-top-color: #3f7fbd;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.meta {
+  min-height: 42px;
+  padding: 10px 18px;
+  border-top: 1px solid #d5d9cf;
+  background: #f9faf6;
+}
+
+@media (max-width: 780px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 42vh 58vh;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #d5d9cf;
+  }
+
+  .sentinel-panel {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sentinel-products {
+    grid-column: 1 / -1;
+  }
+}

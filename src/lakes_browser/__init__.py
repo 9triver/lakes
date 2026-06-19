@@ -1,0 +1,1 @@
+"""Lake browser web application."""

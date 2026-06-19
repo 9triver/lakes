@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>湖南湖泊工作台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h1>湖南湖泊</h1>
+          <input id="search" type="search" placeholder="搜索名称 / OSM ID" autocomplete="off" />
+          <div class="filters">
+            <select id="filter-type" aria-label="水体类型">
+              <option value="">全部类型</option>
+              <option value="lake">湖泊</option>
+              <option value="reservoir">水库</option>
+              <option value="pond">坑塘</option>
+              <option value="pond_candidate">疑似坑塘</option>
+              <option value="wetland">湿地</option>
+              <option value="aquaculture">养殖水面</option>
+              <option value="unknown">未分类</option>
+            </select>
+            <select id="filter-area" aria-label="面积">
+              <option value="">全部面积</option>
+              <option value="gte100">≥100 km²</option>
+              <option value="10_100">10-100 km²</option>
+              <option value="1_10">1-10 km²</option>
+              <option value="0_1_1">0.1-1 km²</option>
+              <option value="lt0_1">&lt;0.1 km²</option>
+            </select>
+            <select id="filter-name" aria-label="名称">
+              <option value="">全部名称</option>
+              <option value="true">有名称</option>
+              <option value="false">无名称</option>
+            </select>
+            <select id="filter-tci" aria-label="影像">
+              <option value="">全部影像</option>
+              <option value="true">有影像</option>
+              <option value="false">无影像</option>
+            </select>
+            <select id="filter-polygon-quality" aria-label="边界质量">
+              <option value="">全部边界质量</option>
+              <option value="high">边界 high</option>
+              <option value="medium">边界 medium</option>
+              <option value="low">边界 low</option>
+            </select>
+            <select id="filter-metadata-quality" aria-label="元数据质量">
+              <option value="">全部元数据质量</option>
+              <option value="high">元数据 high</option>
+              <option value="medium">元数据 medium</option>
+              <option value="low">元数据 low</option>
+            </select>
+          </div>
+          <div id="count" class="count">加载中</div>
+        </div>
+        <div id="lake-list" class="lake-list"></div>
+        <button id="load-more" class="load-more" type="button" hidden>加载更多</button>
+      </aside>
+      <section class="viewer">
+        <header class="toolbar">
+          <div>
+            <h2 id="lake-title">选择一个湖泊</h2>
+            <div id="lake-subtitle" class="muted">可见光影像和 polygon 会在这里显示</div>
+          </div>
+          <div class="tools">
+            <label><input id="toggle-image" type="checkbox" checked /> 影像</label>
+            <label><input id="toggle-osm" type="checkbox" checked /> OSM</label>
+            <label><input id="toggle-hydro" type="checkbox" checked /> HydroLAKES</label>
+            <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
+            <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
+            <label class="slider-tool">
+              JRC 阈值
+              <input id="jrc-threshold" type="range" min="1" max="100" step="1" value="75" />
+              <span id="jrc-threshold-value">75%</span>
+            </label>
+          </div>
+        </header>
+        <section id="sentinel-panel" class="sentinel-panel" hidden>
+          <select id="sentinel-tile" aria-label="Sentinel tile"></select>
+          <select id="imagery-product" aria-label="本地影像"></select>
+          <button id="imagery-apply" type="button">设为影像</button>
+          <input id="sentinel-start" type="date" value="2025-06-01" aria-label="开始日期" />
+          <input id="sentinel-end" type="date" value="2025-08-31" aria-label="结束日期" />
+          <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="20" />%</label>
+          <button id="sentinel-query" type="button">查询产品</button>
+          <div id="sentinel-products" class="sentinel-products"></div>
+        </section>
+        <div class="map-wrap">
+          <div id="empty" class="empty">从左侧列表选择湖泊</div>
+          <div id="loading" class="loading" hidden>
+            <div class="spinner"></div>
+            <div id="loading-text">加载中</div>
+          </div>
+          <div id="map" class="map" hidden>
+            <img id="raster" alt="" />
+            <svg id="overlay" aria-hidden="true"></svg>
+          </div>
+        </div>
+        <footer id="meta" class="meta"></footer>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
