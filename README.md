@@ -58,3 +58,28 @@ Outputs:
 
 - `data/processed/hunan_lake_metadata.gpkg`
 - `data/processed/hunan_lake_metadata.csv`
+
+## Sentinel Download
+
+The Lakes repo has its own Copernicus query/download helper:
+
+```bash
+PYTHONPATH=src python scripts/download_sentinel.py query \
+  --tile 49RFN \
+  --start 2025-06-01 \
+  --end 2025-08-31 \
+  --cloud 20
+```
+
+Download one product from the query output:
+
+```bash
+PYTHONPATH=src python scripts/download_sentinel.py download \
+  --product-id PRODUCT_UUID \
+  --name PRODUCT_NAME.SAFE \
+  --cloud-cover 12.3
+```
+
+Set Copernicus credentials in `COPERNICUS_USERNAME` and
+`COPERNICUS_PASSWORD`, or put them in `.env`. Copernicus requests explicitly
+ignore proxy environment variables.
