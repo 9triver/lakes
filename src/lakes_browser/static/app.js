@@ -47,6 +47,8 @@ const sentinelEndEl = document.querySelector("#sentinel-end");
 const sentinelCloudEl = document.querySelector("#sentinel-cloud");
 const sentinelQueryEl = document.querySelector("#sentinel-query");
 const sentinelProductsEl = document.querySelector("#sentinel-products");
+const zoomLakeEl = document.querySelector("#zoom-lake");
+const zoomTileEl = document.querySelector("#zoom-tile");
 
 let searchTimer = null;
 let jrcTimer = null;
@@ -186,7 +188,7 @@ async function loadTileLayer(shapeId, lake) {
   state.tileMeta = payload;
   rasterLayer.setSource(
     new ol.source.XYZ({
-      url: `/api/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?padding=0.8&v=${Date.now()}`,
+      url: `/api/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`,
       tileSize: 256,
       minZoom: 5,
       maxZoom: 16,
@@ -194,7 +196,7 @@ async function loadTileLayer(shapeId, lake) {
     }),
   );
   rasterLayer.setVisible(toggleImageEl.checked);
-  fitToBounds(payload.bounds || lake.bbox);
+  fitToBounds(payload.lake_bounds || payload.bounds || lake.bbox);
   state.metaParts.base = [
     `影像 tile ${formatMetaList(payload.tiles)}`,
     `日期 ${formatMetaList(payload.dates)}`,
@@ -614,6 +616,16 @@ sentinelTileEl.addEventListener("change", () => {
 
 imageryApplyEl.addEventListener("click", () => {
   applyImagerySelection().catch(showError);
+});
+
+zoomLakeEl.addEventListener("click", () => {
+  if (!state.tileMeta) return;
+  fitToBounds(state.tileMeta.lake_bounds || state.tileMeta.bounds);
+});
+
+zoomTileEl.addEventListener("click", () => {
+  if (!state.tileMeta) return;
+  fitToBounds(state.tileMeta.tile_bounds || state.tileMeta.bounds);
 });
 
 window.addEventListener("resize", () => {

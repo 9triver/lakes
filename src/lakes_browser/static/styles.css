@@ -275,6 +275,17 @@ h2 {
   white-space: nowrap;
 }
 
+.tools button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid #c9cfc2;
+  border-radius: 6px;
+  background: #fff;
+  color: #3d463a;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .slider-tool input {
   width: 120px;
 }

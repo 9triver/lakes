@@ -417,14 +417,16 @@ class LakeCatalog:
         return png, meta
 
     def tile_meta_for_lake(self, lake: LakeRecord, padding: float = 0.8) -> dict:
-        bounds = padded_bounds(lake.bbox, padding)
+        lake_bounds = padded_bounds(lake.bbox, padding)
         rows = self._tci_rows_for_lake(lake)
         return {
             **mosaic_source_meta(rows),
-            "bounds": list(bounds),
+            "bounds": list(lake_bounds),
+            "lake_bounds": list(lake_bounds),
+            "tile_bounds": list(rows_bounds(rows)),
             "center": list(lake.center),
             "padding": padding,
-            "tile_url": f"/api/lakes/{lake.object_id}/tiles/{{z}}/{{x}}/{{y}}.png?padding={padding}",
+            "tile_url": f"/api/lakes/{lake.object_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
 
     def tile_png_for_lake(
@@ -439,8 +441,8 @@ class LakeCatalog:
         rows = self._tci_rows_for_lake(lake)
         bounds_3857 = xyz_tile_bounds(z, x, y)
         bounds_4326 = transform_bounds("EPSG:3857", "EPSG:4326", *bounds_3857, densify_pts=21)
-        render_bounds = padded_bounds(lake.bbox, padding)
-        if not box(*bounds_4326).intersects(box(*render_bounds)):
+        tile_bounds = rows_bounds(rows)
+        if not box(*bounds_4326).intersects(box(*tile_bounds)):
             return blank_png(tile_size), {"empty": True, "bounds": list(bounds_4326)}
 
         cache_key = tile_cache_key(lake, z, x, y, padding, rows)
@@ -1177,6 +1179,18 @@ def mosaic_source_meta(tci_rows: list[dict]) -> dict:
         "products": [str(row["product"]) for row in rows],
         "tci_path": [display_path(row["tci_path"]) for row in rows],
     }
+
+
+def rows_bounds(tci_rows: list[dict]) -> tuple[float, float, float, float]:
+    bounds = []
+    for row in tci_rows:
+        with rasterio.open(row["tci_path"]) as src:
+            bounds.append(transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21))
+    west = min(item[0] for item in bounds)
+    south = min(item[1] for item in bounds)
+    east = max(item[2] for item in bounds)
+    north = max(item[3] for item in bounds)
+    return (west, south, east, north)
 
 
 def xyz_tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
