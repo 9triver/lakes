@@ -91,6 +91,7 @@ class LakeCatalog:
         self.active_imagery = self._load_active_imagery()
         self._rebuild_effective_tci()
         self.tci_footprints = self._load_tci_footprints()
+        self._valid_ratio_cache: dict[str, float] = {}
         self.lakes = self._load_lakes()
         self._lake_lookup = self._build_lake_lookup()
         self._detail_cache: dict[str, dict] = {}
@@ -521,7 +522,7 @@ class LakeCatalog:
                         "downloaded": True,
                         "source": "user_download",
                         "tci_path": display_path(row["tci_path"]),
-                        "coverage_ratio": row.get("valid_ratio"),
+                        "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]),
                         "coverage_basis": "pixels",
                     }
         for row in self.base_tci_by_tile.values():
@@ -530,27 +531,28 @@ class LakeCatalog:
                     "downloaded": True,
                     "source": "preloaded",
                     "tci_path": display_path(row["tci_path"]),
-                    "coverage_ratio": row.get("valid_ratio"),
+                    "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]),
                     "coverage_basis": "pixels",
                 }
         return {"downloaded": False}
 
-    def product_coverage_for_tile(self, tile: str, product: dict) -> dict:
-        tile = str(tile).upper().removeprefix("T")
-        tile_geom = next((item["geometry"] for item in self.tci_footprints if item["tile"] == tile), None)
-        footprint = product.get("geo_footprint")
-        if tile_geom is not None and footprint:
-            try:
-                product_geom = shape(footprint)
-                if not product_geom.is_empty and product_geom.is_valid:
-                    ratio = product_geom.intersection(tile_geom).area / tile_geom.area if tile_geom.area else 0
-                    return {
-                        "coverage_ratio": max(0.0, min(1.0, float(ratio))),
-                        "coverage_basis": "footprint",
-                    }
-            except Exception:
-                pass
-        return {}
+    def valid_ratio_for_tci(self, tci_path: Path) -> float:
+        key = str(tci_path)
+        if key in self._valid_ratio_cache:
+            return self._valid_ratio_cache[key]
+        with rasterio.open(tci_path) as src:
+            scale = max(src.width / 1024, src.height / 1024, 1)
+            out_width = max(1, int(src.width / scale))
+            out_height = max(1, int(src.height / scale))
+            data = src.read(
+                [1, 2, 3],
+                out_shape=(3, out_height, out_width),
+                resampling=Resampling.nearest,
+            )
+        valid = np.any(data != 0, axis=0)
+        ratio = float(np.count_nonzero(valid) / valid.size) if valid.size else 0.0
+        self._valid_ratio_cache[key] = ratio
+        return ratio
 
     def set_active_imagery(self, tile: str, product_name: str) -> dict:
         tile = str(tile).upper().removeprefix("T")
@@ -593,7 +595,7 @@ class LakeCatalog:
             "tci_path": display_path(tci_path),
             "download_status": "downloaded",
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "valid_ratio": 1.0,
+            "valid_ratio": self.valid_ratio_for_tci(tci_path),
         }
         with self._lock:
             upsert_csv_row(USER_SENTINEL_INDEX, row, key="product_name")
@@ -1518,9 +1520,8 @@ class LakeHandler(BaseHTTPRequestHandler):
                 products = query_copernicus_tile_products(tile, start, end, cloud, product_type, limit)
                 enriched = []
                 for product in products:
-                    coverage = self.catalog.product_coverage_for_tile(tile, product)
                     local = self.catalog.local_product_status(product.get("product_id"), product.get("name"))
-                    enriched.append({**product, **coverage, **local})
+                    enriched.append({**product, **local})
                 products = enriched
                 self._json({
                     "tile": str(tile).upper().removeprefix("T"),

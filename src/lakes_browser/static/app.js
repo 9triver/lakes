@@ -360,7 +360,7 @@ function renderSentinelProducts(products) {
       <span>${escapeHtml(product.date || "")}</span>
       <span>${escapeHtml(product.tile || "")}</span>
       <span>云量 ${formatCloud(product.cloud_cover)}</span>
-      <span>覆盖 ${formatCoverage(product.coverage_ratio, product.coverage_basis)}</span>
+      <span>非0 ${formatCoverage(product.coverage_ratio, product.coverage_basis)}</span>
       <span title="${escapeHtml(product.name || "")}">${escapeHtml(product.name || "")}</span>
     `;
     row.append(action);
@@ -482,9 +482,8 @@ function formatCloud(value) {
 
 function formatCoverage(value, basis) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return "需下载后统计";
-  const label = basis === "pixels" ? "像素" : "footprint";
-  return `${formatNumber(number * 100, 1)}% ${label}`;
+  if (!Number.isFinite(number) || basis !== "pixels") return "需下载后统计";
+  return `${formatNumber(number * 100, 1)}%`;
 }
 
 function formatDateText(value) {

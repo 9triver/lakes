@@ -81,7 +81,6 @@ def summarize_copernicus_product(product: dict) -> dict:
         "online": product.get("Online"),
         "content_length": product.get("ContentLength"),
         "origin_date": product.get("OriginDate"),
-        "geo_footprint": product.get("GeoFootprint"),
     }
 
 
