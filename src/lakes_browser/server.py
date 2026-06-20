@@ -59,7 +59,10 @@ WORKSPACE_ROOT = PROJECT_ROOT.parent
 DATA_DIR = Path(os.environ.get("LAKES_DATA_DIR", PROJECT_ROOT / "data" / "raw")).expanduser().resolve()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TCI_INDEX = DATA_DIR / "hunan_single_tiles" / "hunan_selected_best_coverage_tci_valid.csv"
-SENTINEL_TILE_INDEX = WORKSPACE_ROOT / "data_download" / "Base" / "sentinel_2_index_shapefile.shp"
+SENTINEL_TILE_INDEX_PATHS = [
+    DATA_DIR / "sentinel_2_tiles" / "sentinel_2_index.geojson",
+    DATA_DIR / "sentinel_2_tiles" / "sentinel_2_index_shapefile.shp",
+]
 OSM_WATER = DATA_DIR / "hunan_osm_water" / "hunan_water_raw.gpkg"
 LAKE_METADATA = PROJECT_ROOT / "data" / "processed" / "hunan_lake_metadata.gpkg"
 HYDROLAKES = DATA_DIR / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
@@ -191,10 +194,11 @@ class LakeCatalog:
         return footprints
 
     def _load_sentinel_tile_index(self):
-        if not SENTINEL_TILE_INDEX.exists():
+        index_path = next((path for path in SENTINEL_TILE_INDEX_PATHS if path.exists()), None)
+        if index_path is None:
             return None
         try:
-            tiles = pyogrio.read_dataframe(SENTINEL_TILE_INDEX, columns=["Name"]).to_crs("EPSG:4326")
+            tiles = pyogrio.read_dataframe(index_path, columns=["Name"]).to_crs("EPSG:4326")
         except Exception:
             return None
         tiles["Name"] = tiles["Name"].astype(str).str.upper().str.removeprefix("T")

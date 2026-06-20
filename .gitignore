@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+.env
 
 # Large geospatial assets are managed outside Git.
 data/raw/*
