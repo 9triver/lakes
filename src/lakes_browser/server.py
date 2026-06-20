@@ -10,6 +10,7 @@ geopandas/rasterio stack.
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -48,13 +50,16 @@ from lakes_browser.sentinel_download import (
     product_type_from_name,
     query_copernicus_tile_products,
     upsert_csv_row,
+    valid_ratio_for_tci as calculate_valid_ratio_for_tci,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE_ROOT = PROJECT_ROOT.parent
 DATA_DIR = Path(os.environ.get("LAKES_DATA_DIR", PROJECT_ROOT / "data" / "raw")).expanduser().resolve()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TCI_INDEX = DATA_DIR / "hunan_single_tiles" / "hunan_selected_best_coverage_tci_valid.csv"
+SENTINEL_TILE_INDEX = WORKSPACE_ROOT / "data_download" / "Base" / "sentinel_2_index_shapefile.shp"
 OSM_WATER = DATA_DIR / "hunan_osm_water" / "hunan_water_raw.gpkg"
 LAKE_METADATA = PROJECT_ROOT / "data" / "processed" / "hunan_lake_metadata.gpkg"
 HYDROLAKES = DATA_DIR / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
@@ -91,9 +96,11 @@ class LakeCatalog:
         self.active_imagery = self._load_active_imagery()
         self._rebuild_effective_tci()
         self.tci_footprints = self._load_tci_footprints()
+        self.sentinel_tile_index = self._load_sentinel_tile_index()
         self._valid_ratio_cache: dict[str, float] = {}
         self.lakes = self._load_lakes()
         self._lake_lookup = self._build_lake_lookup()
+        self._summary_cache = {lake.object_id: self._build_summary(lake) for lake in self.lakes}
         self._detail_cache: dict[str, dict] = {}
 
     def _load_tci_index(self) -> dict[str, dict]:
@@ -130,7 +137,7 @@ class LakeCatalog:
                 "tile": tile,
                 "date": str(row.get("date") or product_date(row.get("product_name", ""))),
                 "source": row.get("source", "user_download"),
-                "valid_ratio": float(row.get("valid_ratio", 1) or 1),
+                "valid_ratio": parse_float_or_default(row.get("valid_ratio"), 1.0),
                 "product": row.get("product_name", ""),
                 "product_id": row.get("product_id", ""),
                 "cloud_cover": row.get("cloud_cover", ""),
@@ -182,6 +189,16 @@ class LakeCatalog:
                 continue
             footprints.append({"tile": tile, "geometry": footprint})
         return footprints
+
+    def _load_sentinel_tile_index(self):
+        if not SENTINEL_TILE_INDEX.exists():
+            return None
+        try:
+            tiles = pyogrio.read_dataframe(SENTINEL_TILE_INDEX, columns=["Name"]).to_crs("EPSG:4326")
+        except Exception:
+            return None
+        tiles["Name"] = tiles["Name"].astype(str).str.upper().str.removeprefix("T")
+        return tiles
 
     def _load_lakes(self) -> list[LakeRecord]:
         if LAKE_METADATA.exists():
@@ -456,7 +473,13 @@ class LakeCatalog:
         return payload, {"cached": False, "bounds": list(bounds_4326)}
 
     def _tci_rows_for_lake(self, lake: LakeRecord) -> list[dict]:
-        candidate_tiles = [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
+        candidate_tiles = [
+            item["tile"]
+            for item in self.sentinel_tiles_for_lake(lake)["tiles"]
+            if item["tile"] in self.tci_by_tile
+        ]
+        if not candidate_tiles:
+            candidate_tiles = [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
         if not candidate_tiles:
             raise FileNotFoundError(f"No downloaded TCI for lake {lake.object_id}")
         return [self.tci_by_tile[tile] for tile in candidate_tiles]
@@ -542,17 +565,7 @@ class LakeCatalog:
         key = str(tci_path)
         if key in self._valid_ratio_cache:
             return self._valid_ratio_cache[key]
-        with rasterio.open(tci_path) as src:
-            scale = max(src.width / 1024, src.height / 1024, 1)
-            out_width = max(1, int(src.width / scale))
-            out_height = max(1, int(src.height / scale))
-            data = src.read(
-                [1, 2, 3],
-                out_shape=(3, out_height, out_width),
-                resampling=Resampling.nearest,
-            )
-        valid = np.any(data != 0, axis=0)
-        ratio = float(np.count_nonzero(valid) / valid.size) if valid.size else 0.0
+        ratio = calculate_valid_ratio_for_tci(tci_path)
         self._valid_ratio_cache[key] = ratio
         return ratio
 
@@ -638,9 +651,12 @@ class LakeCatalog:
         return best_tile
 
     def _summary(self, lake: LakeRecord) -> dict:
-        tiles = metadata_tiles(lake.properties.get("sentinel_tiles")) or [
-            item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))
-        ]
+        return dict(self._summary_cache.get(lake.object_id) or self._build_summary(lake))
+
+    def _build_summary(self, lake: LakeRecord) -> dict:
+        tiles = metadata_tiles(lake.properties.get("sentinel_tiles"))
+        if not tiles and lake.properties.get("best_tci_tile"):
+            tiles = [str(lake.properties.get("best_tci_tile")).upper().removeprefix("T")]
         return {
             "lake_id": lake.lake_id,
             "object_id": lake.object_id,
@@ -662,7 +678,7 @@ class LakeCatalog:
             "polygon_quality": lake.properties.get("polygon_quality"),
             "metadata_quality": lake.properties.get("metadata_quality"),
             "tiles": tiles,
-            "has_tci": bool(lake.properties.get("has_tci", self._has_tci(lake))),
+            "has_tci": bool(lake.properties.get("has_tci") or lake.properties.get("best_tci_tile")),
         }
 
     def _has_tci(self, lake: LakeRecord) -> bool:
@@ -675,23 +691,84 @@ class LakeCatalog:
         )
 
     def sentinel_tiles_for_lake(self, lake: LakeRecord) -> dict:
-        tiles = metadata_tiles(lake.properties.get("sentinel_tiles")) or [
-            item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))
-        ]
+        aoi = lake_aoi_geometry(lake, padding=0.8)
+        tiles = self._candidate_sentinel_tiles(lake, aoi)
         rows = []
         for tile in tiles:
             row = self.tci_by_tile.get(tile)
+            tile_geom = self._sentinel_tile_geometry(tile)
             rows.append(
                 {
                     "tile": tile,
                     "downloaded": row is not None,
+                    "aoi_coverage_ratio": geometry_coverage_ratio(aoi, tile_geom),
+                    "geometry": mapping(tile_geom) if tile_geom is not None else None,
                     "date": row.get("date") if row else None,
                     "product": row.get("product") if row else None,
                     "valid_ratio": row.get("valid_ratio") if row else None,
                     "tci_path": display_path(row["tci_path"]) if row else None,
                 }
             )
-        return {"lake_id": lake.object_id, "tiles": rows}
+        rows.sort(key=lambda item: (item.get("aoi_coverage_ratio") or 0, item["tile"]), reverse=True)
+        return {
+            "lake_id": lake.object_id,
+            "aoi_bounds": list(aoi.bounds),
+            "tiles": rows,
+        }
+
+    def _candidate_sentinel_tiles(self, lake: LakeRecord, aoi=None) -> list[str]:
+        aoi = aoi if aoi is not None else lake_aoi_geometry(lake, padding=0.8)
+        tiles = self._sentinel_tiles_for_geometry(aoi)
+        if tiles:
+            return tiles
+        fallback_tiles = metadata_tiles(lake.properties.get("sentinel_tiles"))
+        if fallback_tiles:
+            return fallback_tiles
+        return [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
+
+    def _sentinel_tiles_for_geometry(self, geom) -> list[str]:
+        if self.sentinel_tile_index is None or self.sentinel_tile_index.empty:
+            return []
+        candidates = self.sentinel_tile_index[self.sentinel_tile_index.geometry.intersects(geom)].copy()
+        if candidates.empty:
+            return []
+        candidates["coverage"] = [geometry_coverage_ratio(geom, tile_geom) for tile_geom in candidates.geometry]
+        candidates = candidates[candidates["coverage"] > 0].sort_values(["coverage", "Name"], ascending=[False, True])
+        return candidates["Name"].tolist()
+
+    def _sentinel_tile_geometry(self, tile: str):
+        if self.sentinel_tile_index is None or self.sentinel_tile_index.empty:
+            return None
+        tile = str(tile).upper().removeprefix("T")
+        rows = self.sentinel_tile_index[self.sentinel_tile_index["Name"] == tile]
+        if rows.empty:
+            return None
+        return rows.geometry.iloc[0]
+
+    def enrich_products_for_lake(self, lake: LakeRecord | None, products: list[dict]) -> list[dict]:
+        if lake is None:
+            return products
+        lake_geom = lake.geometry
+        aoi_geom = lake_aoi_geometry(lake, padding=0.8)
+        enriched = []
+        for product in products:
+            footprint = product_geometry(product)
+            enriched.append(
+                {
+                    **product,
+                    "lake_coverage_ratio": geometry_coverage_ratio(lake_geom, footprint),
+                    "aoi_coverage_ratio": geometry_coverage_ratio(aoi_geom, footprint),
+                }
+            )
+        enriched.sort(
+            key=lambda item: (
+                -(item.get("lake_coverage_ratio") or 0),
+                -(item.get("aoi_coverage_ratio") or 0),
+                parse_float_or_default(item.get("cloud_cover"), 101.0),
+                str(item.get("date") or ""),
+            ),
+        )
+        return enriched
 
     def _match_hydrolakes(self, lake: LakeRecord) -> dict | None:
         xmin, ymin, xmax, ymax = lake.bbox
@@ -932,6 +1009,25 @@ def parse_float(value) -> float | None:
         return None
 
 
+def parse_float_or_default(value, default: float) -> float:
+    parsed = parse_float(value)
+    return default if parsed is None else parsed
+
+
+def default_sentinel_date_range() -> tuple[str, str]:
+    today = date.today()
+    start = add_months(today, -2)
+    return start.isoformat(), today.isoformat()
+
+
+def add_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 def metadata_tiles(value) -> list[str]:
     text = clean_optional(value)
     if not text:
@@ -1059,6 +1155,39 @@ def transform_geom(geom, src_crs: str, dst_crs: str):
     from shapely.ops import transform as shapely_transform
 
     return shapely_transform(_transform, geom)
+
+
+def lake_aoi_geometry(lake: LakeRecord, padding: float = 0.8):
+    metric = transform_geom(lake.geometry, "EPSG:4326", "EPSG:3857")
+    minx, miny, maxx, maxy = metric.bounds
+    base = max(maxx - minx, maxy - miny)
+    buffer_m = max(base * float(padding), 500)
+    return transform_geom(metric.buffer(buffer_m), "EPSG:3857", "EPSG:4326")
+
+
+def geometry_coverage_ratio(target_geom, cover_geom) -> float:
+    if target_geom is None or cover_geom is None or target_geom.is_empty or cover_geom.is_empty:
+        return 0.0
+    try:
+        target_m = transform_geom(make_valid(target_geom), "EPSG:4326", "EPSG:3857")
+        cover_m = transform_geom(make_valid(cover_geom), "EPSG:4326", "EPSG:3857")
+        area = target_m.area
+        if area <= 0:
+            return 0.0
+        return float(target_m.intersection(cover_m).area / area)
+    except Exception:
+        return 0.0
+
+
+def product_geometry(product: dict):
+    footprint = product.get("footprint")
+    if not footprint:
+        return None
+    try:
+        geom = shape(footprint)
+    except Exception:
+        return None
+    return None if geom.is_empty else geom
 
 
 def smooth_water_geometry(geom):
@@ -1526,12 +1655,18 @@ class LakeHandler(BaseHTTPRequestHandler):
                 if not tile:
                     self._error(HTTPStatus.BAD_REQUEST, "tile is required")
                     return
-                start = params.get("start", ["2025-06-01"])[0]
-                end = params.get("end", ["2025-08-31"])[0]
-                cloud = float(params.get("cloud", ["20"])[0])
+                lake = None
+                lake_key = params.get("lake_id", [""])[0]
+                if lake_key:
+                    lake = self.catalog.get_lake(lake_key)
+                default_start, default_end = default_sentinel_date_range()
+                start = params.get("start", [default_start])[0]
+                end = params.get("end", [default_end])[0]
+                cloud = float(params.get("cloud", ["50"])[0])
                 product_type = params.get("product_type", ["MSIL1C"])[0]
                 limit = int(params.get("limit", ["50"])[0])
                 products = query_copernicus_tile_products(tile, start, end, cloud, product_type, limit)
+                products = self.catalog.enrich_products_for_lake(lake, products)
                 enriched = []
                 for product in products:
                     local = self.catalog.local_product_status(product.get("product_id"), product.get("name"))
@@ -1543,6 +1678,7 @@ class LakeHandler(BaseHTTPRequestHandler):
                     "end": end,
                     "cloud": cloud,
                     "product_type": product_type,
+                    "lake_id": lake.object_id if lake else None,
                     "products": products,
                 })
             elif re.fullmatch(r"/api/sentinel/downloads/[^/]+", path):

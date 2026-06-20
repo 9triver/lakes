@@ -16,6 +16,7 @@ from lakes_browser.sentinel_download import (
     product_type_from_name,
     query_copernicus_tile_products,
     upsert_csv_row,
+    valid_ratio_for_tci,
 )
 
 
@@ -89,7 +90,7 @@ def main() -> None:
             "tci_path": display_path(tci_path),
             "download_status": "downloaded",
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "valid_ratio": 1.0,
+            "valid_ratio": valid_ratio_for_tci(tci_path),
         }
         upsert_csv_row(args.index, row, key="product_name")
         print(json.dumps(row, ensure_ascii=False, indent=2))

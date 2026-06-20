@@ -32,6 +32,7 @@ const mapEl = document.querySelector("#map");
 const loadingEl = document.querySelector("#loading");
 const loadingTextEl = document.querySelector("#loading-text");
 const toggleImageEl = document.querySelector("#toggle-image");
+const toggleTileGridEl = document.querySelector("#toggle-tile-grid");
 const toggleOsmEl = document.querySelector("#toggle-osm");
 const toggleHydroEl = document.querySelector("#toggle-hydro");
 const toggleEsaEl = document.querySelector("#toggle-esa");
@@ -53,14 +54,18 @@ const zoomTileEl = document.querySelector("#zoom-tile");
 let searchTimer = null;
 let jrcTimer = null;
 
+setDefaultSentinelFilters();
+
 const rasterLayer = new ol.layer.Tile({ visible: true });
 const vectorSources = {
+  tileGrid: new ol.source.Vector(),
   osm: new ol.source.Vector(),
   hydrolakes: new ol.source.Vector(),
   esa: new ol.source.Vector(),
   jrc: new ol.source.Vector(),
 };
 const vectorLayers = {
+  tileGrid: new ol.layer.Vector({ source: vectorSources.tileGrid, style: tileGridStyle }),
   osm: new ol.layer.Vector({ source: vectorSources.osm, style: polygonStyle("#00a6ff", "rgba(0, 166, 255, 0.20)") }),
   hydrolakes: new ol.layer.Vector({ source: vectorSources.hydrolakes, style: polygonStyle("#ffd447", "rgba(255, 212, 71, 0.18)") }),
   esa: new ol.layer.Vector({ source: vectorSources.esa, style: polygonStyle("#ff4fb3", "rgba(255, 79, 179, 0.30)") }),
@@ -68,7 +73,7 @@ const vectorLayers = {
 };
 const map = new ol.Map({
   target: mapEl,
-  layers: [rasterLayer, vectorLayers.osm, vectorLayers.hydrolakes, vectorLayers.esa, vectorLayers.jrc],
+  layers: [rasterLayer, vectorLayers.tileGrid, vectorLayers.osm, vectorLayers.hydrolakes, vectorLayers.esa, vectorLayers.jrc],
   view: new ol.View({
     center: ol.proj.fromLonLat([112.5, 28.8]),
     zoom: 8,
@@ -137,7 +142,7 @@ function renderList() {
       </div>
       <div class="lake-detail">
         <span>面积 ${formatNumber(lake.area_km2, 2)} km²</span>
-        <span>tile ${escapeHtml((lake.best_tci_tile || lake.tiles.slice(0, 2).join(", ")).toString())}</span>
+        <span>tile ${escapeHtml((lake.tiles || []).slice(0, 3).join(", "))}</span>
         <span>${formatNumber(lake.center[0], 4)}, ${formatNumber(lake.center[1], 4)}</span>
         <span>${escapeHtml(lake.best_tci_date || "")} · ${escapeHtml(lake.metadata_quality || "")}</span>
       </div>
@@ -265,6 +270,7 @@ async function loadJrcLayer(shapeId) {
 async function loadSentinelTiles(shapeId) {
   const payload = await fetchJson(`/api/lakes/${shapeId}/sentinel/tiles`);
   if (state.activeId !== shapeId) return;
+  renderTileGrid(payload.tiles || []);
   sentinelTileEl.replaceChildren();
   for (const item of payload.tiles) {
     const option = document.createElement("option");
@@ -274,6 +280,25 @@ async function loadSentinelTiles(shapeId) {
   }
   sentinelPanelEl.hidden = payload.tiles.length === 0;
   renderImageryOptions();
+}
+
+function renderTileGrid(tiles) {
+  vectorSources.tileGrid.clear();
+  const features = [];
+  for (const item of tiles) {
+    if (!item.geometry) continue;
+    const feature = geojson.readFeature({
+      type: "Feature",
+      geometry: item.geometry,
+      properties: {
+        tile: item.tile,
+        aoi_coverage_ratio: item.aoi_coverage_ratio,
+      },
+    });
+    features.push(feature);
+  }
+  vectorSources.tileGrid.addFeatures(features);
+  vectorLayers.tileGrid.setVisible(toggleTileGridEl.checked);
 }
 
 async function loadImageryOptions(shapeId) {
@@ -330,6 +355,7 @@ async function querySentinelProducts() {
   sentinelProductsEl.textContent = "查询中";
   const params = new URLSearchParams({
     tile: sentinelTileEl.value,
+    lake_id: state.activeId,
     start: sentinelStartEl.value,
     end: sentinelEndEl.value,
     cloud: sentinelCloudEl.value,
@@ -362,6 +388,8 @@ function renderSentinelProducts(products) {
       <span>${escapeHtml(product.date || "")}</span>
       <span>${escapeHtml(product.tile || "")}</span>
       <span>云量 ${formatCloud(product.cloud_cover)}</span>
+      <span>覆盖水体 ${formatPercent(product.lake_coverage_ratio)}</span>
+      <span>覆盖视图 ${formatPercent(product.aoi_coverage_ratio)}</span>
       <span>非0 ${formatCoverage(product.coverage_ratio, product.coverage_basis)}</span>
       <span title="${escapeHtml(product.name || "")}">${escapeHtml(product.name || "")}</span>
     `;
@@ -442,7 +470,23 @@ function polygonStyle(stroke, fill) {
   });
 }
 
+function tileGridStyle(feature) {
+  const tile = feature.get("tile") || "";
+  return new ol.style.Style({
+    stroke: new ol.style.Stroke({ color: "rgba(247, 125, 35, 0.95)", width: 2 }),
+    fill: new ol.style.Fill({ color: "rgba(247, 125, 35, 0.04)" }),
+    text: new ol.style.Text({
+      text: tile,
+      font: "600 13px system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fill: new ol.style.Fill({ color: "#743900" }),
+      stroke: new ol.style.Stroke({ color: "rgba(255, 255, 255, 0.86)", width: 4 }),
+      overflow: true,
+    }),
+  });
+}
+
 function layerVisible(layerName) {
+  if (layerName === "tileGrid") return toggleTileGridEl.checked;
   if (layerName === "osm") return toggleOsmEl.checked;
   if (layerName === "hydrolakes") return toggleHydroEl.checked;
   if (layerName === "esa") return toggleEsaEl.checked;
@@ -485,6 +529,12 @@ function formatCloud(value) {
 function formatCoverage(value, basis) {
   const number = Number(value);
   if (!Number.isFinite(number) || basis !== "pixels") return "需下载后统计";
+  return `${formatNumber(number * 100, 1)}%`;
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "未知";
   return `${formatNumber(number * 100, 1)}%`;
 }
 
@@ -557,6 +607,22 @@ function statusLabel(status) {
   return labels[status] || status || "处理中";
 }
 
+function setDefaultSentinelFilters() {
+  const end = new Date();
+  const start = new Date(end);
+  start.setMonth(start.getMonth() - 2);
+  sentinelStartEl.value = formatDateInput(start);
+  sentinelEndEl.value = formatDateInput(end);
+  sentinelCloudEl.value = "50";
+}
+
+function formatDateInput(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 searchEl.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -586,6 +652,7 @@ toggleImageEl.addEventListener("change", () => {
 });
 
 for (const [checkbox, layerName] of [
+  [toggleTileGridEl, "tileGrid"],
   [toggleOsmEl, "osm"],
   [toggleHydroEl, "hydrolakes"],
   [toggleEsaEl, "esa"],

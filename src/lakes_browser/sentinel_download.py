@@ -12,8 +12,12 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pandas as pd
+import rasterio
 import requests
+from rasterio.enums import Resampling
+from shapely.geometry import shape
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -78,6 +82,7 @@ def summarize_copernicus_product(product: dict) -> dict:
         "tile": product_tile_name(name),
         "date": product_date(name),
         "cloud_cover": product_cloud_cover(product),
+        "footprint": product_footprint(product),
         "online": product.get("Online"),
         "content_length": product.get("ContentLength"),
         "origin_date": product.get("OriginDate"),
@@ -221,9 +226,36 @@ def product_cloud_cover(product: dict):
     return None
 
 
+def product_footprint(product: dict):
+    value = product.get("GeoFootprint")
+    if not value:
+        return None
+    try:
+        geom = shape(value)
+    except Exception:
+        return None
+    if geom.is_empty:
+        return None
+    return value
+
+
 def product_type_from_name(product_name: str) -> str:
     match = re.search(r"_MSI(L[12][AC])_", str(product_name))
     return match.group(1) if match else ""
+
+
+def valid_ratio_for_tci(tci_path: Path) -> float:
+    with rasterio.open(tci_path) as src:
+        scale = max(src.width / 1024, src.height / 1024, 1)
+        out_width = max(1, int(src.width / scale))
+        out_height = max(1, int(src.height / scale))
+        data = src.read(
+            [1, 2, 3],
+            out_shape=(3, out_height, out_width),
+            resampling=Resampling.nearest,
+        )
+    valid = np.any(data != 0, axis=0)
+    return float(np.count_nonzero(valid) / valid.size) if valid.size else 0.0
 
 
 def upsert_csv_row(path: Path, row: dict, key: str) -> None:

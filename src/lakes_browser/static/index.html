@@ -68,6 +68,7 @@
           </div>
           <div class="tools">
             <label><input id="toggle-image" type="checkbox" checked /> 影像</label>
+            <label><input id="toggle-tile-grid" type="checkbox" checked /> Tile</label>
             <label><input id="toggle-osm" type="checkbox" checked /> OSM</label>
             <label><input id="toggle-hydro" type="checkbox" checked /> HydroLAKES</label>
             <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
@@ -85,9 +86,9 @@
           <select id="sentinel-tile" aria-label="Sentinel tile"></select>
           <select id="imagery-product" aria-label="本地影像"></select>
           <button id="imagery-apply" type="button">设为影像</button>
-          <input id="sentinel-start" type="date" value="2025-06-01" aria-label="开始日期" />
-          <input id="sentinel-end" type="date" value="2025-08-31" aria-label="结束日期" />
-          <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="20" />%</label>
+          <input id="sentinel-start" type="date" aria-label="开始日期" />
+          <input id="sentinel-end" type="date" aria-label="结束日期" />
+          <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="50" />%</label>
           <button id="sentinel-query" type="button">查询产品</button>
           <div id="sentinel-products" class="sentinel-products"></div>
         </section>
@@ -97,7 +98,7 @@
             <div class="spinner"></div>
             <div id="loading-text">加载中</div>
           </div>
-          <div id="map" class="map" hidden></div>
+          <div id="map" class="map"></div>
         </div>
         <footer id="meta" class="meta"></footer>
       </section>
