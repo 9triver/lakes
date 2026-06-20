@@ -162,8 +162,8 @@ async function selectLake(shapeId) {
 }
 
 async function loadLakeImage(shapeId, lake) {
-  const imageUrl = `/api/lakes/${shapeId}/image.png?size=1000&padding=0.8`;
-  const response = await fetch(imageUrl);
+  const imageUrl = `/api/lakes/${shapeId}/image.png?size=1000&padding=0.8&v=${Date.now()}`;
+  const response = await fetch(imageUrl, { cache: "no-store" });
   if (!response.ok) {
     const payload = await response.json();
     throw new Error(payload.error || response.statusText);
@@ -189,6 +189,7 @@ async function loadLakeImage(shapeId, lake) {
   state.metaParts.base = [
     `影像 tile ${formatMetaList(state.imageMeta.tiles || state.imageMeta.tile)}`,
     `日期 ${state.imageMeta.date}`,
+    `产品 ${formatProductList(state.imageMeta.products || state.imageMeta.product)}`,
     `覆盖率 ${formatNumber(Number(state.imageMeta.valid_ratio) * 100, 1)}%`,
     `范围 ${state.imageMeta.bounds.map((v) => formatNumber(v, 5)).join(", ")}`,
   ].join(" | ");
@@ -262,6 +263,7 @@ async function loadSentinelTiles(shapeId) {
     sentinelTileEl.append(option);
   }
   sentinelPanelEl.hidden = payload.tiles.length === 0;
+  renderImageryOptions();
 }
 
 async function loadImageryOptions(shapeId) {
@@ -297,13 +299,19 @@ async function applyImagerySelection() {
   if (!state.activeId || !sentinelTileEl.value || !imageryProductEl.value) return;
   imageryApplyEl.disabled = true;
   setLoading(true, "切换影像");
-  await postJson(`/api/lakes/${state.activeId}/imagery/active`, {
-    tile: sentinelTileEl.value,
-    product: imageryProductEl.value,
-  });
-  await loadImageryOptions(state.activeId);
-  await loadLakeImage(state.activeId, state.lake);
-  setLoading(false);
+  try {
+    await postJson(`/api/lakes/${state.activeId}/imagery/active`, {
+      tile: sentinelTileEl.value,
+      product: imageryProductEl.value,
+    });
+    state.metaParts.sentinel = `已切换 ${sentinelTileEl.value} 影像`;
+    renderMeta();
+    await loadImageryOptions(state.activeId);
+    await loadLakeImage(state.activeId, state.lake);
+    setLoading(false);
+  } finally {
+    imageryApplyEl.disabled = false;
+  }
 }
 
 async function querySentinelProducts() {
@@ -462,6 +470,19 @@ function formatNumber(value, digits) {
 function formatMetaList(value) {
   if (Array.isArray(value)) return value.join(", ");
   return String(value || "");
+}
+
+function formatProductList(value) {
+  const products = Array.isArray(value) ? value : String(value || "").split(",");
+  return products
+    .filter(Boolean)
+    .map((item) => {
+      const tile = item.match(/_T([0-9A-Z]{5})_/)?.[1] || "";
+      const date = item.match(/MSIL\d[AC]?_(\d{8})T/)?.[1] || "";
+      return [tile, date].filter(Boolean).join("/");
+    })
+    .filter(Boolean)
+    .join(", ");
 }
 
 function formatCloud(value) {

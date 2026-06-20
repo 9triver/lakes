@@ -1276,7 +1276,7 @@ class LakeHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("X-Image-Meta", json.dumps(meta, ensure_ascii=True))
-                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(payload)
             elif re.fullmatch(r"/api/lakes/[^/]+/esa", path):
