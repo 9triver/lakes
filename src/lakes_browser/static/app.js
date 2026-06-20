@@ -267,7 +267,7 @@ async function loadSentinelTiles(shapeId) {
   for (const item of payload.tiles) {
     const option = document.createElement("option");
     option.value = item.tile;
-    option.textContent = `${item.tile}${item.downloaded ? " 已下载" : " 未下载"}${item.date ? ` ${item.date}` : ""}`;
+    option.textContent = item.tile;
     sentinelTileEl.append(option);
   }
   sentinelPanelEl.hidden = payload.tiles.length === 0;
@@ -297,7 +297,7 @@ function renderImageryOptions() {
   for (const product of products) {
     const option = document.createElement("option");
     option.value = product.product;
-    option.textContent = `${product.active ? "当前 " : ""}${product.date || ""} ${product.source || ""} ${formatNumber(Number(product.valid_ratio) * 100, 1)}%`;
+    option.textContent = `${product.active ? "当前，" : ""}时间: ${formatDateText(product.date)}，云量 ${formatCloud(product.cloud_cover)}`;
     imageryProductEl.append(option);
     if (product.active) imageryProductEl.value = product.product;
   }
@@ -477,6 +477,12 @@ function formatCloud(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "未知";
   return `${formatNumber(number, 1)}%`;
+}
+
+function formatDateText(value) {
+  const text = String(value || "").trim();
+  if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+  return text || "未知";
 }
 
 function escapeHtml(value) {

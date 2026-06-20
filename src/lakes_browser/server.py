@@ -108,6 +108,7 @@ class LakeCatalog:
                 "source": row.get("source", ""),
                 "valid_ratio": float(row.get("valid_ratio", 0) or 0),
                 "product": row.get("product", ""),
+                "cloud_cover": row.get("cloud_cover", ""),
                 "tci_path": path,
             }
         return rows
@@ -481,6 +482,7 @@ class LakeCatalog:
                     "product": base.get("product", ""),
                     "date": base.get("date", ""),
                     "source": base.get("source", "preloaded"),
+                    "cloud_cover": base.get("cloud_cover", ""),
                     "valid_ratio": base.get("valid_ratio"),
                     "tci_path": display_path(base["tci_path"]),
                     "active": self.tci_by_tile.get(tile, {}).get("product") == base.get("product"),
