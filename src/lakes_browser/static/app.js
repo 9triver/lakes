@@ -1,14 +1,8 @@
 const state = {
   lakes: [],
   activeId: null,
-  imageMeta: null,
+  tileMeta: null,
   lake: null,
-  zoom: 1,
-  baseScale: 1,
-  panX: 0,
-  panY: 0,
-  imageWidth: 0,
-  imageHeight: 0,
   loadingId: null,
   total: 0,
   offset: 0,
@@ -35,11 +29,8 @@ const subtitleEl = document.querySelector("#lake-subtitle");
 const metaEl = document.querySelector("#meta");
 const emptyEl = document.querySelector("#empty");
 const mapEl = document.querySelector("#map");
-const mapWrapEl = document.querySelector(".map-wrap");
 const loadingEl = document.querySelector("#loading");
 const loadingTextEl = document.querySelector("#loading-text");
-const rasterEl = document.querySelector("#raster");
-const overlayEl = document.querySelector("#overlay");
 const toggleImageEl = document.querySelector("#toggle-image");
 const toggleOsmEl = document.querySelector("#toggle-osm");
 const toggleHydroEl = document.querySelector("#toggle-hydro");
@@ -59,14 +50,39 @@ const sentinelProductsEl = document.querySelector("#sentinel-products");
 
 let searchTimer = null;
 let jrcTimer = null;
-let dragState = null;
+
+const rasterLayer = new ol.layer.Tile({ visible: true });
+const vectorSources = {
+  osm: new ol.source.Vector(),
+  hydrolakes: new ol.source.Vector(),
+  esa: new ol.source.Vector(),
+  jrc: new ol.source.Vector(),
+};
+const vectorLayers = {
+  osm: new ol.layer.Vector({ source: vectorSources.osm, style: polygonStyle("#00a6ff", "rgba(0, 166, 255, 0.20)") }),
+  hydrolakes: new ol.layer.Vector({ source: vectorSources.hydrolakes, style: polygonStyle("#ffd447", "rgba(255, 212, 71, 0.18)") }),
+  esa: new ol.layer.Vector({ source: vectorSources.esa, style: polygonStyle("#ff4fb3", "rgba(255, 79, 179, 0.30)") }),
+  jrc: new ol.layer.Vector({ source: vectorSources.jrc, style: polygonStyle("#1ab878", "rgba(44, 214, 137, 0.24)") }),
+};
+const map = new ol.Map({
+  target: mapEl,
+  layers: [rasterLayer, vectorLayers.osm, vectorLayers.hydrolakes, vectorLayers.esa, vectorLayers.jrc],
+  view: new ol.View({
+    center: ol.proj.fromLonLat([112.5, 28.8]),
+    zoom: 8,
+    minZoom: 5,
+    maxZoom: 16,
+  }),
+});
+const geojson = new ol.format.GeoJSON({
+  dataProjection: "EPSG:4326",
+  featureProjection: "EPSG:3857",
+});
 
 async function fetchJson(url) {
   const response = await fetch(url);
   const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error || response.statusText);
-  }
+  if (!response.ok) throw new Error(payload.error || response.statusText);
   return payload;
 }
 
@@ -77,9 +93,7 @@ async function postJson(url, payload) {
     body: JSON.stringify(payload),
   });
   const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || response.statusText);
-  }
+  if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
 }
 
@@ -133,67 +147,62 @@ function renderList() {
 async function selectLake(shapeId) {
   state.activeId = shapeId;
   state.loadingId = shapeId;
-  state.zoom = 1;
-  state.baseScale = 1;
-  state.panX = 0;
-  state.panY = 0;
-  state.imageWidth = 0;
-  state.imageHeight = 0;
   state.metaParts = {};
   state.imagery = null;
+  state.tileMeta = null;
   sentinelPanelEl.hidden = true;
   sentinelProductsEl.replaceChildren();
   imageryProductEl.replaceChildren();
+  clearVectorLayers();
   renderList();
   titleEl.textContent = `水体 ${shapeId}`;
   subtitleEl.textContent = "加载影像和边界";
-  setLoading(true, "加载水体边界");
+  setLoading(true, "加载地图数据");
   emptyEl.hidden = true;
   mapEl.hidden = false;
-  overlayEl.replaceChildren();
-  applyZoom();
-  renderList();
+  map.updateSize();
 
   const lake = await fetchJson(`/api/lakes/${shapeId}`);
   if (state.activeId !== shapeId) return;
-  setLoading(true, "裁剪可见光影像");
   state.lake = lake;
-  await loadLakeImage(shapeId, lake);
-}
-
-async function loadLakeImage(shapeId, lake) {
-  const imageUrl = `/api/lakes/${shapeId}/image.png?size=1000&padding=0.8&v=${Date.now()}`;
-  const response = await fetch(imageUrl, { cache: "no-store" });
-  if (!response.ok) {
-    const payload = await response.json();
-    throw new Error(payload.error || response.statusText);
-  }
-  state.imageMeta = JSON.parse(response.headers.get("X-Image-Meta"));
-  const blob = await response.blob();
-  rasterEl.src = URL.createObjectURL(blob);
-  rasterEl.onload = () => {
-    if (state.activeId !== shapeId) return;
-    layoutMap(state.imageMeta.width, state.imageMeta.height);
-    drawLayers(lake.layers, state.imageMeta.bounds);
-    setLoading(false);
-    state.loadingId = null;
-    renderList();
-    loadSentinelTiles(shapeId).catch(showError);
-    loadImageryOptions(shapeId).catch(showError);
-    loadEsaLayer(shapeId).catch(showError);
-    loadJrcLayer(shapeId).catch(showError);
-  };
   titleEl.textContent = lake.display_name || lake.name || `水体 ${lake.object_id}`;
   const hylak = lake.layers?.hydrolakes?.properties?.Hylak_id;
   subtitleEl.textContent = `${typeLabel(lake.water_type)} · ${lake.lake_id}${hylak ? ` · Hylak ${hylak}` : ""}`;
+  addLayerGeometry("osm", lake.layers?.osm);
+  addLayerGeometry("hydrolakes", lake.layers?.hydrolakes);
+  await loadTileLayer(shapeId, lake);
+  state.loadingId = null;
+  renderList();
+  loadSentinelTiles(shapeId).catch(showError);
+  loadImageryOptions(shapeId).catch(showError);
+  loadEsaLayer(shapeId).catch(showError);
+  loadJrcLayer(shapeId).catch(showError);
+}
+
+async function loadTileLayer(shapeId, lake) {
+  setLoading(true, "加载影像瓦片");
+  const payload = await fetchJson(`/api/lakes/${shapeId}/tile-meta?padding=0.8&v=${Date.now()}`);
+  if (state.activeId !== shapeId) return;
+  state.tileMeta = payload;
+  rasterLayer.setSource(
+    new ol.source.XYZ({
+      url: `/api/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?padding=0.8&v=${Date.now()}`,
+      tileSize: 256,
+      minZoom: 5,
+      maxZoom: 16,
+      transition: 120,
+    }),
+  );
+  rasterLayer.setVisible(toggleImageEl.checked);
+  fitToBounds(payload.bounds || lake.bbox);
   state.metaParts.base = [
-    `影像 tile ${formatMetaList(state.imageMeta.tiles || state.imageMeta.tile)}`,
-    `日期 ${state.imageMeta.date}`,
-    `产品 ${formatProductList(state.imageMeta.products || state.imageMeta.product)}`,
-    `覆盖率 ${formatNumber(Number(state.imageMeta.valid_ratio) * 100, 1)}%`,
-    `范围 ${state.imageMeta.bounds.map((v) => formatNumber(v, 5)).join(", ")}`,
+    `影像 tile ${formatMetaList(payload.tiles)}`,
+    `日期 ${formatMetaList(payload.dates)}`,
+    `产品 ${formatProductList(payload.products)}`,
+    `瓦片渲染`,
   ].join(" | ");
   renderMeta();
+  setLoading(false);
 }
 
 async function loadEsaLayer(shapeId) {
@@ -208,7 +217,7 @@ async function loadEsaLayer(shapeId) {
     return;
   }
   state.lake.layers.esa = payload.esa;
-  drawLayers(state.lake.layers, state.imageMeta.bounds);
+  addLayerGeometry("esa", payload.esa);
   state.metaParts.esa = "ESA 平滑边界已加载";
   renderMeta();
 }
@@ -241,13 +250,12 @@ async function loadJrcLayer(shapeId) {
       }
     }
     state.metaParts.jrc = `JRC ${threshold}%${reason ? `：${reason}` : " 无结果"}`;
-    state.lake.layers.jrc = payload.jrc;
-    drawLayers(state.lake.layers, state.imageMeta.bounds);
+    vectorSources.jrc.clear();
     renderMeta();
     return;
   }
   state.lake.layers.jrc = payload.jrc;
-  drawLayers(state.lake.layers, state.imageMeta.bounds);
+  addLayerGeometry("jrc", payload.jrc);
   state.metaParts.jrc = `JRC ${threshold}% 边界已加载`;
   renderMeta();
 }
@@ -298,7 +306,7 @@ function renderImageryOptions() {
 async function applyImagerySelection() {
   if (!state.activeId || !sentinelTileEl.value || !imageryProductEl.value) return;
   imageryApplyEl.disabled = true;
-  setLoading(true, "切换影像");
+  setLoading(true, "切换影像瓦片");
   try {
     await postJson(`/api/lakes/${state.activeId}/imagery/active`, {
       tile: sentinelTileEl.value,
@@ -307,10 +315,10 @@ async function applyImagerySelection() {
     state.metaParts.sentinel = `已切换 ${sentinelTileEl.value} 影像`;
     renderMeta();
     await loadImageryOptions(state.activeId);
-    await loadLakeImage(state.activeId, state.lake);
-    setLoading(false);
+    await loadTileLayer(state.activeId, state.lake);
   } finally {
     imageryApplyEl.disabled = false;
+    setLoading(false);
   }
 }
 
@@ -396,67 +404,47 @@ async function pollDownloadJob(jobId) {
   setTimeout(() => pollDownloadJob(jobId).catch(showError), 1500);
 }
 
-function layoutMap(width, height) {
-  state.imageWidth = width;
-  state.imageHeight = height;
-  mapEl.style.width = `${width}px`;
-  mapEl.style.height = `${height}px`;
-  overlayEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  requestAnimationFrame(() => {
-    fitMapToView();
-    applyZoom();
+function addLayerGeometry(layerName, layer) {
+  const source = vectorSources[layerName];
+  source.clear();
+  if (!layer?.geometry) return;
+  const feature = geojson.readFeature({
+    type: "Feature",
+    geometry: layer.geometry,
+    properties: layer.properties || {},
+  });
+  source.addFeature(feature);
+  vectorLayers[layerName].setVisible(layerVisible(layerName));
+}
+
+function clearVectorLayers() {
+  for (const source of Object.values(vectorSources)) source.clear();
+}
+
+function fitToBounds(bounds) {
+  if (!bounds || bounds.length !== 4) return;
+  const extent = ol.proj.transformExtent(bounds, "EPSG:4326", "EPSG:3857");
+  map.updateSize();
+  map.getView().fit(extent, {
+    padding: [36, 36, 36, 36],
+    duration: 180,
+    maxZoom: 14,
   });
 }
 
-function drawLayers(layers, bounds) {
-  overlayEl.replaceChildren();
-  const items = [
-    ["osm", layers?.osm?.geometry, "polygon polygon-osm", toggleOsmEl.checked],
-    ["hydrolakes", layers?.hydrolakes?.geometry, "polygon polygon-hydro", toggleHydroEl.checked],
-    ["esa", layers?.esa?.geometry, "polygon polygon-esa", toggleEsaEl.checked],
-    ["jrc", layers?.jrc?.geometry, "polygon polygon-jrc", toggleJrcEl.checked],
-  ];
-  for (const [, geometry, className, visible] of items) {
-    if (!visible || !geometry) continue;
-    drawPolygon(geometry, bounds, className);
-  }
+function polygonStyle(stroke, fill) {
+  return new ol.style.Style({
+    stroke: new ol.style.Stroke({ color: stroke, width: 2 }),
+    fill: new ol.style.Fill({ color: fill }),
+  });
 }
 
-function drawPolygon(geometry, bounds, className) {
-  const rings = geometryToRings(geometry);
-  for (const ring of rings) {
-    const points = ring.map(([lon, lat]) => projectPoint(lon, lat, bounds, state.imageMeta.width, state.imageMeta.height));
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("class", className);
-    path.setAttribute("d", pointsToPath(points));
-    overlayEl.append(path);
-  }
-}
-
-function geometryToRings(geometry) {
-  if (!geometry) return [];
-  if (geometry.type === "Polygon") {
-    return [geometry.coordinates[0]];
-  }
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates.map((poly) => poly[0]);
-  }
-  return [];
-}
-
-function projectPoint(lon, lat, bounds, width, height) {
-  const [west, south, east, north] = bounds;
-  const x = ((lon - west) / (east - west)) * width;
-  const y = ((north - lat) / (north - south)) * height;
-  return [x, y];
-}
-
-function pointsToPath(points) {
-  if (!points.length) return "";
-  const [first, ...rest] = points;
-  return `M ${first[0].toFixed(2)} ${first[1].toFixed(2)} ${rest
-    .map(([x, y]) => `L ${x.toFixed(2)} ${y.toFixed(2)}`)
-    .join(" ")} Z`;
+function layerVisible(layerName) {
+  if (layerName === "osm") return toggleOsmEl.checked;
+  if (layerName === "hydrolakes") return toggleHydroEl.checked;
+  if (layerName === "esa") return toggleEsaEl.checked;
+  if (layerName === "jrc") return toggleJrcEl.checked;
+  return true;
 }
 
 function formatNumber(value, digits) {
@@ -492,7 +480,7 @@ function formatCloud(value) {
 }
 
 function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => {
+  return String(value).replace(/[&<>"']/g, (char) => {
     const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
     return map[char];
   });
@@ -501,150 +489,13 @@ function escapeHtml(value) {
 function setLoading(visible, text = "加载中") {
   loadingEl.hidden = !visible;
   loadingTextEl.textContent = text;
-  if (visible) {
-    metaEl.textContent = text;
-  }
+  if (visible) metaEl.textContent = text;
 }
 
 function renderMeta() {
   metaEl.textContent = [state.metaParts.base, state.metaParts.esa, state.metaParts.jrc, state.metaParts.sentinel]
     .filter(Boolean)
     .join(" | ");
-}
-
-searchEl.addEventListener("input", () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    state.query = searchEl.value;
-    loadLakes().catch(showError);
-  }, 180);
-});
-
-for (const select of [filterTypeEl, filterAreaEl, filterNameEl, filterTciEl, filterPolygonQualityEl, filterMetadataQualityEl]) {
-  select.addEventListener("change", () => {
-    state.filters = currentFilters();
-    loadLakes().catch(showError);
-  });
-}
-
-loadMoreEl.addEventListener("click", () => {
-  loadMoreEl.disabled = true;
-  loadLakes({ append: true })
-    .catch(showError)
-    .finally(() => {
-      loadMoreEl.disabled = false;
-    });
-});
-
-toggleImageEl.addEventListener("change", () => {
-  rasterEl.style.visibility = toggleImageEl.checked ? "visible" : "hidden";
-});
-
-for (const checkbox of [toggleOsmEl, toggleHydroEl, toggleEsaEl, toggleJrcEl]) {
-  checkbox.addEventListener("change", () => {
-    if (!state.lake || !state.imageMeta) return;
-    drawLayers(state.lake.layers, state.imageMeta.bounds);
-  });
-}
-
-jrcThresholdEl.addEventListener("input", () => {
-  jrcThresholdValueEl.textContent = `${jrcThresholdEl.value}%`;
-});
-
-jrcThresholdEl.addEventListener("change", () => {
-  if (!state.lake || !state.activeId) return;
-  clearTimeout(jrcTimer);
-  jrcTimer = setTimeout(() => loadJrcLayer(state.activeId).catch(showError), 120);
-});
-
-sentinelQueryEl.addEventListener("click", () => {
-  querySentinelProducts().catch(showError);
-});
-
-sentinelTileEl.addEventListener("change", () => {
-  renderImageryOptions();
-});
-
-imageryApplyEl.addEventListener("click", () => {
-  applyImagerySelection().catch(showError);
-});
-
-rasterEl.addEventListener("dragstart", (event) => event.preventDefault());
-
-window.addEventListener("resize", () => {
-  if (!state.imageMeta) return;
-  fitMapToView();
-  applyZoom();
-});
-
-mapWrapEl.addEventListener(
-  "wheel",
-  (event) => {
-    if (mapEl.hidden || !state.imageMeta) return;
-    event.preventDefault();
-    const viewport = mapWrapEl.getBoundingClientRect();
-    const pointerX = event.clientX - viewport.left;
-    const pointerY = event.clientY - viewport.top;
-    const mapX = (pointerX - state.panX) / currentScale();
-    const mapY = (pointerY - state.panY) / currentScale();
-    const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
-    const nextZoom = clamp(state.zoom * factor, 0.65, 12);
-    if (Math.abs(nextZoom - state.zoom) < 0.001) return;
-    state.zoom = nextZoom;
-    state.panX = pointerX - mapX * currentScale();
-    state.panY = pointerY - mapY * currentScale();
-    applyZoom();
-  },
-  { passive: false },
-);
-
-mapWrapEl.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0 || mapEl.hidden || !state.imageMeta) return;
-  event.preventDefault();
-  dragState = {
-    pointerId: event.pointerId,
-    x: event.clientX,
-    y: event.clientY,
-    panX: state.panX,
-    panY: state.panY,
-  };
-  mapWrapEl.classList.add("dragging");
-  mapWrapEl.setPointerCapture(event.pointerId);
-});
-
-mapWrapEl.addEventListener("pointermove", (event) => {
-  if (!dragState || dragState.pointerId !== event.pointerId) return;
-  event.preventDefault();
-  state.panX = dragState.panX + event.clientX - dragState.x;
-  state.panY = dragState.panY + event.clientY - dragState.y;
-  applyZoom();
-});
-
-function endDrag(event) {
-  if (!dragState || dragState.pointerId !== event.pointerId) return;
-  dragState = null;
-  mapWrapEl.classList.remove("dragging");
-}
-
-mapWrapEl.addEventListener("pointerup", endDrag);
-mapWrapEl.addEventListener("pointercancel", endDrag);
-mapWrapEl.addEventListener("lostpointercapture", () => {
-  dragState = null;
-  mapWrapEl.classList.remove("dragging");
-});
-
-mapWrapEl.addEventListener("dblclick", () => {
-  if (!state.imageMeta) return;
-  fitMapToView();
-  applyZoom();
-});
-
-function applyZoom() {
-  mapEl.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${currentScale()})`;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }
 
 function currentFilters() {
@@ -691,19 +542,70 @@ function statusLabel(status) {
   return labels[status] || status || "处理中";
 }
 
-function currentScale() {
-  return state.baseScale * state.zoom;
+searchEl.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.query = searchEl.value;
+    loadLakes().catch(showError);
+  }, 180);
+});
+
+for (const select of [filterTypeEl, filterAreaEl, filterNameEl, filterTciEl, filterPolygonQualityEl, filterMetadataQualityEl]) {
+  select.addEventListener("change", () => {
+    state.filters = currentFilters();
+    loadLakes().catch(showError);
+  });
 }
 
-function fitMapToView() {
-  const wrap = mapWrapEl.getBoundingClientRect();
-  if (!state.imageWidth || !state.imageHeight || !wrap.width || !wrap.height) return;
-  state.baseScale = Math.min(wrap.width / state.imageWidth, wrap.height / state.imageHeight) * 0.94;
-  state.zoom = 1;
-  const scale = currentScale();
-  state.panX = (wrap.width - state.imageWidth * scale) / 2;
-  state.panY = (wrap.height - state.imageHeight * scale) / 2;
+loadMoreEl.addEventListener("click", () => {
+  loadMoreEl.disabled = true;
+  loadLakes({ append: true })
+    .catch(showError)
+    .finally(() => {
+      loadMoreEl.disabled = false;
+    });
+});
+
+toggleImageEl.addEventListener("change", () => {
+  rasterLayer.setVisible(toggleImageEl.checked);
+});
+
+for (const [checkbox, layerName] of [
+  [toggleOsmEl, "osm"],
+  [toggleHydroEl, "hydrolakes"],
+  [toggleEsaEl, "esa"],
+  [toggleJrcEl, "jrc"],
+]) {
+  checkbox.addEventListener("change", () => {
+    vectorLayers[layerName].setVisible(checkbox.checked);
+  });
 }
+
+jrcThresholdEl.addEventListener("input", () => {
+  jrcThresholdValueEl.textContent = `${jrcThresholdEl.value}%`;
+});
+
+jrcThresholdEl.addEventListener("change", () => {
+  if (!state.lake || !state.activeId) return;
+  clearTimeout(jrcTimer);
+  jrcTimer = setTimeout(() => loadJrcLayer(state.activeId).catch(showError), 120);
+});
+
+sentinelQueryEl.addEventListener("click", () => {
+  querySentinelProducts().catch(showError);
+});
+
+sentinelTileEl.addEventListener("change", () => {
+  renderImageryOptions();
+});
+
+imageryApplyEl.addEventListener("click", () => {
+  applyImagerySelection().catch(showError);
+});
+
+window.addEventListener("resize", () => {
+  map.updateSize();
+});
 
 function showError(error) {
   console.error(error);

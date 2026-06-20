@@ -37,7 +37,7 @@ from rasterio.mask import mask
 from rasterio.merge import merge
 from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.windows import from_bounds
-from rasterio.warp import transform_bounds
+from rasterio.warp import reproject, transform_bounds
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.validation import make_valid
 
@@ -61,10 +61,12 @@ HYDROLAKES = DATA_DIR / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_
 ESA_WATER_MASK = DATA_DIR / "hunan_external_water" / "esa_worldcover" / "hunan_esa_water_mask.tif"
 JRC_OCCURRENCE = DATA_DIR / "hunan_external_water" / "jrc_gsw" / "hunan_jrc_occurrence_clip.tif"
 CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "image_clips"
+TILE_CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "tiles"
 JRC_POLYGON_DIR = PROJECT_ROOT / "data" / "processed" / "jrc_polygons"
 USER_SENTINEL_INDEX = PROJECT_ROOT / "data" / "processed" / "sentinel_products.csv"
 ACTIVE_IMAGERY = PROJECT_ROOT / "data" / "processed" / "active_imagery.json"
 SENTINEL_DOWNLOAD_DIR = DATA_DIR / "hunan_single_tiles" / "products"
+WEB_MERCATOR_LIMIT = 20037508.342789244
 
 
 @dataclass
@@ -411,6 +413,49 @@ class LakeCatalog:
         cache_png.write_bytes(png)
         cache_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return png, meta
+
+    def tile_meta_for_lake(self, lake: LakeRecord, padding: float = 0.8) -> dict:
+        bounds = padded_bounds(lake.bbox, padding)
+        rows = self._tci_rows_for_lake(lake)
+        return {
+            **mosaic_source_meta(rows),
+            "bounds": list(bounds),
+            "center": list(lake.center),
+            "padding": padding,
+            "tile_url": f"/api/lakes/{lake.object_id}/tiles/{{z}}/{{x}}/{{y}}.png?padding={padding}",
+        }
+
+    def tile_png_for_lake(
+        self,
+        lake: LakeRecord,
+        z: int,
+        x: int,
+        y: int,
+        padding: float = 0.8,
+        tile_size: int = 256,
+    ) -> tuple[bytes, dict]:
+        rows = self._tci_rows_for_lake(lake)
+        bounds_3857 = xyz_tile_bounds(z, x, y)
+        bounds_4326 = transform_bounds("EPSG:3857", "EPSG:4326", *bounds_3857, densify_pts=21)
+        render_bounds = padded_bounds(lake.bbox, padding)
+        if not box(*bounds_4326).intersects(box(*render_bounds)):
+            return blank_png(tile_size), {"empty": True, "bounds": list(bounds_4326)}
+
+        cache_key = tile_cache_key(lake, z, x, y, padding, rows)
+        cache_png = TILE_CACHE_DIR / f"{cache_key}.png"
+        if cache_png.exists():
+            return cache_png.read_bytes(), {"cached": True, "bounds": list(bounds_4326)}
+
+        payload = render_tci_xyz_tile(rows, bounds_3857, tile_size=tile_size)
+        TILE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_png.write_bytes(payload)
+        return payload, {"cached": False, "bounds": list(bounds_4326)}
+
+    def _tci_rows_for_lake(self, lake: LakeRecord) -> list[dict]:
+        candidate_tiles = [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
+        if not candidate_tiles:
+            raise FileNotFoundError(f"No downloaded TCI for lake {lake.object_id}")
+        return [self.tci_by_tile[tile] for tile in candidate_tiles]
 
     def imagery_for_lake(self, lake: LakeRecord) -> dict:
         tiles = self.sentinel_tiles_for_lake(lake)["tiles"]
@@ -1070,6 +1115,96 @@ def image_cache_key(lake: LakeRecord, size: int, padding: float, tci_rows: list[
     return hashlib.sha256(data).hexdigest()[:24]
 
 
+def tile_cache_key(lake: LakeRecord, z: int, x: int, y: int, padding: float, tci_rows: list[dict]) -> str:
+    payload = {
+        "object_id": lake.object_id,
+        "z": int(z),
+        "x": int(x),
+        "y": int(y),
+        "padding": round(padding, 4),
+        "products": [
+            {
+                "tile": row["tile"],
+                "product": row["product"],
+                "path": display_path(row["tci_path"]),
+                "mtime": row["tci_path"].stat().st_mtime,
+            }
+            for row in sorted(tci_rows, key=lambda item: item["tile"])
+        ],
+    }
+    data = json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()[:28]
+
+
+def mosaic_source_meta(tci_rows: list[dict]) -> dict:
+    rows = sorted(tci_rows, key=lambda row: row["tile"])
+    return {
+        "tiles": [row["tile"] for row in rows],
+        "dates": sorted({str(row["date"]) for row in rows}),
+        "products": [str(row["product"]) for row in rows],
+        "tci_path": [display_path(row["tci_path"]) for row in rows],
+    }
+
+
+def xyz_tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
+    tiles = 2 ** int(z)
+    size = 2 * WEB_MERCATOR_LIMIT / tiles
+    left = -WEB_MERCATOR_LIMIT + int(x) * size
+    right = left + size
+    top = WEB_MERCATOR_LIMIT - int(y) * size
+    bottom = top - size
+    return (left, bottom, right, top)
+
+
+def render_tci_xyz_tile(
+    tci_rows: list[dict],
+    bounds_3857: tuple[float, float, float, float],
+    tile_size: int = 256,
+) -> bytes:
+    output = np.zeros((3, tile_size, tile_size), dtype=np.uint8)
+    filled = np.zeros((tile_size, tile_size), dtype=bool)
+    dst_transform = transform_from_bounds(*bounds_3857, tile_size, tile_size)
+    ordered_rows = sorted(tci_rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
+    for row in ordered_rows:
+        with rasterio.open(row["tci_path"]) as src:
+            raster_bounds_3857 = transform_bounds(src.crs, "EPSG:3857", *src.bounds, densify_pts=21)
+            if not boxes_intersect(bounds_3857, raster_bounds_3857):
+                continue
+            data = np.zeros((3, tile_size, tile_size), dtype=np.uint8)
+            reproject(
+                source=rasterio.band(src, [1, 2, 3]),
+                destination=data,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                dst_transform=dst_transform,
+                dst_crs="EPSG:3857",
+                dst_nodata=0,
+                resampling=Resampling.bilinear,
+            )
+        valid = np.any(data != 0, axis=0) & ~filled
+        if np.any(valid):
+            output[:, valid] = data[:, valid]
+            filled |= valid
+        if np.all(filled):
+            break
+    rgb = np.moveaxis(output, 0, -1)
+    image = Image.fromarray(rgb, "RGB")
+    buf = io.BytesIO()
+    image.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def blank_png(tile_size: int = 256) -> bytes:
+    image = Image.new("RGBA", (tile_size, tile_size), (0, 0, 0, 0))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def boxes_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
 def render_tci_mosaic_png(
     tci_rows: list[dict],
     bounds_wgs84: tuple[float, float, float, float],
@@ -1276,6 +1411,35 @@ class LakeHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("X-Image-Meta", json.dumps(meta, ensure_ascii=True))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(payload)
+            elif re.fullmatch(r"/api/lakes/[^/]+/tile-meta", path):
+                lake_key = path.split("/")[-2]
+                lake = self.catalog.get_lake(lake_key)
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                params = parse_qs(parsed.query)
+                padding = float(params.get("padding", ["0.8"])[0])
+                self._json(self.catalog.tile_meta_for_lake(lake, padding=padding))
+            elif re.fullmatch(r"/api/lakes/[^/]+/tiles/\d+/\d+/\d+\.png", path):
+                match = re.fullmatch(r"/api/lakes/([^/]+)/tiles/(\d+)/(\d+)/(\d+)\.png", path)
+                lake = self.catalog.get_lake(match.group(1))
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                params = parse_qs(parsed.query)
+                padding = float(params.get("padding", ["0.8"])[0])
+                payload, _meta = self.catalog.tile_png_for_lake(
+                    lake,
+                    z=int(match.group(2)),
+                    x=int(match.group(3)),
+                    y=int(match.group(4)),
+                    padding=padding,
+                )
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/png")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(payload)

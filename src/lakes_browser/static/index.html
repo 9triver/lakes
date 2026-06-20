@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>湖南湖泊工作台</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
@@ -94,14 +95,12 @@
             <div class="spinner"></div>
             <div id="loading-text">加载中</div>
           </div>
-          <div id="map" class="map" hidden>
-            <img id="raster" alt="" />
-            <svg id="overlay" aria-hidden="true"></svg>
-          </div>
+          <div id="map" class="map" hidden></div>
         </div>
         <footer id="meta" class="meta"></footer>
       </section>
     </main>
+    <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

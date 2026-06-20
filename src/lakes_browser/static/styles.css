@@ -285,68 +285,20 @@ h2 {
   overflow: hidden;
   background: #dfe3db;
   overscroll-behavior: contain;
-  cursor: grab;
   user-select: none;
-  touch-action: none;
-}
-
-.map-wrap.dragging {
-  cursor: grabbing;
 }
 
 .map {
   position: absolute;
-  top: 0;
-  left: 0;
-  margin: 0;
-  border: 1px solid #aeb7aa;
-  background: #111;
-  box-shadow: 0 8px 28px rgb(32 42 30 / 14%);
-  transform-origin: 0 0;
-  will-change: transform;
-}
-
-.map img,
-.map svg {
-  position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  display: block;
+  background: #111;
 }
 
-.map img {
-  user-select: none;
-  -webkit-user-drag: none;
-}
-
-.map svg {
-  pointer-events: none;
-}
-
-.polygon {
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
-}
-
-.polygon-osm {
-  fill: rgb(0 166 255 / 20%);
-  stroke: #00a6ff;
-}
-
-.polygon-hydro {
-  fill: rgb(255 212 71 / 18%);
-  stroke: #ffd447;
-}
-
-.polygon-esa {
-  fill: rgb(255 79 179 / 30%);
-  stroke: #ff4fb3;
-}
-
-.polygon-jrc {
-  fill: rgb(44 214 137 / 24%);
-  stroke: #1ab878;
+.ol-zoom {
+  top: 12px;
+  left: 12px;
 }
 
 .empty {

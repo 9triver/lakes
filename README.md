@@ -5,9 +5,14 @@ Local Web GIS prototype for browsing Hunan lake and reservoir imagery.
 The app serves a lightweight browser UI backed by local GIS data:
 
 - OSM water polygons for the selectable lake list and main boundary overlay.
-- Sentinel-2 TCI imagery clipped around the selected water body.
+- Sentinel-2 TCI imagery served as local XYZ raster tiles.
 - HydroLAKES reference polygons.
 - ESA WorldCover-derived smoothed water polygons.
+- JRC Global Surface Water occurrence polygons.
+
+The browser map uses OpenLayers. Sentinel imagery is a raster tile layer, while
+OSM, HydroLAKES, ESA, and JRC boundaries are rendered as independent vector
+layers.
 
 ## Layout
 
