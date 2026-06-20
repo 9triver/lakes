@@ -517,11 +517,40 @@ class LakeCatalog:
                 if (product_id and clean_optional(row.get("product_id")) == product_id) or (
                     product_name and clean_optional(row.get("product")) == product_name
                 ):
-                    return {"downloaded": True, "source": "user_download", "tci_path": display_path(row["tci_path"])}
+                    return {
+                        "downloaded": True,
+                        "source": "user_download",
+                        "tci_path": display_path(row["tci_path"]),
+                        "coverage_ratio": row.get("valid_ratio"),
+                        "coverage_basis": "pixels",
+                    }
         for row in self.base_tci_by_tile.values():
             if product_name and clean_optional(row.get("product")) == product_name:
-                return {"downloaded": True, "source": "preloaded", "tci_path": display_path(row["tci_path"])}
+                return {
+                    "downloaded": True,
+                    "source": "preloaded",
+                    "tci_path": display_path(row["tci_path"]),
+                    "coverage_ratio": row.get("valid_ratio"),
+                    "coverage_basis": "pixels",
+                }
         return {"downloaded": False}
+
+    def product_coverage_for_tile(self, tile: str, product: dict) -> dict:
+        tile = str(tile).upper().removeprefix("T")
+        tile_geom = next((item["geometry"] for item in self.tci_footprints if item["tile"] == tile), None)
+        footprint = product.get("geo_footprint")
+        if tile_geom is not None and footprint:
+            try:
+                product_geom = shape(footprint)
+                if not product_geom.is_empty and product_geom.is_valid:
+                    ratio = product_geom.intersection(tile_geom).area / tile_geom.area if tile_geom.area else 0
+                    return {
+                        "coverage_ratio": max(0.0, min(1.0, float(ratio))),
+                        "coverage_basis": "footprint",
+                    }
+            except Exception:
+                pass
+        return {}
 
     def set_active_imagery(self, tile: str, product_name: str) -> dict:
         tile = str(tile).upper().removeprefix("T")
@@ -1487,13 +1516,12 @@ class LakeHandler(BaseHTTPRequestHandler):
                 product_type = params.get("product_type", ["MSIL1C"])[0]
                 limit = int(params.get("limit", ["50"])[0])
                 products = query_copernicus_tile_products(tile, start, end, cloud, product_type, limit)
-                products = [
-                    {
-                        **product,
-                        **self.catalog.local_product_status(product.get("product_id"), product.get("name")),
-                    }
-                    for product in products
-                ]
+                enriched = []
+                for product in products:
+                    coverage = self.catalog.product_coverage_for_tile(tile, product)
+                    local = self.catalog.local_product_status(product.get("product_id"), product.get("name"))
+                    enriched.append({**product, **coverage, **local})
+                products = enriched
                 self._json({
                     "tile": str(tile).upper().removeprefix("T"),
                     "start": start,

@@ -243,13 +243,13 @@ h2 {
 
 .sentinel-product {
   display: grid;
-  grid-template-columns: 78px 50px 74px minmax(0, 1fr) 64px;
+  grid-template-columns: 78px 50px 74px 128px minmax(0, 1fr) 64px;
   gap: 8px;
   align-items: center;
   padding: 2px 0;
 }
 
-.sentinel-product span:nth-child(4) {
+.sentinel-product span:nth-child(5) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
