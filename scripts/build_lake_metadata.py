@@ -43,12 +43,23 @@ def main() -> None:
     lakes = load_osm_lakes(paths.osm_water, args.min_area_km2)
     print(f"osm_lakes={len(lakes)}")
 
-    print("loading Sentinel-2 TCI index")
-    tci_index, tile_footprints = load_tci_index(paths.tci_index, data_dir)
-    print(f"tci_tiles={len(tci_index)}")
+    sentinel_tile_index = load_sentinel_tile_index(paths.sentinel_tile_index_paths)
+    if sentinel_tile_index is None:
+        print("warning: Sentinel-2 tile grid missing; sentinel_tiles will be empty")
+        lakes = attach_empty_sentinel_metadata(lakes)
+    else:
+        print(f"sentinel_grid_tiles={len(sentinel_tile_index)}")
+        print("matching Sentinel-2 grid tiles")
+        lakes = attach_sentinel_tile_metadata(lakes, sentinel_tile_index)
 
-    print("matching Sentinel-2 tiles")
-    lakes = attach_tci_metadata(lakes, tci_index, tile_footprints)
+    if paths.tci_index.exists():
+        print("loading optional Sentinel-2 TCI index")
+        tci_index, tile_footprints = load_tci_index(paths.tci_index, data_dir)
+        print(f"tci_tiles={len(tci_index)}")
+        print("matching downloaded Sentinel-2 TCI")
+        lakes = attach_tci_metadata(lakes, tci_index, tile_footprints)
+    else:
+        print("optional Sentinel-2 TCI index missing; downloaded imagery metadata will be empty")
 
     print("matching HydroLAKES")
     lakes = attach_hydrolakes_metadata(lakes, paths.hydrolakes)
@@ -71,6 +82,10 @@ class InputPaths:
     def __init__(self, data_dir: Path) -> None:
         self.osm_water = data_dir / "hunan_osm_water" / "hunan_water_raw.gpkg"
         self.tci_index = data_dir / "hunan_single_tiles" / "hunan_selected_best_coverage_tci_valid.csv"
+        self.sentinel_tile_index_paths = [
+            data_dir / "sentinel_2_tiles" / "sentinel_2_index.geojson",
+            data_dir / "sentinel_2_tiles" / "sentinel_2_index_shapefile.shp",
+        ]
         self.hydrolakes = data_dir / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
 
 
@@ -172,7 +187,60 @@ def load_tci_index(index_path: Path, data_dir: Path) -> tuple[pd.DataFrame, gpd.
             }
         )
     footprints = gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
+    if not records:
+        return pd.DataFrame(columns=["tile", "tci_date", "tci_source", "tci_valid_ratio", "tci_product", "tci_path"]), footprints
     return pd.DataFrame(records).drop(columns=["geometry"]), footprints
+
+
+def load_sentinel_tile_index(paths: list[Path]) -> gpd.GeoDataFrame | None:
+    index_path = next((path for path in paths if path.exists()), None)
+    if index_path is None:
+        return None
+    tiles = pyogrio.read_dataframe(index_path, columns=["Name"]).to_crs("EPSG:4326")
+    tiles = tiles[tiles.geometry.notna() & ~tiles.geometry.is_empty].copy()
+    tiles["Name"] = tiles["Name"].astype(str).str.upper().str.removeprefix("T")
+    return tiles
+
+
+def attach_sentinel_tile_metadata(lakes: gpd.GeoDataFrame, tiles: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    tile_names = []
+    tile_rows = tiles[["Name", "geometry"]].copy()
+    tile_rows_m = tile_rows.to_crs("EPSG:3857")
+    lakes_m = lakes.to_crs("EPSG:3857")
+    for lake in lakes.itertuples():
+        lake_geom = lake.geometry
+        candidates = tile_rows[tile_rows.geometry.intersects(lake_geom)].copy()
+        if candidates.empty:
+            tile_names.append("")
+            continue
+        lake_geom_m = lakes_m.geometry.iloc[lake.Index]
+        candidates_m = tile_rows_m.loc[candidates.index]
+        candidates["overlap"] = candidates_m.geometry.intersection(lake_geom_m).area
+        candidates = candidates[candidates["overlap"] > 0].copy()
+        if candidates.empty:
+            tile_names.append("")
+            continue
+        candidates = candidates.sort_values(["overlap", "Name"], ascending=[False, True])
+        tile_names.append(",".join(candidates["Name"].tolist()))
+    lakes["sentinel_tiles"] = tile_names
+    lakes["best_tci_tile"] = None
+    lakes["best_tci_date"] = None
+    lakes["best_tci_product"] = None
+    lakes["best_tci_valid_ratio"] = None
+    lakes["best_tci_path"] = None
+    lakes["has_tci"] = 0
+    return lakes
+
+
+def attach_empty_sentinel_metadata(lakes: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    lakes["sentinel_tiles"] = ""
+    lakes["best_tci_tile"] = None
+    lakes["best_tci_date"] = None
+    lakes["best_tci_product"] = None
+    lakes["best_tci_valid_ratio"] = None
+    lakes["best_tci_path"] = None
+    lakes["has_tci"] = 0
+    return lakes
 
 
 def attach_tci_metadata(
@@ -180,6 +248,8 @@ def attach_tci_metadata(
     tci_index: pd.DataFrame,
     footprints: gpd.GeoDataFrame,
 ) -> gpd.GeoDataFrame:
+    if tci_index.empty or footprints.empty:
+        return lakes
     tci_by_tile = {row.tile: row for row in tci_index.itertuples()}
     footprints_m = footprints.to_crs("EPSG:3857")
     tile_names = []
@@ -189,10 +259,11 @@ def attach_tci_metadata(
     best_valid_ratios = []
     best_paths = []
     has_tci = []
+    lakes_m = lakes.to_crs("EPSG:3857")
 
     for lake in lakes.itertuples():
-        bbox_geom = box(lake.bbox_west, lake.bbox_south, lake.bbox_east, lake.bbox_north)
-        candidates = footprints[footprints.geometry.intersects(bbox_geom)].copy()
+        lake_geom = lake.geometry
+        candidates = footprints[footprints.geometry.intersects(lake_geom)].copy()
         if candidates.empty:
             tile_names.append("")
             best_tiles.append(None)
@@ -202,9 +273,19 @@ def attach_tci_metadata(
             best_paths.append(None)
             has_tci.append(0)
             continue
-        bbox_geom_m = gpd.GeoSeries([bbox_geom], crs="EPSG:4326").to_crs("EPSG:3857").iloc[0]
+        lake_geom_m = lakes_m.geometry.iloc[lake.Index]
         candidates_m = footprints_m.loc[candidates.index]
-        candidates["overlap"] = candidates_m.geometry.intersection(bbox_geom_m).area
+        candidates["overlap"] = candidates_m.geometry.intersection(lake_geom_m).area
+        candidates = candidates[candidates["overlap"] > 0].copy()
+        if candidates.empty:
+            tile_names.append("")
+            best_tiles.append(None)
+            best_dates.append(None)
+            best_products.append(None)
+            best_valid_ratios.append(None)
+            best_paths.append(None)
+            has_tci.append(0)
+            continue
         candidates = candidates.sort_values(["overlap", "tci_valid_ratio"], ascending=False)
         tiles = candidates["tile"].tolist()
         best = tci_by_tile[tiles[0]]

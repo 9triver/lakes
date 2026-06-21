@@ -27,6 +27,24 @@ COPERNICUS_TOKEN_URL = (
     "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/"
     "protocol/openid-connect/token"
 )
+PROXY_ENV_KEYS = [
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "ftp_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "FTP_PROXY",
+]
+
+
+def disable_proxy_env() -> None:
+    for key in PROXY_ENV_KEYS:
+        os.environ.pop(key, None)
+
+
+disable_proxy_env()
 
 
 def query_copernicus_tile_products(
@@ -42,6 +60,7 @@ def query_copernicus_tile_products(
     Network requests explicitly ignore proxy environment variables because this
     project usually wants direct Copernicus access.
     """
+    disable_proxy_env()
     tile = str(tile).strip().upper().removeprefix("T")
     product_type = str(product_type or "MSIL1C").strip()
     cloud = max(0.0, min(100.0, float(cloud)))
@@ -117,6 +136,7 @@ def get_copernicus_credentials(env_path: Path | None = None) -> tuple[str, str]:
 
 
 def get_copernicus_token(username: str, password: str) -> str:
+    disable_proxy_env()
     with requests.Session() as session:
         session.trust_env = False
         response = session.post(
@@ -142,6 +162,7 @@ def download_copernicus_product(
     progress: Callable[[int, int], None] | None = None,
     env_path: Path | None = None,
 ) -> tuple[Path, Path]:
+    disable_proxy_env()
     product_id = _clean_text(product.get("product_id"))
     product_name = _clean_text(product.get("name"))
     if not product_id or not product_name:

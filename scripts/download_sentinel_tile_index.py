@@ -21,6 +21,9 @@ DEFAULT_URLS = [
     "https://sentinel.esa.int/documents/247904/1955685/"
     "S2A_OPER_GIP_TILPAR_MPC__20151209T095117_V20150622T000000_21000101T000000_B00.kml",
 ]
+DEFAULT_GEOJSON_URLS = [
+    "https://zenodo.org/records/10998972/files/sentinel2_tiling_grid_wgs84.geojson?download=1",
+]
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
 TILE_RE = re.compile(r"^\d{2}[A-Z]{3}$")
 
@@ -29,6 +32,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--url", action="append", help="KML URL to try before the built-in URLs")
+    parser.add_argument("--geojson-url", action="append", help="GeoJSON URL to try if KML download fails")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
 
@@ -38,11 +42,18 @@ def main() -> None:
     geojson_path = out_dir / "sentinel_2_index.geojson"
     shp_path = out_dir / "sentinel_2_index_shapefile.shp"
 
+    source_url = ""
+    features = []
     urls = list(args.url or []) + DEFAULT_URLS
-    source_url = download_first(urls, kml_path, timeout=args.timeout)
-    features = parse_kml_features(kml_path)
+    try:
+        source_url = download_first(urls, kml_path, timeout=args.timeout)
+        features = parse_kml_features(kml_path)
+    except Exception as exc:
+        print(f"KML download failed, trying GeoJSON fallback: {exc}", file=sys.stderr)
+        geojson_urls = list(args.geojson_url or []) + DEFAULT_GEOJSON_URLS
+        source_url, features = download_geojson_first(geojson_urls, geojson_path, timeout=args.timeout)
     if not features:
-        raise RuntimeError(f"No Sentinel-2 tile features parsed from {kml_path}")
+        raise RuntimeError("No Sentinel-2 tile features parsed")
 
     payload = {
         "type": "FeatureCollection",
@@ -98,8 +109,47 @@ def download_first(urls: list[str], path: Path, timeout: int) -> str:
             print(f"wrote {display_path(path)}")
             return url
         except Exception as exc:  # noqa: BLE001 - try all mirrors and report aggregate.
+            path.with_suffix(path.suffix + ".part").unlink(missing_ok=True)
             errors.append(f"{url}: {type(exc).__name__}: {exc}")
     raise RuntimeError("failed to download Sentinel-2 tiling grid:\n" + "\n".join(errors))
+
+
+def download_geojson_first(urls: list[str], path: Path, timeout: int) -> tuple[str, list[dict]]:
+    errors = []
+    for url in urls:
+        try:
+            download_plain(url, path, timeout=timeout)
+            features = parse_geojson_features(path)
+            if not features:
+                raise RuntimeError("No Sentinel-2 tile features parsed from GeoJSON")
+            print(f"downloaded {url}")
+            print(f"wrote {display_path(path)}")
+            return url, features
+        except Exception as exc:  # noqa: BLE001 - try all mirrors and report aggregate.
+            path.unlink(missing_ok=True)
+            path.with_suffix(path.suffix + ".part").unlink(missing_ok=True)
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+    raise RuntimeError("failed to download Sentinel-2 tiling grid GeoJSON:\n" + "\n".join(errors))
+
+
+def download_plain(url: str, path: Path, timeout: int) -> None:
+    clear_proxy_env()
+    part_path = path.with_suffix(path.suffix + ".part")
+    part_path.unlink(missing_ok=True)
+    request = Request(url, headers={"User-Agent": "lakes-browser/0.1"})
+    opener = build_opener(ProxyHandler({}))
+    total = 0
+    with opener.open(request, timeout=timeout) as response:
+        with part_path.open("wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                total += len(chunk)
+                if total % (25 * 1024 * 1024) < len(chunk):
+                    print(f"downloaded {total / 1024 / 1024:.1f} MiB", flush=True)
+    part_path.replace(path)
 
 
 def clear_proxy_env() -> None:
@@ -135,6 +185,36 @@ def parse_kml_features(path: Path) -> list[dict]:
         )
     features.sort(key=lambda item: item["properties"]["Name"])
     return features
+
+
+def parse_geojson_features(path: Path) -> list[dict]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    features = []
+    for feature in payload.get("features", []):
+        properties = feature.get("properties") or {}
+        name = str(properties.get("Name") or properties.get("name") or "").strip().upper().removeprefix("T")
+        if not TILE_RE.fullmatch(name):
+            continue
+        geometry = feature.get("geometry")
+        if not geometry:
+            continue
+        features.append({"type": "Feature", "properties": {"Name": name}, "geometry": strip_z_geometry(geometry)})
+    features.sort(key=lambda item: item["properties"]["Name"])
+    return features
+
+
+def strip_z_geometry(geometry: dict) -> dict:
+    geom_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if geom_type == "Polygon":
+        return {"type": geom_type, "coordinates": strip_z_polygon(coordinates)}
+    if geom_type == "MultiPolygon":
+        return {"type": geom_type, "coordinates": [strip_z_polygon(poly) for poly in coordinates]}
+    return geometry
+
+
+def strip_z_polygon(polygon):
+    return [[[float(point[0]), float(point[1])] for point in ring] for ring in polygon]
 
 
 def placemark_geometry(placemark: ET.Element) -> dict | None:

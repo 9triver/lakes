@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+*.egg-info/
 .env
 
 # Large geospatial assets are managed outside Git.
@@ -14,6 +15,9 @@ data/raw/*
 data/cache/
 data/processed/active_imagery.json
 data/processed/sentinel_products.csv
+data/processed/training_samples.csv
+data/processed/training_labels/
+attic/
 
 # Local run artifacts.
 *.log

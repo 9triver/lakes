@@ -44,6 +44,7 @@ from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.validation import make_valid
 
 from lakes_browser.sentinel_download import (
+    disable_proxy_env,
     download_copernicus_product,
     product_date,
     product_tile_name,
@@ -71,8 +72,11 @@ JRC_OCCURRENCE = DATA_DIR / "hunan_external_water" / "jrc_gsw" / "hunan_jrc_occu
 CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "image_clips"
 TILE_CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "tiles"
 JRC_POLYGON_DIR = PROJECT_ROOT / "data" / "processed" / "jrc_polygons"
+ESA_POLYGON_DIR = PROJECT_ROOT / "data" / "processed" / "esa_polygons"
 USER_SENTINEL_INDEX = PROJECT_ROOT / "data" / "processed" / "sentinel_products.csv"
 ACTIVE_IMAGERY = PROJECT_ROOT / "data" / "processed" / "active_imagery.json"
+TRAINING_SAMPLES = PROJECT_ROOT / "data" / "processed" / "training_samples.csv"
+TRAINING_LABEL_DIR = PROJECT_ROOT / "data" / "processed" / "training_labels"
 SENTINEL_DOWNLOAD_DIR = DATA_DIR / "hunan_single_tiles" / "products"
 WEB_MERCATOR_LIMIT = 20037508.342789244
 
@@ -107,6 +111,8 @@ class LakeCatalog:
         self._detail_cache: dict[str, dict] = {}
 
     def _load_tci_index(self) -> dict[str, dict]:
+        if not TCI_INDEX.exists():
+            return {}
         tci = pd.read_csv(TCI_INDEX)
         rows = {}
         for row in tci.to_dict("records"):
@@ -145,6 +151,7 @@ class LakeCatalog:
                 "product_id": row.get("product_id", ""),
                 "cloud_cover": row.get("cloud_cover", ""),
                 "downloaded_at": row.get("downloaded_at", ""),
+                "safe_path": resolve_data_path(row.get("safe_path", "")) if row.get("safe_path", "") else None,
                 "tci_path": path,
             }
             rows.setdefault(tile, []).append(item)
@@ -168,15 +175,29 @@ class LakeCatalog:
         ACTIVE_IMAGERY.write_text(json.dumps(self.active_imagery, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _rebuild_effective_tci(self) -> None:
-        effective = dict(self.base_tci_by_tile)
-        for tile, rows in self.user_tci_rows.items():
+        effective = {}
+        tiles = set(self.base_tci_by_tile) | set(self.user_tci_rows) | set(self.active_imagery)
+        for tile in tiles:
             active_product = self.active_imagery.get(tile)
-            selected = next((row for row in rows if row.get("product") == active_product), None)
-            if selected is None and tile not in effective and rows:
-                selected = rows[0]
+            selected = None
+            base = self.base_tci_by_tile.get(tile)
+            if base and base.get("product") == active_product:
+                selected = base
+            if selected is None:
+                selected = next((row for row in self.user_tci_rows.get(tile, []) if row.get("product") == active_product), None)
             if selected is not None:
                 effective[tile] = selected
         self.tci_by_tile = effective
+
+    def _active_imagery_row(self, tile: str) -> dict | None:
+        tile = str(tile).upper().removeprefix("T")
+        active_product = self.active_imagery.get(tile)
+        if not active_product:
+            return None
+        base = self.base_tci_by_tile.get(tile)
+        if base and base.get("product") == active_product:
+            return base
+        return next((row for row in self.user_tci_rows.get(tile, []) if row.get("product") == active_product), None)
 
     def _load_tci_footprints(self) -> list[dict]:
         footprints = []
@@ -515,7 +536,7 @@ class LakeCatalog:
                     "cloud_cover": base.get("cloud_cover", ""),
                     "valid_ratio": base.get("valid_ratio"),
                     "tci_path": display_path(base["tci_path"]),
-                    "active": self.tci_by_tile.get(tile, {}).get("product") == base.get("product"),
+                    "active": self.active_imagery.get(tile) == base.get("product"),
                     "downloaded": True,
                     "preloaded": True,
                 }
@@ -532,7 +553,7 @@ class LakeCatalog:
                     "downloaded_at": row.get("downloaded_at", ""),
                     "valid_ratio": row.get("valid_ratio"),
                     "tci_path": display_path(row["tci_path"]),
-                    "active": self.tci_by_tile.get(tile, {}).get("product") == row.get("product"),
+                    "active": self.active_imagery.get(tile) == row.get("product"),
                     "downloaded": True,
                     "preloaded": False,
                 }
@@ -585,10 +606,7 @@ class LakeCatalog:
             selected = next((row for row in candidates if row.get("product") == product_name), None)
             if selected is None:
                 raise KeyError(f"Product not found for tile {tile}: {product_name}")
-            if base and product_name == base.get("product"):
-                self.active_imagery.pop(tile, None)
-            else:
-                self.active_imagery[tile] = product_name
+            self.active_imagery[tile] = product_name
             self._save_active_imagery()
             self._rebuild_effective_tci()
             self.tci_footprints = self._load_tci_footprints()
@@ -619,12 +637,189 @@ class LakeCatalog:
         with self._lock:
             upsert_csv_row(USER_SENTINEL_INDEX, row, key="product_name")
             self.user_tci_rows = self._load_user_tci_rows()
-            if tile and tile not in self.active_imagery and tile not in self.base_tci_by_tile:
-                self.active_imagery[tile] = row["product_name"]
-                self._save_active_imagery()
             self._rebuild_effective_tci()
             self.tci_footprints = self._load_tci_footprints()
         return row
+
+    def create_training_sample(self, lake: LakeRecord, payload: dict) -> dict:
+        readiness = self.training_sample_readiness(lake)
+        if not readiness["ready"]:
+            missing = ", ".join(readiness["missing_tiles"])
+            raise ValueError(f"active imagery is incomplete; missing tiles: {missing}")
+        label_source = clean_optional(payload.get("label_source")) or "osm"
+        label_threshold = clean_optional(payload.get("label_threshold")) or ""
+        quality = clean_optional(payload.get("quality")) or "good"
+        notes = clean_optional(payload.get("notes")) or ""
+        buffer_ratio = parse_float_or_default(payload.get("buffer_ratio"), 0.8)
+        aoi = lake_aoi_geometry(lake, padding=buffer_ratio)
+        label_layer = self.training_label_layer(lake, label_source, label_threshold)
+        if label_layer is None or not label_layer.get("geometry"):
+            raise ValueError(f"label source has no geometry: {label_source}")
+
+        product_names = [item["product_name"] for item in readiness["products"]]
+        tile_names = [item["tile"] for item in readiness["products"]]
+        product_key = ",".join(product_names)
+        sample_id = f"{lake.object_id}_{hashlib.sha1((product_key + label_source + label_threshold).encode('utf-8')).hexdigest()[:12]}"
+        label_path = write_training_label(sample_id, label_layer)
+        row = {
+            "sample_id": sample_id,
+            "lake_id": lake.object_id,
+            "lake_name": lake.name or "",
+            "tile": ",".join(tile_names),
+            "tiles": ",".join(tile_names),
+            "product_id": ",".join(item.get("product_id", "") for item in readiness["products"]),
+            "product_name": product_key,
+            "products": product_key,
+            "product_date": ",".join(item.get("date", "") for item in readiness["products"]),
+            "safe_path": ";".join(item.get("safe_path", "") for item in readiness["products"]),
+            "tci_path": ";".join(item.get("tci_path", "") for item in readiness["products"]),
+            "label_source": label_source,
+            "label_threshold": label_threshold,
+            "label_path": display_path(label_path),
+            "aoi_west": aoi.bounds[0],
+            "aoi_south": aoi.bounds[1],
+            "aoi_east": aoi.bounds[2],
+            "aoi_north": aoi.bounds[3],
+            "buffer_ratio": buffer_ratio,
+            "quality": quality,
+            "split": clean_optional(payload.get("split")) or "",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "notes": notes,
+        }
+        upsert_csv_row(TRAINING_SAMPLES, row, key="sample_id")
+        return row
+
+    def list_training_samples(self) -> dict:
+        rows = read_csv_records(TRAINING_SAMPLES)
+        samples = [self._training_sample_summary(row) for row in rows]
+        samples.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+        quality_counts = count_values(item.get("quality") for item in samples)
+        split_counts = count_values(item.get("split") for item in samples)
+        return {
+            "total": len(samples),
+            "items": samples,
+            "quality_counts": quality_counts,
+            "split_counts": split_counts,
+        }
+
+    def update_training_sample(self, sample_id: str, payload: dict) -> dict:
+        rows = read_csv_records(TRAINING_SAMPLES)
+        sample_id = str(sample_id)
+        updated = None
+        allowed = {"quality", "split", "notes"}
+        for row in rows:
+            if row.get("sample_id") != sample_id:
+                continue
+            for key in allowed:
+                if key in payload:
+                    row[key] = clean_optional(payload.get(key)) or ""
+            updated = row
+            break
+        if updated is None:
+            raise KeyError(f"training sample not found: {sample_id}")
+        write_csv_records(TRAINING_SAMPLES, rows)
+        return self._training_sample_summary(updated)
+
+    def delete_training_sample(self, sample_id: str) -> dict:
+        rows = read_csv_records(TRAINING_SAMPLES)
+        sample_id = str(sample_id)
+        kept = [row for row in rows if row.get("sample_id") != sample_id]
+        if len(kept) == len(rows):
+            raise KeyError(f"training sample not found: {sample_id}")
+        write_csv_records(TRAINING_SAMPLES, kept)
+        return {"sample_id": sample_id, "deleted": True}
+
+    def _training_sample_summary(self, row: dict) -> dict:
+        lake_id = row.get("lake_id", "")
+        lake = self.get_lake(lake_id) if lake_id else None
+        tci_paths = split_semicolon(row.get("tci_path"))
+        safe_paths = split_semicolon(row.get("safe_path"))
+        label_path = resolve_data_path(row.get("label_path", "")) if row.get("label_path") else None
+        missing_tci = [path for path in tci_paths if not resolve_data_path(path).exists()]
+        missing_safe = [path for path in safe_paths if path and not resolve_data_path(path).exists()]
+        label_exists = bool(label_path and label_path.exists())
+        status = "ok"
+        if missing_tci or not label_exists:
+            status = "missing_files"
+        return {
+            **row,
+            "lake_display_name": (lake.properties.get("display_name") if lake else None) or row.get("lake_name") or lake_id,
+            "tile_count": len(split_commas(row.get("tiles") or row.get("tile"))),
+            "product_count": len(split_commas(row.get("products") or row.get("product_name"))),
+            "label_exists": label_exists,
+            "missing_tci": missing_tci,
+            "missing_safe": missing_safe,
+            "status": status,
+        }
+
+    def training_sample_readiness(self, lake: LakeRecord, buffer_ratio: float = 0.8) -> dict:
+        aoi = lake_aoi_geometry(lake, padding=buffer_ratio)
+        tiles = self._required_sentinel_tiles_for_lake(lake)
+        products = []
+        missing_tiles = []
+        for tile in tiles:
+            row = self._active_imagery_row(tile)
+            if row is None:
+                missing_tiles.append(tile)
+                continue
+            products.append(
+                {
+                    "tile": tile,
+                    "product_name": row.get("product", ""),
+                    "product_id": row.get("product_id", ""),
+                    "date": row.get("date", ""),
+                    "source": row.get("source", ""),
+                    "valid_ratio": row.get("valid_ratio"),
+                    "safe_path": display_path(row["safe_path"]) if row.get("safe_path") else "",
+                    "tci_path": display_path(row["tci_path"]) if row.get("tci_path") else "",
+                }
+            )
+        return {
+            "lake_id": lake.object_id,
+            "ready": bool(tiles) and not missing_tiles,
+            "required_tiles": tiles,
+            "missing_tiles": missing_tiles,
+            "ready_tiles": [item["tile"] for item in products],
+            "required_count": len(tiles),
+            "ready_count": len(products),
+            "missing_count": len(missing_tiles),
+            "products": products,
+            "buffer_ratio": buffer_ratio,
+            "aoi_bounds": list(aoi.bounds),
+            "message": "ready" if tiles and not missing_tiles else "active imagery selection is incomplete",
+        }
+
+    def training_label_layer(self, lake: LakeRecord, label_source: str, label_threshold: str = "") -> dict | None:
+        source = str(label_source).lower()
+        if source == "osm":
+            return {"source": "OSM", "geometry": mapping(lake.geometry), "properties": dict(lake.properties)}
+        if source == "hydrolakes":
+            return self._match_hydrolakes(lake)
+        if source == "esa":
+            return self._esa_smoothed_layer(lake)
+        if source == "jrc":
+            threshold = int(label_threshold or 75)
+            return self._jrc_occurrence_layer(lake, threshold=threshold)
+        raise ValueError(f"unknown label_source: {label_source}")
+
+    def local_product_for_tile(self, tile: str, product_name: str) -> dict:
+        tile = str(tile).upper().removeprefix("T")
+        product_name = str(product_name)
+        for row in self.user_tci_rows.get(tile, []):
+            if row.get("product") == product_name:
+                return {
+                    **row,
+                    "safe_path": display_path(row["safe_path"]) if row.get("safe_path") else "",
+                    "tci_path": display_path(row["tci_path"]),
+                }
+        base = self.base_tci_by_tile.get(tile)
+        if base and base.get("product") == product_name:
+            return {
+                **base,
+                "safe_path": "",
+                "tci_path": display_path(base["tci_path"]),
+            }
+        return {}
 
     def _best_tile_for_lake(self, lake: LakeRecord, candidate_tiles: list[str], padding: float) -> str:
         xmin, ymin, xmax, ymax = lake.bbox
@@ -695,17 +890,19 @@ class LakeCatalog:
         )
 
     def sentinel_tiles_for_lake(self, lake: LakeRecord) -> dict:
-        aoi = lake_aoi_geometry(lake, padding=0.8)
-        tiles = self._candidate_sentinel_tiles(lake, aoi)
+        target = lake.geometry
+        tiles = self._required_sentinel_tiles_for_lake(lake)
         rows = []
         for tile in tiles:
             row = self.tci_by_tile.get(tile)
             tile_geom = self._sentinel_tile_geometry(tile)
+            coverage = geometry_coverage_ratio(target, tile_geom)
             rows.append(
                 {
                     "tile": tile,
                     "downloaded": row is not None,
-                    "aoi_coverage_ratio": geometry_coverage_ratio(aoi, tile_geom),
+                    "lake_coverage_ratio": coverage,
+                    "aoi_coverage_ratio": coverage,
                     "geometry": mapping(tile_geom) if tile_geom is not None else None,
                     "date": row.get("date") if row else None,
                     "product": row.get("product") if row else None,
@@ -716,13 +913,22 @@ class LakeCatalog:
         rows.sort(key=lambda item: (item.get("aoi_coverage_ratio") or 0, item["tile"]), reverse=True)
         return {
             "lake_id": lake.object_id,
-            "aoi_bounds": list(aoi.bounds),
+            "aoi_bounds": list(lake.bbox),
             "tiles": rows,
         }
 
     def _candidate_sentinel_tiles(self, lake: LakeRecord, aoi=None) -> list[str]:
         aoi = aoi if aoi is not None else lake_aoi_geometry(lake, padding=0.8)
         tiles = self._sentinel_tiles_for_geometry(aoi)
+        if tiles:
+            return tiles
+        fallback_tiles = metadata_tiles(lake.properties.get("sentinel_tiles"))
+        if fallback_tiles:
+            return fallback_tiles
+        return [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
+
+    def _required_sentinel_tiles_for_lake(self, lake: LakeRecord) -> list[str]:
+        tiles = self._sentinel_tiles_for_geometry(lake.geometry)
         if tiles:
             return tiles
         fallback_tiles = metadata_tiles(lake.properties.get("sentinel_tiles"))
@@ -814,6 +1020,9 @@ class LakeCatalog:
         }
 
     def _esa_smoothed_layer(self, lake: LakeRecord) -> dict | None:
+        cached = read_esa_polygon_cache(lake.object_id)
+        if cached is not None:
+            return cached
         if lake.area_km2 > 250:
             return {
                 "source": "ESA WorldCover 2021 water mask, smoothed",
@@ -821,35 +1030,10 @@ class LakeCatalog:
                 "properties": {
                     "water_id": f"ESA_{lake.object_id}",
                     "skipped": True,
-                    "reason": "object too large for on-demand ESA polygonization",
+                    "reason": "object too large for on-demand ESA polygonization; pre-generate this lake first",
                 },
             }
-        try:
-            geom = lake.geometry.buffer(max(lake.bbox[2] - lake.bbox[0], lake.bbox[3] - lake.bbox[1]) * 0.15)
-            with rasterio.open(ESA_WATER_MASK) as src:
-                clipped, transform = mask(src, [mapping(geom)], crop=True, filled=True)
-                arr = clipped[0]
-                geoms = []
-                for geom_json, value in shapes(arr.astype("uint8"), mask=(arr == 1), transform=transform):
-                    if int(value) != 1:
-                        continue
-                    poly = shape(geom_json)
-                    if poly.is_empty:
-                        continue
-                    if not poly.intersects(lake.geometry):
-                        continue
-                    geoms.append(poly)
-        except Exception:
-            return None
-        if not geoms:
-            return None
-        source = geoms[0] if len(geoms) == 1 else MultiPolygon(geoms)
-        smoothed = smooth_water_geometry(source)
-        return {
-            "source": "ESA WorldCover 2021 water mask, smoothed",
-            "geometry": mapping(smoothed),
-            "properties": {"water_id": f"ESA_{lake.object_id}"},
-        }
+        return build_esa_smoothed_layer(lake)
 
     def _jrc_occurrence_layer(self, lake: LakeRecord, threshold: int = 75) -> dict | None:
         threshold = max(1, min(100, int(threshold)))
@@ -878,6 +1062,85 @@ def _jsonable(value):
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def esa_polygon_cache_path(lake_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", lake_id)
+    return ESA_POLYGON_DIR / safe_id / "esa_water.geojson"
+
+
+def read_esa_polygon_cache(lake_id: str) -> dict | None:
+    path = esa_polygon_cache_path(lake_id)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    payload.setdefault("properties", {})
+    payload["properties"]["cached"] = True
+    payload["properties"]["cache_path"] = display_path(path)
+    return payload
+
+
+def write_esa_polygon_cache(lake_id: str, layer: dict) -> Path:
+    path = esa_polygon_cache_path(lake_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(layer, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def write_training_label(sample_id: str, layer: dict) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_id)
+    path = TRAINING_LABEL_DIR / f"{safe_id}.geojson"
+    payload = {
+        "type": "Feature",
+        "properties": layer.get("properties") or {},
+        "geometry": layer.get("geometry"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def build_esa_smoothed_layer(lake: LakeRecord) -> dict | None:
+    try:
+        geom = lake.geometry.buffer(max(lake.bbox[2] - lake.bbox[0], lake.bbox[3] - lake.bbox[1]) * 0.15)
+        with rasterio.open(ESA_WATER_MASK) as src:
+            clipped, transform = mask(src, [mapping(geom)], crop=True, filled=True)
+            arr = clipped[0]
+            geoms = []
+            for geom_json, value in shapes(arr.astype("uint8"), mask=(arr == 1), transform=transform):
+                if int(value) != 1:
+                    continue
+                poly = shape(geom_json)
+                if poly.is_empty:
+                    continue
+                if not poly.intersects(lake.geometry):
+                    continue
+                geoms.append(poly)
+    except Exception:
+        return None
+    if not geoms:
+        return {
+            "source": "ESA WorldCover 2021 water mask, smoothed",
+            "geometry": None,
+            "properties": {
+                "water_id": f"ESA_{lake.object_id}",
+                "empty": True,
+                "pre_generated": False,
+            },
+        }
+    source = geoms[0] if len(geoms) == 1 else MultiPolygon(geoms)
+    smoothed = smooth_esa_geometry(source, lake.area_km2)
+    return {
+        "source": "ESA WorldCover 2021 water mask, smoothed",
+        "geometry": mapping(smoothed),
+        "properties": {
+            "water_id": f"ESA_{lake.object_id}",
+            "pre_generated": False,
+        },
+    }
 
 
 def jrc_polygon_cache_path(lake_id: str, threshold: int) -> Path:
@@ -971,10 +1234,37 @@ def smooth_jrc_geometry(geom, lake_area_km2: float):
         kept = [part for part in parts if part.area >= min_area_m2]
         if not kept:
             kept = parts
-        simplified = [make_valid(part.simplify(30, preserve_topology=True)) for part in kept]
+        simplified = flatten_polygons(make_valid(part.simplify(30, preserve_topology=True)) for part in kept)
         result = simplified[0] if len(simplified) == 1 else MultiPolygon(simplified)
         return transform_geom(result, "EPSG:3857", "EPSG:4326")
     return smooth_water_geometry(geom)
+
+
+def smooth_esa_geometry(geom, lake_area_km2: float):
+    if lake_area_km2 > 250:
+        metric = transform_geom(geom, "EPSG:4326", "EPSG:3857")
+        metric = make_valid(metric)
+        parts = list(metric.geoms) if isinstance(metric, MultiPolygon) else [metric]
+        min_area_m2 = 100_000
+        kept = [part for part in parts if part.area >= min_area_m2]
+        if not kept:
+            kept = parts
+        simplified = flatten_polygons(make_valid(part.simplify(30, preserve_topology=True)) for part in kept)
+        result = simplified[0] if len(simplified) == 1 else MultiPolygon(simplified)
+        return transform_geom(result, "EPSG:3857", "EPSG:4326")
+    return smooth_water_geometry(geom)
+
+
+def flatten_polygons(geoms) -> list[Polygon]:
+    polygons: list[Polygon] = []
+    for geom in geoms:
+        if geom.is_empty:
+            continue
+        if isinstance(geom, Polygon):
+            polygons.append(geom)
+        elif isinstance(geom, MultiPolygon):
+            polygons.extend(part for part in geom.geoms if not part.is_empty)
+    return polygons
 
 
 def clean_optional(value) -> str | None:
@@ -1016,6 +1306,40 @@ def parse_float(value) -> float | None:
 def parse_float_or_default(value, default: float) -> float:
     parsed = parse_float(value)
     return default if parsed is None else parsed
+
+
+def split_commas(value) -> list[str]:
+    text = clean_optional(value)
+    if not text:
+        return []
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def split_semicolon(value) -> list[str]:
+    text = clean_optional(value)
+    if not text:
+        return []
+    return [item.strip() for item in text.split(";") if item.strip()]
+
+
+def read_csv_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    table = pd.read_csv(path, dtype=str).fillna("")
+    return table.to_dict("records")
+
+
+def write_csv_records(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    columns = []
+    for row in rows:
+        for key in row:
+            if key not in columns:
+                columns.append(key)
+    pd.DataFrame(rows, columns=columns).to_csv(path, index=False)
 
 
 def default_sentinel_date_range() -> tuple[str, str]:
@@ -1587,7 +1911,11 @@ class LakeHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 size = int(params.get("size", ["900"])[0])
                 padding = float(params.get("padding", ["0.6"])[0])
-                payload, meta = self.catalog.image_for_lake(lake, size=size, padding=padding)
+                try:
+                    payload, meta = self.catalog.image_for_lake(lake, size=size, padding=padding)
+                except FileNotFoundError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("X-Image-Meta", json.dumps(meta, ensure_ascii=True))
@@ -1602,7 +1930,11 @@ class LakeHandler(BaseHTTPRequestHandler):
                     return
                 params = parse_qs(parsed.query)
                 padding = float(params.get("padding", ["0.8"])[0])
-                self._json(self.catalog.tile_meta_for_lake(lake, padding=padding))
+                try:
+                    self._json(self.catalog.tile_meta_for_lake(lake, padding=padding))
+                except FileNotFoundError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
             elif re.fullmatch(r"/api/lakes/[^/]+/tiles/\d+/\d+/\d+\.png", path):
                 match = re.fullmatch(r"/api/lakes/([^/]+)/tiles/(\d+)/(\d+)/(\d+)\.png", path)
                 lake = self.catalog.get_lake(match.group(1))
@@ -1611,13 +1943,16 @@ class LakeHandler(BaseHTTPRequestHandler):
                     return
                 params = parse_qs(parsed.query)
                 padding = float(params.get("padding", ["0.8"])[0])
-                payload, _meta = self.catalog.tile_png_for_lake(
-                    lake,
-                    z=int(match.group(2)),
-                    x=int(match.group(3)),
-                    y=int(match.group(4)),
-                    padding=padding,
-                )
+                try:
+                    payload, _meta = self.catalog.tile_png_for_lake(
+                        lake,
+                        z=int(match.group(2)),
+                        x=int(match.group(3)),
+                        y=int(match.group(4)),
+                        padding=padding,
+                    )
+                except FileNotFoundError:
+                    payload = blank_png(256)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Cache-Control", "no-store")
@@ -1653,6 +1988,17 @@ class LakeHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.NOT_FOUND, "Lake not found")
                     return
                 self._json(self.catalog.imagery_for_lake(lake))
+            elif re.fullmatch(r"/api/lakes/[^/]+/training-samples/readiness", path):
+                lake_key = path.split("/")[-3]
+                lake = self.catalog.get_lake(lake_key)
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                params = parse_qs(parsed.query)
+                buffer_ratio = float(params.get("buffer_ratio", ["0.8"])[0])
+                self._json(self.catalog.training_sample_readiness(lake, buffer_ratio=buffer_ratio))
+            elif path == "/api/training-samples":
+                self._json(self.catalog.list_training_samples())
             elif path == "/api/sentinel/products":
                 params = parse_qs(parsed.query)
                 tile = params.get("tile", [""])[0]
@@ -1698,8 +2044,12 @@ class LakeHandler(BaseHTTPRequestHandler):
                 if lake is None:
                     self._error(HTTPStatus.NOT_FOUND, "Lake not found")
                     return
-                _, meta = self.catalog.image_for_lake(lake)
-                self._json(meta)
+                try:
+                    _, meta = self.catalog.image_for_lake(lake)
+                    self._json(meta)
+                except FileNotFoundError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
             else:
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
@@ -1741,6 +2091,53 @@ class LakeHandler(BaseHTTPRequestHandler):
                     return
                 try:
                     result = self.catalog.set_active_imagery(tile, product)
+                except KeyError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
+                self._json(result)
+            elif re.fullmatch(r"/api/lakes/[^/]+/training-samples", path):
+                lake_key = path.split("/")[-2]
+                lake = self.catalog.get_lake(lake_key)
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                payload = self._read_json()
+                try:
+                    result = self.catalog.create_training_sample(lake, payload)
+                except ValueError as exc:
+                    self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self._json({"sample": result})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "Not found")
+        except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
+
+    def do_PATCH(self) -> None:
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            if re.fullmatch(r"/api/training-samples/[^/]+", path):
+                sample_id = path.rsplit("/", 1)[-1]
+                try:
+                    result = self.catalog.update_training_sample(sample_id, self._read_json())
+                except KeyError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
+                self._json({"sample": result})
+            else:
+                self._error(HTTPStatus.NOT_FOUND, "Not found")
+        except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            if re.fullmatch(r"/api/training-samples/[^/]+", path):
+                sample_id = path.rsplit("/", 1)[-1]
+                try:
+                    result = self.catalog.delete_training_sample(sample_id)
                 except KeyError as exc:
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
@@ -1791,6 +2188,7 @@ class LakeHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    disable_proxy_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)

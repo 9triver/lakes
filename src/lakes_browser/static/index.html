@@ -12,6 +12,11 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <h1>湖南湖泊</h1>
+          <div class="sidebar-tabs" role="tablist" aria-label="侧栏视图">
+            <button id="tab-lakes" type="button" class="active">湖泊</button>
+            <button id="tab-training" type="button">训练集</button>
+          </div>
+          <section id="lake-sidebar-panel">
           <input id="search" type="search" placeholder="搜索名称 / OSM ID" autocomplete="off" />
           <div class="filters">
             <select id="filter-type" aria-label="水体类型">
@@ -56,8 +61,14 @@
             </select>
           </div>
           <div id="count" class="count">加载中</div>
+          </section>
+          <section id="training-sidebar-panel" class="training-sidebar-panel" hidden>
+            <div id="training-summary" class="count">训练集未加载</div>
+            <button id="training-refresh" class="load-more compact" type="button">刷新训练集</button>
+          </section>
         </div>
         <div id="lake-list" class="lake-list"></div>
+        <div id="training-list" class="training-list" hidden></div>
         <button id="load-more" class="load-more" type="button" hidden>加载更多</button>
       </aside>
       <section class="viewer">
@@ -91,6 +102,28 @@
           <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="50" />%</label>
           <button id="sentinel-query" type="button">查询产品</button>
           <div id="sentinel-products" class="sentinel-products"></div>
+        </section>
+        <section id="training-panel" class="training-panel" hidden>
+          <select id="training-label-source" aria-label="标注来源">
+            <option value="osm">OSM</option>
+            <option value="hydrolakes">HydroLAKES</option>
+            <option value="esa">ESA</option>
+            <option value="jrc">JRC</option>
+          </select>
+          <select id="training-jrc-threshold" aria-label="JRC 阈值">
+            <option value="50">JRC 50%</option>
+            <option value="75" selected>JRC 75%</option>
+            <option value="90">JRC 90%</option>
+          </select>
+          <select id="training-quality" aria-label="样本质量">
+            <option value="good">good</option>
+            <option value="usable">usable</option>
+            <option value="needs_edit">needs_edit</option>
+            <option value="bad">bad</option>
+          </select>
+          <input id="training-notes" type="text" aria-label="备注" placeholder="备注" />
+          <button id="training-save" type="button" disabled>加入训练集</button>
+          <div id="training-status" class="training-status"></div>
         </section>
         <div class="map-wrap">
           <div id="empty" class="empty">从左侧列表选择湖泊</div>

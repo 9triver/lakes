@@ -11,11 +11,21 @@ const state = {
   filters: {},
   metaParts: {},
   imagery: null,
+  trainingReady: null,
+  trainingSamples: [],
+  sidebarMode: "lakes",
   downloadJobs: new Map(),
 };
 
+const tabLakesEl = document.querySelector("#tab-lakes");
+const tabTrainingEl = document.querySelector("#tab-training");
+const lakeSidebarPanelEl = document.querySelector("#lake-sidebar-panel");
+const trainingSidebarPanelEl = document.querySelector("#training-sidebar-panel");
 const listEl = document.querySelector("#lake-list");
+const trainingListEl = document.querySelector("#training-list");
 const countEl = document.querySelector("#count");
+const trainingSummaryEl = document.querySelector("#training-summary");
+const trainingRefreshEl = document.querySelector("#training-refresh");
 const searchEl = document.querySelector("#search");
 const filterTypeEl = document.querySelector("#filter-type");
 const filterAreaEl = document.querySelector("#filter-area");
@@ -48,6 +58,13 @@ const sentinelEndEl = document.querySelector("#sentinel-end");
 const sentinelCloudEl = document.querySelector("#sentinel-cloud");
 const sentinelQueryEl = document.querySelector("#sentinel-query");
 const sentinelProductsEl = document.querySelector("#sentinel-products");
+const trainingPanelEl = document.querySelector("#training-panel");
+const trainingLabelSourceEl = document.querySelector("#training-label-source");
+const trainingJrcThresholdEl = document.querySelector("#training-jrc-threshold");
+const trainingQualityEl = document.querySelector("#training-quality");
+const trainingNotesEl = document.querySelector("#training-notes");
+const trainingSaveEl = document.querySelector("#training-save");
+const trainingStatusEl = document.querySelector("#training-status");
 const zoomLakeEl = document.querySelector("#zoom-lake");
 const zoomTileEl = document.querySelector("#zoom-tile");
 
@@ -89,7 +106,12 @@ const geojson = new ol.format.GeoJSON({
 async function fetchJson(url) {
   const response = await fetch(url);
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || response.statusText);
+  if (!response.ok) {
+    const error = new Error(payload.error || response.statusText);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
   return payload;
 }
 
@@ -99,6 +121,24 @@ async function postJson(url, payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+async function patchJson(url, payload) {
+  const response = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+async function deleteJson(url) {
+  const response = await fetch(url, { method: "DELETE" });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
@@ -127,6 +167,30 @@ async function loadLakes({ append = false } = {}) {
   renderList();
 }
 
+async function loadTrainingSamples() {
+  trainingSummaryEl.textContent = "训练集加载中";
+  const payload = await fetchJson("/api/training-samples");
+  state.trainingSamples = payload.items || [];
+  const bad = state.trainingSamples.filter((item) => item.status !== "ok").length;
+  trainingSummaryEl.textContent = bad
+    ? `${payload.total} 个样本，${bad} 个缺文件`
+    : `${payload.total} 个样本`;
+  renderTrainingSamples();
+}
+
+function setSidebarMode(mode) {
+  state.sidebarMode = mode;
+  const trainingMode = mode === "training";
+  tabLakesEl.classList.toggle("active", !trainingMode);
+  tabTrainingEl.classList.toggle("active", trainingMode);
+  lakeSidebarPanelEl.hidden = trainingMode;
+  listEl.hidden = trainingMode;
+  loadMoreEl.hidden = trainingMode || state.lakes.length >= state.total;
+  trainingSidebarPanelEl.hidden = !trainingMode;
+  trainingListEl.hidden = !trainingMode;
+  if (trainingMode) loadTrainingSamples().catch(showError);
+}
+
 function renderList() {
   listEl.replaceChildren();
   for (const lake of state.lakes) {
@@ -151,13 +215,95 @@ function renderList() {
   }
 }
 
+function renderTrainingSamples() {
+  trainingListEl.replaceChildren();
+  if (!state.trainingSamples.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "暂无训练样本";
+    trainingListEl.append(empty);
+    return;
+  }
+  for (const sample of state.trainingSamples) {
+    const item = document.createElement("div");
+    item.className = `training-item${sample.status === "ok" ? "" : " missing"}`;
+    const name = sample.lake_display_name || sample.lake_name || sample.lake_id || sample.sample_id;
+    item.innerHTML = `
+      <div class="training-top">
+        <div class="training-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+        <div class="badge">${escapeHtml(sample.status === "ok" ? "ok" : "缺文件")}</div>
+      </div>
+      <div class="training-meta-line">${escapeHtml(sample.label_source || "")}${sample.label_threshold ? ` ${escapeHtml(sample.label_threshold)}` : ""} · ${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(sample.product_date || "")}</div>
+      <div class="training-meta-line" title="${escapeHtml(sample.sample_id || "")}">${escapeHtml(sample.sample_id || "")}</div>
+    `;
+    const edit = document.createElement("div");
+    edit.className = "training-edit";
+    const quality = makeSelect(["good", "usable", "needs_edit", "bad"], sample.quality || "good");
+    const split = makeSelect(["", "train", "val", "test"], sample.split || "");
+    const notes = document.createElement("input");
+    notes.type = "text";
+    notes.value = sample.notes || "";
+    notes.placeholder = "备注";
+    edit.append(quality, split, notes);
+
+    const actions = document.createElement("div");
+    actions.className = "training-actions";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "定位";
+    open.addEventListener("click", () => selectLake(sample.lake_id).catch(showError));
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "保存";
+    save.addEventListener("click", () => updateTrainingSample(sample.sample_id, {
+      quality: quality.value,
+      split: split.value,
+      notes: notes.value,
+    }).catch(showError));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => deleteTrainingSample(sample.sample_id).catch(showError));
+    actions.append(open, save, remove);
+    item.append(edit, actions);
+    trainingListEl.append(item);
+  }
+}
+
+function makeSelect(values, selected) {
+  const select = document.createElement("select");
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value || "unsplit";
+    option.selected = value === selected;
+    select.append(option);
+  }
+  return select;
+}
+
+async function updateTrainingSample(sampleId, payload) {
+  await patchJson(`/api/training-samples/${encodeURIComponent(sampleId)}`, payload);
+  await loadTrainingSamples();
+}
+
+async function deleteTrainingSample(sampleId) {
+  if (!confirm("删除这个训练样本记录？")) return;
+  await deleteJson(`/api/training-samples/${encodeURIComponent(sampleId)}`);
+  await loadTrainingSamples();
+}
+
 async function selectLake(shapeId) {
   state.activeId = shapeId;
   state.loadingId = shapeId;
   state.metaParts = {};
   state.imagery = null;
+  state.trainingReady = null;
+  renderTrainingReadiness();
   state.tileMeta = null;
   sentinelPanelEl.hidden = true;
+  trainingPanelEl.hidden = true;
   sentinelProductsEl.replaceChildren();
   imageryProductEl.replaceChildren();
   clearVectorLayers();
@@ -177,7 +323,15 @@ async function selectLake(shapeId) {
   subtitleEl.textContent = `${typeLabel(lake.water_type)} · ${lake.lake_id}${hylak ? ` · Hylak ${hylak}` : ""}`;
   addLayerGeometry("osm", lake.layers?.osm);
   addLayerGeometry("hydrolakes", lake.layers?.hydrolakes);
-  await loadTileLayer(shapeId, lake);
+  await loadTileLayer(shapeId, lake).catch((error) => {
+    if (!isMissingTciError(error)) throw error;
+    rasterLayer.setSource(null);
+    state.tileMeta = null;
+    fitToBounds(lake.bbox);
+    state.metaParts.base = "暂无本地 Sentinel 影像，可查询并下载产品";
+    renderMeta();
+    setLoading(false);
+  });
   state.loadingId = null;
   renderList();
   loadSentinelTiles(shapeId).catch(showError);
@@ -210,6 +364,11 @@ async function loadTileLayer(shapeId, lake) {
   ].join(" | ");
   renderMeta();
   setLoading(false);
+}
+
+function isMissingTciError(error) {
+  const message = String(error?.message || "");
+  return error?.status === 404 || message.includes("No downloaded TCI");
 }
 
 async function loadEsaLayer(shapeId) {
@@ -305,7 +464,9 @@ async function loadImageryOptions(shapeId) {
   const payload = await fetchJson(`/api/lakes/${shapeId}/imagery`);
   if (state.activeId !== shapeId) return;
   state.imagery = payload;
+  trainingPanelEl.hidden = false;
   renderImageryOptions();
+  await loadTrainingReadiness(shapeId);
 }
 
 function renderImageryOptions() {
@@ -319,6 +480,7 @@ function renderImageryOptions() {
     option.value = "";
     option.textContent = "无本地影像";
     imageryProductEl.append(option);
+    renderTrainingReadiness();
     return;
   }
   for (const product of products) {
@@ -327,6 +489,69 @@ function renderImageryOptions() {
     option.textContent = `${product.active ? "当前，" : ""}时间: ${formatDateText(product.date)}，云量 ${formatCloud(product.cloud_cover)}`;
     imageryProductEl.append(option);
     if (product.active) imageryProductEl.value = product.product;
+  }
+  renderTrainingReadiness();
+}
+
+async function loadTrainingReadiness(shapeId) {
+  state.trainingReady = null;
+  renderTrainingReadiness();
+  const payload = await fetchJson(`/api/lakes/${shapeId}/training-samples/readiness?buffer_ratio=0.8`);
+  if (state.activeId !== shapeId) return;
+  state.trainingReady = payload;
+  renderTrainingReadiness();
+}
+
+function renderTrainingReadiness() {
+  const ready = state.trainingReady;
+  if (!ready) {
+    trainingSaveEl.disabled = true;
+    trainingStatusEl.textContent = trainingPanelEl.hidden ? "" : "检查训练数据";
+    return;
+  }
+  trainingSaveEl.disabled = !ready.ready;
+  if (ready.ready) {
+    const tiles = (ready.required_tiles || []).join(", ");
+    trainingStatusEl.textContent = `训练数据完备：${ready.ready_count}/${ready.required_count} 个 tile 已设为影像；${tiles}`;
+    return;
+  }
+  const missing = (ready.missing_tiles || []).join(", ");
+  const selected = `${ready.ready_count || 0}/${ready.required_count || 0}`;
+  trainingStatusEl.textContent = missing
+    ? `训练数据不完备：${selected} 个 tile 已设为影像；缺少 ${missing}`
+    : `训练数据不完备：${selected} 个 tile 已设为影像`;
+}
+
+function syncTrainingLabelControls() {
+  const isJrc = trainingLabelSourceEl.value === "jrc";
+  trainingJrcThresholdEl.hidden = !isJrc;
+  trainingJrcThresholdEl.disabled = !isJrc;
+}
+
+async function saveTrainingSample() {
+  if (!state.activeId) return;
+  trainingSaveEl.disabled = true;
+  trainingStatusEl.textContent = "检查训练数据";
+  await loadTrainingReadiness(state.activeId);
+  if (!state.trainingReady?.ready) {
+    renderTrainingReadiness();
+    return;
+  }
+  trainingSaveEl.disabled = true;
+  trainingStatusEl.textContent = "保存中";
+  const labelSource = trainingLabelSourceEl.value;
+  try {
+    const payload = await postJson(`/api/lakes/${state.activeId}/training-samples`, {
+      label_source: labelSource,
+      label_threshold: labelSource === "jrc" ? trainingJrcThresholdEl.value : "",
+      quality: trainingQualityEl.value,
+      notes: trainingNotesEl.value,
+      buffer_ratio: 0.8,
+    });
+    trainingStatusEl.textContent = `已加入训练集：${payload.sample.sample_id}`;
+    if (state.sidebarMode === "training") await loadTrainingSamples();
+  } finally {
+    trainingSaveEl.disabled = !state.trainingReady?.ready;
   }
 }
 
@@ -343,6 +568,7 @@ async function applyImagerySelection() {
     renderMeta();
     await loadImageryOptions(state.activeId);
     await loadTileLayer(state.activeId, state.lake);
+    await loadTrainingReadiness(state.activeId);
   } finally {
     imageryApplyEl.disabled = false;
     setLoading(false);
@@ -677,6 +903,18 @@ sentinelQueryEl.addEventListener("click", () => {
   querySentinelProducts().catch(showError);
 });
 
+tabLakesEl.addEventListener("click", () => {
+  setSidebarMode("lakes");
+});
+
+tabTrainingEl.addEventListener("click", () => {
+  setSidebarMode("training");
+});
+
+trainingRefreshEl.addEventListener("click", () => {
+  loadTrainingSamples().catch(showError);
+});
+
 sentinelTileEl.addEventListener("change", () => {
   renderImageryOptions();
 });
@@ -684,6 +922,16 @@ sentinelTileEl.addEventListener("change", () => {
 imageryApplyEl.addEventListener("click", () => {
   applyImagerySelection().catch(showError);
 });
+
+trainingSaveEl.addEventListener("click", () => {
+  saveTrainingSample().catch(showError);
+});
+
+trainingLabelSourceEl.addEventListener("change", () => {
+  syncTrainingLabelControls();
+});
+
+syncTrainingLabelControls();
 
 zoomLakeEl.addEventListener("click", () => {
   if (!state.tileMeta) return;
