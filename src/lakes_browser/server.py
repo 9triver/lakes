@@ -648,6 +648,10 @@ class LakeCatalog:
             raise ValueError(f"active imagery is incomplete; missing tiles: {missing}")
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
+        label_scope = clean_optional(payload.get("label_scope")) or "target_only"
+        mask_policy = clean_optional(payload.get("mask_policy")) or "other_water_ignore"
+        context_sources = clean_optional(payload.get("context_sources")) or "osm,hydrolakes"
+        ignore_sources = clean_optional(payload.get("ignore_sources")) or "osm,hydrolakes,esa,jrc"
         quality = clean_optional(payload.get("quality")) or "good"
         notes = clean_optional(payload.get("notes")) or ""
         buffer_ratio = parse_float_or_default(payload.get("buffer_ratio"), 0.8)
@@ -659,8 +663,20 @@ class LakeCatalog:
         product_names = [item["product_name"] for item in readiness["products"]]
         tile_names = [item["tile"] for item in readiness["products"]]
         product_key = ",".join(product_names)
-        sample_id = f"{lake.object_id}_{hashlib.sha1((product_key + label_source + label_threshold).encode('utf-8')).hexdigest()[:12]}"
-        label_path = write_training_label(sample_id, label_layer)
+        sample_hash = hashlib.sha1(
+            (product_key + label_source + label_threshold + label_scope + mask_policy).encode("utf-8")
+        ).hexdigest()[:12]
+        sample_id = f"{lake.object_id}_{sample_hash}"
+        label_path = write_training_label(
+            sample_id,
+            label_layer,
+            {
+                "label_scope": label_scope,
+                "mask_policy": mask_policy,
+                "context_sources": context_sources,
+                "ignore_sources": ignore_sources,
+            },
+        )
         row = {
             "sample_id": sample_id,
             "lake_id": lake.object_id,
@@ -675,6 +691,10 @@ class LakeCatalog:
             "tci_path": ";".join(item.get("tci_path", "") for item in readiness["products"]),
             "label_source": label_source,
             "label_threshold": label_threshold,
+            "label_scope": label_scope,
+            "mask_policy": mask_policy,
+            "context_sources": context_sources,
+            "ignore_sources": ignore_sources,
             "label_path": display_path(label_path),
             "aoi_west": aoi.bounds[0],
             "aoi_south": aoi.bounds[1],
@@ -706,7 +726,7 @@ class LakeCatalog:
         rows = read_csv_records(TRAINING_SAMPLES)
         sample_id = str(sample_id)
         updated = None
-        allowed = {"quality", "split", "notes"}
+        allowed = {"quality", "split", "notes", "label_scope", "mask_policy", "context_sources", "ignore_sources"}
         for row in rows:
             if row.get("sample_id") != sample_id:
                 continue
@@ -801,6 +821,97 @@ class LakeCatalog:
             threshold = int(label_threshold or 75)
             return self._jrc_occurrence_layer(lake, threshold=threshold)
         raise ValueError(f"unknown label_source: {label_source}")
+
+    def context_water_for_lake(self, lake: LakeRecord, padding: float = 0.8, min_area_km2: float = 1.0, limit: int = 500) -> dict:
+        aoi = lake_aoi_geometry(lake, padding=padding)
+        return {
+            "lake_id": lake.object_id,
+            "aoi_bounds": list(aoi.bounds),
+            "min_area_km2": min_area_km2,
+            "limit": limit,
+            "sources": {
+                "osm": self._context_osm_water(lake, aoi, min_area_km2=min_area_km2, limit=limit),
+                "hydrolakes": self._context_hydrolakes_water(lake, aoi, min_area_km2=min_area_km2, limit=limit),
+            },
+        }
+
+    def _context_osm_water(self, lake: LakeRecord, aoi, min_area_km2: float, limit: int) -> dict:
+        items = []
+        for other in self.lakes:
+            if other.object_id == lake.object_id:
+                continue
+            if other.area_km2 < min_area_km2:
+                continue
+            if not other.geometry.intersects(aoi):
+                continue
+            clipped = make_valid(other.geometry.intersection(aoi))
+            if clipped.is_empty:
+                continue
+            items.append(
+                {
+                    "area_km2": other.area_km2,
+                    "feature": {
+                        "type": "Feature",
+                        "geometry": mapping(clipped),
+                        "properties": {
+                            "source": "OSM",
+                            "lake_id": other.object_id,
+                            "name": other.name or other.properties.get("display_name") or "",
+                            "area_km2": other.area_km2,
+                        },
+                    },
+                },
+            )
+        items.sort(key=lambda item: item["area_km2"], reverse=True)
+        features = [item["feature"] for item in items[:limit]]
+        return {"type": "FeatureCollection", "features": features}
+
+    def _context_hydrolakes_water(self, lake: LakeRecord, aoi, min_area_km2: float, limit: int) -> dict:
+        xmin, ymin, xmax, ymax = aoi.bounds
+        items = []
+        try:
+            candidates = pyogrio.read_dataframe(
+                HYDROLAKES,
+                bbox=(xmin, ymin, xmax, ymax),
+                columns=["Hylak_id", "Lake_name", "Country", "Lake_area"],
+            ).to_crs("EPSG:4326")
+        except Exception:
+            candidates = pd.DataFrame()
+        if candidates.empty:
+            return {"type": "FeatureCollection", "features": []}
+        target_hylak = clean_optional(lake.properties.get("hylak_id"))
+        for _, row in candidates.iterrows():
+            hylak_id = clean_optional(row.get("Hylak_id"))
+            if target_hylak and hylak_id == target_hylak:
+                continue
+            area_km2 = parse_float(row.get("Lake_area")) or 0.0
+            if area_km2 < min_area_km2:
+                continue
+            geom = row.geometry
+            if geom is None or geom.is_empty or not geom.intersects(aoi):
+                continue
+            clipped = make_valid(geom.intersection(aoi))
+            if clipped.is_empty:
+                continue
+            items.append(
+                {
+                    "area_km2": area_km2,
+                    "feature": {
+                        "type": "Feature",
+                        "geometry": mapping(clipped),
+                        "properties": {
+                            "source": "HydroLAKES",
+                            "hylak_id": _jsonable(row.get("Hylak_id")),
+                            "name": _jsonable(row.get("Lake_name")) or "",
+                            "country": _jsonable(row.get("Country")),
+                            "area_km2": _jsonable(row.get("Lake_area")),
+                        },
+                    },
+                },
+            )
+        items.sort(key=lambda item: item["area_km2"], reverse=True)
+        features = [item["feature"] for item in items[:limit]]
+        return {"type": "FeatureCollection", "features": features}
 
     def local_product_for_tile(self, tile: str, product_name: str) -> dict:
         tile = str(tile).upper().removeprefix("T")
@@ -1090,12 +1201,13 @@ def write_esa_polygon_cache(lake_id: str, layer: dict) -> Path:
     return path
 
 
-def write_training_label(sample_id: str, layer: dict) -> Path:
+def write_training_label(sample_id: str, layer: dict, extra_properties: dict | None = None) -> Path:
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_id)
     path = TRAINING_LABEL_DIR / f"{safe_id}.geojson"
+    properties = {**(layer.get("properties") or {}), **(extra_properties or {})}
     payload = {
         "type": "Feature",
-        "properties": layer.get("properties") or {},
+        "properties": properties,
         "geometry": layer.get("geometry"),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1981,6 +2093,17 @@ class LakeHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.NOT_FOUND, "Lake not found")
                     return
                 self._json(self.catalog.sentinel_tiles_for_lake(lake))
+            elif re.fullmatch(r"/api/lakes/[^/]+/context-water", path):
+                lake_key = path.split("/")[-2]
+                lake = self.catalog.get_lake(lake_key)
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                params = parse_qs(parsed.query)
+                padding = float(params.get("padding", ["0.8"])[0])
+                min_area_km2 = float(params.get("min_area_km2", ["1.0"])[0])
+                limit = int(params.get("limit", ["500"])[0])
+                self._json(self.catalog.context_water_for_lake(lake, padding=padding, min_area_km2=min_area_km2, limit=limit))
             elif re.fullmatch(r"/api/lakes/[^/]+/imagery", path):
                 lake_key = path.split("/")[-2]
                 lake = self.catalog.get_lake(lake_key)

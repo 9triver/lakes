@@ -45,6 +45,8 @@ const toggleImageEl = document.querySelector("#toggle-image");
 const toggleTileGridEl = document.querySelector("#toggle-tile-grid");
 const toggleOsmEl = document.querySelector("#toggle-osm");
 const toggleHydroEl = document.querySelector("#toggle-hydro");
+const toggleContextOsmEl = document.querySelector("#toggle-context-osm");
+const toggleContextHydroEl = document.querySelector("#toggle-context-hydro");
 const toggleEsaEl = document.querySelector("#toggle-esa");
 const toggleJrcEl = document.querySelector("#toggle-jrc");
 const jrcThresholdEl = document.querySelector("#jrc-threshold");
@@ -62,6 +64,8 @@ const trainingPanelEl = document.querySelector("#training-panel");
 const trainingLabelSourceEl = document.querySelector("#training-label-source");
 const trainingJrcThresholdEl = document.querySelector("#training-jrc-threshold");
 const trainingQualityEl = document.querySelector("#training-quality");
+const trainingLabelScopeEl = document.querySelector("#training-label-scope");
+const trainingMaskPolicyEl = document.querySelector("#training-mask-policy");
 const trainingNotesEl = document.querySelector("#training-notes");
 const trainingSaveEl = document.querySelector("#training-save");
 const trainingStatusEl = document.querySelector("#training-status");
@@ -78,6 +82,8 @@ const vectorSources = {
   tileGrid: new ol.source.Vector(),
   osm: new ol.source.Vector(),
   hydrolakes: new ol.source.Vector(),
+  contextOsm: new ol.source.Vector(),
+  contextHydrolakes: new ol.source.Vector(),
   esa: new ol.source.Vector(),
   jrc: new ol.source.Vector(),
 };
@@ -85,12 +91,23 @@ const vectorLayers = {
   tileGrid: new ol.layer.Vector({ source: vectorSources.tileGrid, style: tileGridStyle }),
   osm: new ol.layer.Vector({ source: vectorSources.osm, style: polygonStyle("#00a6ff", "rgba(0, 166, 255, 0.20)") }),
   hydrolakes: new ol.layer.Vector({ source: vectorSources.hydrolakes, style: polygonStyle("#ffd447", "rgba(255, 212, 71, 0.18)") }),
+  contextOsm: new ol.layer.Vector({ source: vectorSources.contextOsm, style: polygonStyle("#0088cc", "rgba(0, 136, 204, 0.06)", [6, 5], 1.4) }),
+  contextHydrolakes: new ol.layer.Vector({ source: vectorSources.contextHydrolakes, style: polygonStyle("#b28b00", "rgba(255, 212, 71, 0.06)", [6, 5], 1.4) }),
   esa: new ol.layer.Vector({ source: vectorSources.esa, style: polygonStyle("#ff4fb3", "rgba(255, 79, 179, 0.30)") }),
   jrc: new ol.layer.Vector({ source: vectorSources.jrc, style: polygonStyle("#1ab878", "rgba(44, 214, 137, 0.24)") }),
 };
 const map = new ol.Map({
   target: mapEl,
-  layers: [rasterLayer, vectorLayers.tileGrid, vectorLayers.osm, vectorLayers.hydrolakes, vectorLayers.esa, vectorLayers.jrc],
+  layers: [
+    rasterLayer,
+    vectorLayers.tileGrid,
+    vectorLayers.contextOsm,
+    vectorLayers.contextHydrolakes,
+    vectorLayers.osm,
+    vectorLayers.hydrolakes,
+    vectorLayers.esa,
+    vectorLayers.jrc,
+  ],
   view: new ol.View({
     center: ol.proj.fromLonLat([112.5, 28.8]),
     zoom: 8,
@@ -233,7 +250,8 @@ function renderTrainingSamples() {
         <div class="training-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
         <div class="badge">${escapeHtml(sample.status === "ok" ? "ok" : "缺文件")}</div>
       </div>
-      <div class="training-meta-line">${escapeHtml(sample.label_source || "")}${sample.label_threshold ? ` ${escapeHtml(sample.label_threshold)}` : ""} · ${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(sample.product_date || "")}</div>
+      <div class="training-meta-line">${escapeHtml(sample.label_source || "")}${sample.label_threshold ? ` ${escapeHtml(sample.label_threshold)}` : ""} · ${escapeHtml(formatLabelScope(sample.label_scope))} · ${escapeHtml(formatMaskPolicy(sample.mask_policy))}</div>
+      <div class="training-meta-line">${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(sample.product_date || "")}</div>
       <div class="training-meta-line" title="${escapeHtml(sample.sample_id || "")}">${escapeHtml(sample.sample_id || "")}</div>
     `;
     const edit = document.createElement("div");
@@ -336,6 +354,7 @@ async function selectLake(shapeId) {
   renderList();
   loadSentinelTiles(shapeId).catch(showError);
   loadImageryOptions(shapeId).catch(showError);
+  loadContextWaterLayer(shapeId).catch(showError);
   loadEsaLayer(shapeId).catch(showError);
   loadJrcLayer(shapeId).catch(showError);
 }
@@ -369,6 +388,17 @@ async function loadTileLayer(shapeId, lake) {
 function isMissingTciError(error) {
   const message = String(error?.message || "");
   return error?.status === 404 || message.includes("No downloaded TCI");
+}
+
+async function loadContextWaterLayer(shapeId) {
+  const payload = await fetchJson(`/api/lakes/${shapeId}/context-water?padding=0.8&min_area_km2=10&limit=500`);
+  if (state.activeId !== shapeId) return;
+  addFeatureCollection("contextOsm", payload.sources?.osm);
+  addFeatureCollection("contextHydrolakes", payload.sources?.hydrolakes);
+  const osmCount = payload.sources?.osm?.features?.length || 0;
+  const hydroCount = payload.sources?.hydrolakes?.features?.length || 0;
+  state.metaParts.context = `其他水体(≥${payload.min_area_km2} km²) OSM ${osmCount} / HydroLAKES ${hydroCount}`;
+  renderMeta();
 }
 
 async function loadEsaLayer(shapeId) {
@@ -512,14 +542,14 @@ function renderTrainingReadiness() {
   trainingSaveEl.disabled = !ready.ready;
   if (ready.ready) {
     const tiles = (ready.required_tiles || []).join(", ");
-    trainingStatusEl.textContent = `训练数据完备：${ready.ready_count}/${ready.required_count} 个 tile 已设为影像；${tiles}`;
+    trainingStatusEl.textContent = `训练区域完备：${ready.ready_count}/${ready.required_count} 个 tile 已设为影像；${tiles}`;
     return;
   }
   const missing = (ready.missing_tiles || []).join(", ");
   const selected = `${ready.ready_count || 0}/${ready.required_count || 0}`;
   trainingStatusEl.textContent = missing
-    ? `训练数据不完备：${selected} 个 tile 已设为影像；缺少 ${missing}`
-    : `训练数据不完备：${selected} 个 tile 已设为影像`;
+    ? `训练区域不完备：${selected} 个 tile 已设为影像；缺少 ${missing}`
+    : `训练区域不完备：${selected} 个 tile 已设为影像`;
 }
 
 function syncTrainingLabelControls() {
@@ -544,11 +574,15 @@ async function saveTrainingSample() {
     const payload = await postJson(`/api/lakes/${state.activeId}/training-samples`, {
       label_source: labelSource,
       label_threshold: labelSource === "jrc" ? trainingJrcThresholdEl.value : "",
+      label_scope: trainingLabelScopeEl.value,
+      mask_policy: trainingMaskPolicyEl.value,
+      context_sources: "osm,hydrolakes",
+      ignore_sources: trainingMaskPolicyEl.value === "other_water_ignore" ? "osm,hydrolakes,esa,jrc" : "",
       quality: trainingQualityEl.value,
       notes: trainingNotesEl.value,
       buffer_ratio: 0.8,
     });
-    trainingStatusEl.textContent = `已加入训练集：${payload.sample.sample_id}`;
+    trainingStatusEl.textContent = `已加入训练区域：${payload.sample.sample_id}`;
     if (state.sidebarMode === "training") await loadTrainingSamples();
   } finally {
     trainingSaveEl.disabled = !state.trainingReady?.ready;
@@ -674,6 +708,18 @@ function addLayerGeometry(layerName, layer) {
   vectorLayers[layerName].setVisible(layerVisible(layerName));
 }
 
+function addFeatureCollection(layerName, collection) {
+  const source = vectorSources[layerName];
+  source.clear();
+  const features = collection?.features || [];
+  if (!features.length) {
+    vectorLayers[layerName].setVisible(layerVisible(layerName));
+    return;
+  }
+  source.addFeatures(geojson.readFeatures({ type: "FeatureCollection", features }));
+  vectorLayers[layerName].setVisible(layerVisible(layerName));
+}
+
 function clearVectorLayers() {
   for (const source of Object.values(vectorSources)) source.clear();
 }
@@ -689,9 +735,9 @@ function fitToBounds(bounds) {
   });
 }
 
-function polygonStyle(stroke, fill) {
+function polygonStyle(stroke, fill, lineDash = undefined, width = 2) {
   return new ol.style.Style({
-    stroke: new ol.style.Stroke({ color: stroke, width: 2 }),
+    stroke: new ol.style.Stroke({ color: stroke, width, lineDash }),
     fill: new ol.style.Fill({ color: fill }),
   });
 }
@@ -715,6 +761,8 @@ function layerVisible(layerName) {
   if (layerName === "tileGrid") return toggleTileGridEl.checked;
   if (layerName === "osm") return toggleOsmEl.checked;
   if (layerName === "hydrolakes") return toggleHydroEl.checked;
+  if (layerName === "contextOsm") return toggleContextOsmEl.checked;
+  if (layerName === "contextHydrolakes") return toggleContextHydroEl.checked;
   if (layerName === "esa") return toggleEsaEl.checked;
   if (layerName === "jrc") return toggleJrcEl.checked;
   return true;
@@ -768,6 +816,16 @@ function formatDateText(value) {
   const text = String(value || "").trim();
   if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
   return text || "未知";
+}
+
+function formatLabelScope(value) {
+  if (value === "aoi_water") return "AOI 水体";
+  return "当前水体";
+}
+
+function formatMaskPolicy(value) {
+  if (value === "visible_water_positive") return "可见水体为正";
+  return "其他水体忽略";
 }
 
 function escapeHtml(value) {
@@ -881,6 +939,8 @@ for (const [checkbox, layerName] of [
   [toggleTileGridEl, "tileGrid"],
   [toggleOsmEl, "osm"],
   [toggleHydroEl, "hydrolakes"],
+  [toggleContextOsmEl, "contextOsm"],
+  [toggleContextHydroEl, "contextHydrolakes"],
   [toggleEsaEl, "esa"],
   [toggleJrcEl, "jrc"],
 ]) {

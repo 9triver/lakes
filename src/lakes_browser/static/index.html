@@ -82,6 +82,8 @@
             <label><input id="toggle-tile-grid" type="checkbox" checked /> Tile</label>
             <label><input id="toggle-osm" type="checkbox" checked /> OSM</label>
             <label><input id="toggle-hydro" type="checkbox" checked /> HydroLAKES</label>
+            <label><input id="toggle-context-osm" type="checkbox" checked /> 其他 OSM</label>
+            <label><input id="toggle-context-hydro" type="checkbox" checked /> 其他 HydroLAKES</label>
             <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
             <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
             <label class="slider-tool">
@@ -121,8 +123,16 @@
             <option value="needs_edit">needs_edit</option>
             <option value="bad">bad</option>
           </select>
+          <select id="training-label-scope" aria-label="标注范围">
+            <option value="target_only" selected>当前水体</option>
+            <option value="aoi_water">AOI 水体</option>
+          </select>
+          <select id="training-mask-policy" aria-label="掩膜策略">
+            <option value="other_water_ignore" selected>其他水体忽略</option>
+            <option value="visible_water_positive">可见水体为正</option>
+          </select>
           <input id="training-notes" type="text" aria-label="备注" placeholder="备注" />
-          <button id="training-save" type="button" disabled>加入训练集</button>
+          <button id="training-save" type="button" disabled>加入训练区域</button>
           <div id="training-status" class="training-status"></div>
         </section>
         <div class="map-wrap">
