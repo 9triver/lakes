@@ -10,13 +10,7 @@ venv/
 .env
 
 # Large geospatial assets are managed outside Git.
-data/raw/*
-!data/raw/.gitkeep
-data/cache/
-data/processed/active_imagery.json
-data/processed/sentinel_products.csv
-data/processed/training_samples.csv
-data/processed/training_labels/
+data/
 attic/
 
 # Local run artifacts.

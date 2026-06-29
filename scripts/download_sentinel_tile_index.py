@@ -14,7 +14,12 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT_DIR = PROJECT_ROOT / "data" / "raw" / "sentinel_2_tiles"
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from lakes_browser.region_config import load_region_configs  # noqa: E402
+
+
+REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 DEFAULT_URLS = [
     "https://sentinels.copernicus.eu/documents/247904/1955685/"
     "S2A_OPER_GIP_TILPAR_MPC__20151209T095117_V20150622T000000_21000101T000000_B00.kml",
@@ -30,13 +35,14 @@ TILE_RE = re.compile(r"^\d{2}[A-Z]{3}$")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
+    parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--url", action="append", help="KML URL to try before the built-in URLs")
     parser.add_argument("--geojson-url", action="append", help="GeoJSON URL to try if KML download fails")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
 
-    out_dir = args.out_dir.resolve()
+    out_dir = args.out_dir.resolve() if args.out_dir else (REGIONS[args.region].data_dir / "sentinel_2_tiles")
     out_dir.mkdir(parents=True, exist_ok=True)
     kml_path = out_dir / "sentinel_2_tiling_grid.kml"
     geojson_path = out_dir / "sentinel_2_index.geojson"

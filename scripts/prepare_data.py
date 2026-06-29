@@ -2,8 +2,8 @@
 """Download and prepare large local datasets for the Lakes browser.
 
 The generated layout matches the paths used by ``lakes_browser.server`` and
-``scripts/build_lake_metadata.py``. Large data stays under ``data/raw`` and is
-ignored by Git.
+``scripts/build_lake_metadata.py``. Large data stays under each configured
+region's ``raw`` directory and is ignored by Git.
 """
 
 from __future__ import annotations
@@ -15,18 +15,20 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "raw"
-DEFAULT_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-HUNAN_BOUNDS = (108.47, 24.63, 114.25, 30.13)
+from lakes_browser.region_config import RegionConfig, load_region_configs  # noqa: E402
 
-GEOfABRIK_HUNAN_GPKG = "https://download.geofabrik.de/asia/china/hunan-latest-free.gpkg.zip"
+
+REGIONS, DEFAULT_REGION_KEY = load_region_configs()
+
 HYDROLAKES_ZIP_URL = "https://data.hydrosheds.org/file/HydroLAKES/HydroLAKES_polys_v10_shp.zip"
 ESA_TILE_URL = (
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/"
@@ -37,75 +39,79 @@ JRC_TILE_URL = (
     "{layer}/{layer}_{tile}v1_4_2021.tif"
 )
 
-ESA_TILES = ["N24E108", "N24E111", "N24E114", "N27E108", "N27E111", "N27E114", "N30E108", "N30E111", "N30E114"]
-JRC_TILES = ["100E_30N", "110E_30N"]
-
 WATER_COLUMN_CANDIDATES = ["fclass", "class", "type", "natural", "water", "landuse"]
 OSM_WATER_VALUES = {"water", "reservoir", "lake", "pond", "basin", "wetland", "riverbank", "dock"}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--processed-dir", type=Path, default=DEFAULT_PROCESSED_DIR)
+    parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
+    parser.add_argument("--data-dir", type=Path, default=None, help="override configured raw data directory")
+    parser.add_argument("--processed-dir", type=Path, default=None, help="override configured processed data directory")
     parser.add_argument("--force", action="store_true", help="overwrite existing generated files")
     parser.add_argument("--proxy", default="", help="proxy URL or host:port for downloads that need it")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("osm", help="download Geofabrik Hunan water polygons")
+    sub.add_parser("osm", help="download Geofabrik water polygons for the selected region")
     sub.add_parser("hydrolakes", help="download HydroLAKES polygons")
-    sub.add_parser("esa", help="download ESA WorldCover tiles and build Hunan water mask")
-    sub.add_parser("jrc", help="download JRC GSW tiles and build Hunan clips")
+    sub.add_parser("esa", help="download ESA WorldCover tiles and build a regional water mask")
+    sub.add_parser("jrc", help="download JRC GSW tiles and build regional clips")
     sub.add_parser("sentinel-grid", help="download Sentinel-2 MGRS tile grid, not SAFE imagery")
     sub.add_parser("sentinel-tiles", help="alias for sentinel-grid; downloads the tile grid only")
-    sub.add_parser("metadata", help="generate processed Hunan lake metadata")
+    sub.add_parser("metadata", help="generate processed lake metadata for the selected region")
     sub.add_parser("all", help="run public base-data prep and metadata; does not download Sentinel SAFE imagery")
 
     args = parser.parse_args()
-    data_dir = args.data_dir.expanduser().resolve()
-    processed_dir = args.processed_dir.expanduser().resolve()
+    region = REGIONS[args.region]
+    if args.data_dir or args.processed_dir:
+        region = replace(
+            region,
+            data_dir=(args.data_dir.expanduser().resolve() if args.data_dir else region.data_dir),
+            processed_dir=(args.processed_dir.expanduser().resolve() if args.processed_dir else region.processed_dir),
+        )
+    data_dir = region.data_dir
+    processed_dir = region.processed_dir
     data_dir.mkdir(parents=True, exist_ok=True)
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     if args.command == "osm":
-        prepare_osm(data_dir, args.force, args.proxy)
+        prepare_osm(region, args.force, args.proxy)
     elif args.command == "hydrolakes":
-        prepare_hydrolakes(data_dir, args.force, args.proxy)
+        prepare_hydrolakes(region, args.force, args.proxy)
     elif args.command == "esa":
-        prepare_esa(data_dir, args.force, args.proxy)
+        prepare_esa(region, args.force, args.proxy)
     elif args.command == "jrc":
-        prepare_jrc(data_dir, args.force, args.proxy)
+        prepare_jrc(region, args.force, args.proxy)
     elif args.command in {"sentinel-grid", "sentinel-tiles"}:
-        prepare_sentinel_tiles(data_dir, args.force)
+        prepare_sentinel_tiles(region, args.force)
     elif args.command == "metadata":
-        prepare_metadata(data_dir, processed_dir)
+        prepare_metadata(region)
     elif args.command == "all":
-        prepare_osm(data_dir, args.force, args.proxy)
-        prepare_hydrolakes(data_dir, args.force, args.proxy)
-        prepare_esa(data_dir, args.force, args.proxy)
-        prepare_jrc(data_dir, args.force, args.proxy)
-        prepare_sentinel_tiles(data_dir, args.force)
-        prepare_metadata_if_possible(data_dir, processed_dir)
+        prepare_osm(region, args.force, args.proxy)
+        prepare_hydrolakes(region, args.force, args.proxy)
+        prepare_esa(region, args.force, args.proxy)
+        prepare_jrc(region, args.force, args.proxy)
+        prepare_sentinel_tiles(region, args.force)
+        prepare_metadata_if_possible(region)
 
 
-def prepare_osm(data_dir: Path, force: bool, proxy: str = "") -> None:
-    out_dir = data_dir / "hunan_osm_water"
-    out_path = out_dir / "hunan_water_raw.gpkg"
+def prepare_osm(region: RegionConfig, force: bool, proxy: str = "") -> None:
+    out_path = region.osm_water
     if out_path.exists() and not force:
         print(f"exists {display(out_path)}")
         return
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="lakes-osm-") as tmp:
         tmp_dir = Path(tmp)
-        zip_path = tmp_dir / "hunan-latest-free.gpkg.zip"
-        download_file(GEOfABRIK_HUNAN_GPKG, zip_path, force=True, proxy=proxy)
+        zip_path = tmp_dir / f"{region.key}-latest-free.gpkg.zip"
+        download_file(region.geofabrik, zip_path, force=True, proxy=proxy)
         extract_zip(zip_path, tmp_dir)
         gpkg = next(tmp_dir.glob("*.gpkg"), None)
         if gpkg is None:
             raise FileNotFoundError("Geofabrik archive did not contain a .gpkg file")
         water = read_osm_water(gpkg)
         if water.empty:
-            raise RuntimeError("No water polygons found in Geofabrik Hunan GPKG")
+            raise RuntimeError(f"No water polygons found in Geofabrik {region.name} GPKG")
         water = water.to_crs("EPSG:4326")
         water = water[water.geometry.notna() & ~water.geometry.is_empty].copy()
         water = normalize_osm_water_schema(water)
@@ -113,9 +119,9 @@ def prepare_osm(data_dir: Path, force: bool, proxy: str = "") -> None:
     print(f"wrote {display(out_path)} ({len(water)} features)")
 
 
-def prepare_hydrolakes(data_dir: Path, force: bool, proxy: str = "") -> None:
-    out_dir = data_dir / "hydrolakes"
-    shp_path = out_dir / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
+def prepare_hydrolakes(region: RegionConfig, force: bool, proxy: str = "") -> None:
+    out_dir = region.data_dir / "hydrolakes"
+    shp_path = region.hydrolakes
     if shp_path.exists() and not force:
         print(f"exists {display(shp_path)}")
         return
@@ -132,32 +138,36 @@ def prepare_hydrolakes(data_dir: Path, force: bool, proxy: str = "") -> None:
     print(f"wrote {display(shp_path)}")
 
 
-def prepare_esa(data_dir: Path, force: bool, proxy: str = "") -> None:
-    out_dir = data_dir / "hunan_external_water" / "esa_worldcover"
+def prepare_esa(region: RegionConfig, force: bool, proxy: str = "") -> None:
+    out_dir = region.esa_worldcover_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    clip_path = out_dir / "hunan_esa_worldcover_clip.tif"
-    mask_path = out_dir / "hunan_esa_water_mask.tif"
+    clip_path = region.esa_worldcover_clip
+    mask_path = region.esa_water_mask
     if clip_path.exists() and mask_path.exists() and not force:
         print(f"exists {display(clip_path)}")
         print(f"exists {display(mask_path)}")
         return
     tile_paths = []
-    for tile in ESA_TILES:
+    for tile in region.esa_tiles:
         path = out_dir / f"ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
         download_file(ESA_TILE_URL.format(tile=tile), path, force=force, proxy=proxy)
         tile_paths.append(path)
-    clip_rasters(tile_paths, clip_path, hunan_geom(), force=True)
+    if region.external_raster_mode == "tiles":
+        print(f"wrote {len(tile_paths)} ESA WorldCover source tiles under {display(out_dir)}")
+        print("skip regional 10m mosaic; the browser reads intersecting source tiles on demand")
+        return
+    clip_rasters(tile_paths, clip_path, region_geom(region), force=True)
     build_esa_water_mask(clip_path, mask_path)
     print(f"wrote {display(clip_path)}")
     print(f"wrote {display(mask_path)}")
 
 
-def prepare_jrc(data_dir: Path, force: bool, proxy: str = "") -> None:
-    out_dir = data_dir / "hunan_external_water" / "jrc_gsw"
+def prepare_jrc(region: RegionConfig, force: bool, proxy: str = "") -> None:
+    out_dir = region.jrc_gsw_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     layers = {
-        "occurrence": out_dir / "hunan_jrc_occurrence_clip.tif",
-        "seasonality": out_dir / "hunan_jrc_seasonality_clip.tif",
+        "occurrence": region.jrc_occurrence,
+        "seasonality": region.jrc_seasonality,
     }
     if all(path.exists() for path in layers.values()) and not force:
         for path in layers.values():
@@ -165,18 +175,20 @@ def prepare_jrc(data_dir: Path, force: bool, proxy: str = "") -> None:
         return
     for layer, clip_path in layers.items():
         tile_paths = []
-        for tile in JRC_TILES:
+        for tile in region.jrc_tiles:
             path = out_dir / f"{layer}_{tile}v1_4_2021.tif"
             download_file(JRC_TILE_URL.format(layer=layer, tile=tile), path, force=force, proxy=proxy)
             tile_paths.append(path)
-        clip_rasters(tile_paths, clip_path, hunan_geom(), force=True)
+        if region.external_raster_mode == "tiles":
+            print(f"wrote {len(tile_paths)} JRC {layer} source tiles under {display(out_dir)}")
+            continue
+        clip_rasters(tile_paths, clip_path, region_geom(region), force=True)
         print(f"wrote {display(clip_path)}")
 
 
-def prepare_sentinel_tiles(data_dir: Path, force: bool) -> None:
-    out_dir = data_dir / "sentinel_2_tiles"
-    geojson_path = out_dir / "sentinel_2_index.geojson"
-    shp_path = out_dir / "sentinel_2_index_shapefile.shp"
+def prepare_sentinel_tiles(region: RegionConfig, force: bool) -> None:
+    out_dir = region.data_dir / "sentinel_2_tiles"
+    geojson_path, shp_path = region.sentinel_tile_index_paths
     if geojson_path.exists() and shp_path.exists() and not force:
         print(f"exists {display(geojson_path)}")
         print(f"exists {display(shp_path)}")
@@ -185,32 +197,30 @@ def prepare_sentinel_tiles(data_dir: Path, force: bool) -> None:
     run(cmd)
 
 
-def prepare_metadata(data_dir: Path, processed_dir: Path) -> None:
+def prepare_metadata(region: RegionConfig) -> None:
     require_paths(
         [
-            data_dir / "hunan_osm_water" / "hunan_water_raw.gpkg",
-            data_dir / "sentinel_2_tiles" / "sentinel_2_index.geojson",
-            data_dir / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp",
+            region.osm_water,
+            region.sentinel_tile_index_paths[0],
+            region.hydrolakes,
         ]
     )
     cmd = [
         sys.executable,
         str(PROJECT_ROOT / "scripts" / "build_lake_metadata.py"),
-        "--data-dir",
-        str(data_dir),
-        "--output-dir",
-        str(processed_dir),
+        "--region",
+        region.key,
     ]
     run(cmd)
 
 
-def prepare_metadata_if_possible(data_dir: Path, processed_dir: Path) -> None:
+def prepare_metadata_if_possible(region: RegionConfig) -> None:
     missing = [
         path
         for path in [
-            data_dir / "hunan_osm_water" / "hunan_water_raw.gpkg",
-            data_dir / "sentinel_2_tiles" / "sentinel_2_index.geojson",
-            data_dir / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp",
+            region.osm_water,
+            region.sentinel_tile_index_paths[0],
+            region.hydrolakes,
         ]
         if not path.exists()
     ]
@@ -219,7 +229,7 @@ def prepare_metadata_if_possible(data_dir: Path, processed_dir: Path) -> None:
         for path in missing:
             print(f"missing {display(path)}")
         return
-    prepare_metadata(data_dir, processed_dir)
+    prepare_metadata(region)
 
 
 def read_osm_water(gpkg: Path):
@@ -437,10 +447,12 @@ def run(cmd: list[str]) -> None:
     subprocess.run(cmd, cwd=PROJECT_ROOT, check=True)
 
 
-def hunan_geom():
+def region_geom(region: RegionConfig):
     from shapely.geometry import box
 
-    return box(*HUNAN_BOUNDS)
+    if not region.bounds:
+        raise ValueError(f"Region {region.key} has no configured bounds")
+    return box(*region.bounds)
 
 
 def display(path: Path) -> str:

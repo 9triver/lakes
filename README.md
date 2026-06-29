@@ -1,6 +1,6 @@
 # Lakes
 
-Local Web GIS prototype for browsing Hunan lake and reservoir imagery.
+Local Web GIS prototype for browsing regional lake and reservoir imagery.
 
 The app serves a lightweight browser UI backed by local GIS data:
 
@@ -19,16 +19,27 @@ layers.
 ```text
 lakes/
   src/lakes_browser/        Python server and static web UI
-  data/raw/                 Local data copies, ignored by Git
-  data/manifests/           Data inventory and setup notes
+  data/regions/<region>/    Region-scoped raw and processed data, ignored by Git
+  config/regions.toml       Region definitions and normalized data paths
   scripts/                  Local helper commands
 ```
 
 ## Data
 
-Large data is intentionally not tracked in Git. In this workspace, `data/raw` contains local copies of the browser data.
+Large data is intentionally not tracked in Git. Region data is organized under
+`data/regions/<region>/raw` and `data/regions/<region>/processed`.
 
-See `data/manifests/hunan_browser_data.md` for the expected files.
+Each processed region directory contains the metadata and user-managed browser
+state for that region:
+
+- `lake_metadata.gpkg`
+- `lake_metadata.csv`
+- `esa_polygons/`
+- `jrc_polygons/`
+- `sentinel_products.csv`
+- `active_imagery.json`
+- `training_samples.csv`
+- `training_labels/`
 
 ## Run
 
@@ -53,16 +64,24 @@ http://127.0.0.1:8765
 
 ## Build Metadata
 
-Generate the unified Hunan lake metadata table:
+Generate the lake metadata table for a configured region:
 
 ```bash
-PYTHONPATH=src python scripts/build_lake_metadata.py
+PYTHONPATH=src python scripts/build_lake_metadata.py --region hunan
+PYTHONPATH=src python scripts/build_lake_metadata.py --region gansu
 ```
 
 Outputs:
 
-- `data/processed/hunan_lake_metadata.gpkg`
-- `data/processed/hunan_lake_metadata.csv`
+- `data/regions/<region>/processed/lake_metadata.gpkg`
+- `data/regions/<region>/processed/lake_metadata.csv`
+
+To prepare raw data and then build metadata:
+
+```bash
+PYTHONPATH=src python scripts/prepare_data.py --region hunan all
+PYTHONPATH=src python scripts/prepare_data.py --region gansu all
+```
 
 ## Sentinel Download
 
@@ -70,6 +89,7 @@ The Lakes repo has its own Copernicus query/download helper:
 
 ```bash
 PYTHONPATH=src python scripts/download_sentinel.py query \
+  --region hunan \
   --tile 49RFN \
   --start 2025-06-01 \
   --end 2025-08-31 \
@@ -80,6 +100,7 @@ Download one product from the query output:
 
 ```bash
 PYTHONPATH=src python scripts/download_sentinel.py download \
+  --region hunan \
   --product-id PRODUCT_UUID \
   --name PRODUCT_NAME.SAFE \
   --cloud-cover 12.3

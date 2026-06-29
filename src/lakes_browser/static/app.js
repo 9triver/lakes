@@ -1,4 +1,6 @@
 const state = {
+  region: "hunan",
+  regions: [],
   lakes: [],
   activeId: null,
   tileMeta: null,
@@ -11,6 +13,7 @@ const state = {
   filters: {},
   metaParts: {},
   imagery: null,
+  localLabels: [],
   trainingReady: null,
   trainingSamples: [],
   sidebarMode: "lakes",
@@ -19,6 +22,7 @@ const state = {
 
 const tabLakesEl = document.querySelector("#tab-lakes");
 const tabTrainingEl = document.querySelector("#tab-training");
+const regionSelectEl = document.querySelector("#region-select");
 const lakeSidebarPanelEl = document.querySelector("#lake-sidebar-panel");
 const trainingSidebarPanelEl = document.querySelector("#training-sidebar-panel");
 const listEl = document.querySelector("#lake-list");
@@ -49,6 +53,8 @@ const toggleContextOsmEl = document.querySelector("#toggle-context-osm");
 const toggleContextHydroEl = document.querySelector("#toggle-context-hydro");
 const toggleEsaEl = document.querySelector("#toggle-esa");
 const toggleJrcEl = document.querySelector("#toggle-jrc");
+const toggleLocalLabelEl = document.querySelector("#toggle-local-label");
+const localLabelSelectEl = document.querySelector("#local-label-select");
 const jrcThresholdEl = document.querySelector("#jrc-threshold");
 const jrcThresholdValueEl = document.querySelector("#jrc-threshold-value");
 const sentinelPanelEl = document.querySelector("#sentinel-panel");
@@ -86,6 +92,7 @@ const vectorSources = {
   contextHydrolakes: new ol.source.Vector(),
   esa: new ol.source.Vector(),
   jrc: new ol.source.Vector(),
+  localLabel: new ol.source.Vector(),
 };
 const vectorLayers = {
   tileGrid: new ol.layer.Vector({ source: vectorSources.tileGrid, style: tileGridStyle }),
@@ -95,6 +102,7 @@ const vectorLayers = {
   contextHydrolakes: new ol.layer.Vector({ source: vectorSources.contextHydrolakes, style: polygonStyle("#b28b00", "rgba(255, 212, 71, 0.06)", [6, 5], 1.4) }),
   esa: new ol.layer.Vector({ source: vectorSources.esa, style: polygonStyle("#ff4fb3", "rgba(255, 79, 179, 0.30)") }),
   jrc: new ol.layer.Vector({ source: vectorSources.jrc, style: polygonStyle("#1ab878", "rgba(44, 214, 137, 0.24)") }),
+  localLabel: new ol.layer.Vector({ source: vectorSources.localLabel, style: polygonStyle("#ffffff", "rgba(0, 0, 0, 0.08)", [8, 4], 2.5) }),
 };
 const map = new ol.Map({
   target: mapEl,
@@ -107,6 +115,7 @@ const map = new ol.Map({
     vectorLayers.hydrolakes,
     vectorLayers.esa,
     vectorLayers.jrc,
+    vectorLayers.localLabel,
   ],
   view: new ol.View({
     center: ol.proj.fromLonLat([112.5, 28.8]),
@@ -161,6 +170,74 @@ async function deleteJson(url) {
   return data;
 }
 
+function apiPath(path) {
+  return apiPathFor(state.region, path);
+}
+
+function apiPathFor(region, path) {
+  return `/api/regions/${encodeURIComponent(region)}${path}`;
+}
+
+async function loadRegions() {
+  const payload = await fetchJson("/api/regions");
+  state.regions = payload.items || [];
+  state.region = payload.default || state.regions[0]?.key || state.region;
+  renderRegions();
+  resetSelection();
+}
+
+function renderRegions() {
+  regionSelectEl.replaceChildren();
+  for (const region of state.regions) {
+    const option = document.createElement("option");
+    option.value = region.key;
+    option.textContent = region.ready ? region.name : `${region.name}（未准备）`;
+    option.selected = region.key === state.region;
+    regionSelectEl.append(option);
+  }
+}
+
+function currentRegion() {
+  return state.regions.find((region) => region.key === state.region);
+}
+
+async function switchRegion(regionKey) {
+  if (!regionKey || regionKey === state.region) return;
+  state.region = regionKey;
+  state.downloadJobs.clear();
+  resetSelection();
+  await loadLakes();
+  if (state.sidebarMode === "training") await loadTrainingSamples();
+  const region = currentRegion();
+  if (region?.bounds) fitToBounds(region.bounds);
+}
+
+function resetSelection() {
+  state.activeId = null;
+  state.tileMeta = null;
+  state.lake = null;
+  state.loadingId = null;
+  state.metaParts = {};
+  state.imagery = null;
+  state.localLabels = [];
+  state.trainingReady = null;
+  rasterLayer.setSource(null);
+  clearVectorLayers();
+  sentinelPanelEl.hidden = true;
+  trainingPanelEl.hidden = true;
+  sentinelProductsEl.replaceChildren();
+  imageryProductEl.replaceChildren();
+  resetLocalLabelSelect();
+  renderTrainingReadiness();
+  const region = currentRegion();
+  titleEl.textContent = "选择一个湖泊";
+  subtitleEl.textContent = region?.name ? `${region.name}水体和外部标注会在这里显示` : "可见光影像和 polygon 会在这里显示";
+  metaEl.textContent = region?.load_error || "";
+  emptyEl.hidden = false;
+  mapEl.hidden = false;
+  setLoading(false);
+}
+
 async function loadLakes({ append = false } = {}) {
   if (!append) {
     state.offset = 0;
@@ -175,18 +252,21 @@ async function loadLakes({ append = false } = {}) {
   for (const [key, value] of Object.entries(state.filters)) {
     if (value) params.set(key, value);
   }
-  const payload = await fetchJson(`/api/lakes?${params.toString()}`);
+  const payload = await fetchJson(apiPath(`/lakes?${params.toString()}`));
   state.total = payload.total;
   state.lakes = append ? state.lakes.concat(payload.items) : payload.items;
   state.offset = state.lakes.length;
-  countEl.textContent = `${payload.total} 个湖泊，显示 ${state.lakes.length} 个`;
-  loadMoreEl.hidden = state.lakes.length >= payload.total;
+  const region = currentRegion();
+  countEl.textContent = region?.load_error
+    ? region.load_error
+    : `${payload.total} 个湖泊，显示 ${state.lakes.length} 个`;
+  loadMoreEl.hidden = state.sidebarMode === "training" || state.lakes.length >= payload.total;
   renderList();
 }
 
 async function loadTrainingSamples() {
   trainingSummaryEl.textContent = "训练集加载中";
-  const payload = await fetchJson("/api/training-samples");
+  const payload = await fetchJson(apiPath("/training-samples"));
   state.trainingSamples = payload.items || [];
   const bad = state.trainingSamples.filter((item) => item.status !== "ok").length;
   trainingSummaryEl.textContent = bad
@@ -251,7 +331,7 @@ function renderTrainingSamples() {
         <div class="badge">${escapeHtml(sample.status === "ok" ? "ok" : "缺文件")}</div>
       </div>
       <div class="training-meta-line">${escapeHtml(sample.label_source || "")}${sample.label_threshold ? ` ${escapeHtml(sample.label_threshold)}` : ""} · ${escapeHtml(formatLabelScope(sample.label_scope))} · ${escapeHtml(formatMaskPolicy(sample.mask_policy))}</div>
-      <div class="training-meta-line">${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(sample.product_date || "")}</div>
+      <div class="training-meta-line">${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(formatImageryAssetLabels(sample.imagery_asset_labels || sample.imagery_asset_label))} · ${escapeHtml(sample.product_date || "")}</div>
       <div class="training-meta-line" title="${escapeHtml(sample.sample_id || "")}">${escapeHtml(sample.sample_id || "")}</div>
     `;
     const edit = document.createElement("div");
@@ -302,13 +382,13 @@ function makeSelect(values, selected) {
 }
 
 async function updateTrainingSample(sampleId, payload) {
-  await patchJson(`/api/training-samples/${encodeURIComponent(sampleId)}`, payload);
+  await patchJson(apiPath(`/training-samples/${encodeURIComponent(sampleId)}`), payload);
   await loadTrainingSamples();
 }
 
 async function deleteTrainingSample(sampleId) {
   if (!confirm("删除这个训练样本记录？")) return;
-  await deleteJson(`/api/training-samples/${encodeURIComponent(sampleId)}`);
+  await deleteJson(apiPath(`/training-samples/${encodeURIComponent(sampleId)}`));
   await loadTrainingSamples();
 }
 
@@ -317,6 +397,7 @@ async function selectLake(shapeId) {
   state.loadingId = shapeId;
   state.metaParts = {};
   state.imagery = null;
+  state.localLabels = [];
   state.trainingReady = null;
   renderTrainingReadiness();
   state.tileMeta = null;
@@ -324,6 +405,7 @@ async function selectLake(shapeId) {
   trainingPanelEl.hidden = true;
   sentinelProductsEl.replaceChildren();
   imageryProductEl.replaceChildren();
+  resetLocalLabelSelect();
   clearVectorLayers();
   renderList();
   titleEl.textContent = `水体 ${shapeId}`;
@@ -333,7 +415,7 @@ async function selectLake(shapeId) {
   mapEl.hidden = false;
   map.updateSize();
 
-  const lake = await fetchJson(`/api/lakes/${shapeId}`);
+  const lake = await fetchJson(apiPath(`/lakes/${shapeId}`));
   if (state.activeId !== shapeId) return;
   state.lake = lake;
   titleEl.textContent = lake.display_name || lake.name || `水体 ${lake.object_id}`;
@@ -357,16 +439,17 @@ async function selectLake(shapeId) {
   loadContextWaterLayer(shapeId).catch(showError);
   loadEsaLayer(shapeId).catch(showError);
   loadJrcLayer(shapeId).catch(showError);
+  loadLocalLabels(shapeId).catch(showError);
 }
 
 async function loadTileLayer(shapeId, lake) {
   setLoading(true, "加载影像瓦片");
-  const payload = await fetchJson(`/api/lakes/${shapeId}/tile-meta?padding=0.8&v=${Date.now()}`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/tile-meta?padding=0.8&v=${Date.now()}`));
   if (state.activeId !== shapeId) return;
   state.tileMeta = payload;
   rasterLayer.setSource(
     new ol.source.XYZ({
-      url: `/api/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`,
+      url: apiPath(`/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`),
       tileSize: 256,
       minZoom: 5,
       maxZoom: 16,
@@ -391,7 +474,7 @@ function isMissingTciError(error) {
 }
 
 async function loadContextWaterLayer(shapeId) {
-  const payload = await fetchJson(`/api/lakes/${shapeId}/context-water?padding=0.8&min_area_km2=10&limit=500`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/context-water?padding=0.8&min_area_km2=10&limit=500`));
   if (state.activeId !== shapeId) return;
   addFeatureCollection("contextOsm", payload.sources?.osm);
   addFeatureCollection("contextHydrolakes", payload.sources?.hydrolakes);
@@ -404,7 +487,7 @@ async function loadContextWaterLayer(shapeId) {
 async function loadEsaLayer(shapeId) {
   state.metaParts.esa = "ESA 平滑边界生成中";
   renderMeta();
-  const payload = await fetchJson(`/api/lakes/${shapeId}/esa`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/esa`));
   if (!state.lake || state.activeId !== shapeId) return;
   if (!payload.esa || !payload.esa.geometry) {
     const reason = payload.esa?.properties?.reason;
@@ -429,7 +512,7 @@ async function loadJrcLayer(shapeId) {
   }
   state.metaParts.jrc = `JRC ${threshold}% 边界生成中`;
   renderMeta();
-  const payload = await fetchJson(`/api/lakes/${shapeId}/jrc?threshold=${threshold}`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/jrc?threshold=${threshold}`));
   if (!state.lake || state.activeId !== shapeId) return;
   if (!payload.jrc || !payload.jrc.geometry) {
     const reason = payload.jrc?.properties?.reason || (payload.jrc?.properties?.empty ? "无匹配水体" : "");
@@ -456,8 +539,69 @@ async function loadJrcLayer(shapeId) {
   renderMeta();
 }
 
+async function loadLocalLabels(shapeId) {
+  resetLocalLabelSelect();
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/local-labels`));
+  if (state.activeId !== shapeId) return;
+  state.localLabels = payload.items || [];
+  renderLocalLabelOptions();
+  const first = state.localLabels[0];
+  if (first) {
+    localLabelSelectEl.value = first.id;
+    await loadSelectedLocalLabel(shapeId);
+  } else {
+    state.metaParts.localLabel = "本地水体标注：无";
+    renderMeta();
+  }
+}
+
+async function loadSelectedLocalLabel(shapeId = state.activeId) {
+  vectorSources.localLabel.clear();
+  if (!shapeId || !localLabelSelectEl.value) {
+    vectorLayers.localLabel.setVisible(false);
+    return;
+  }
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/local-labels/${encodeURIComponent(localLabelSelectEl.value)}`));
+  if (state.activeId !== shapeId) return;
+  addFeatureCollection("localLabel", payload.geojson);
+  const count = payload.geojson?.features?.length || 0;
+  state.metaParts.localLabel = `本地水体标注 ${payload.label?.name || ""} (${count})`;
+  renderMeta();
+}
+
+function renderLocalLabelOptions() {
+  localLabelSelectEl.replaceChildren();
+  localLabelSelectEl.disabled = state.localLabels.length === 0;
+  if (!state.localLabels.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "无本地标注";
+    localLabelSelectEl.append(option);
+    return;
+  }
+  for (const item of state.localLabels) {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.date ? `${item.date} ${item.name}` : item.name;
+    option.title = item.path || item.name;
+    localLabelSelectEl.append(option);
+  }
+}
+
+function resetLocalLabelSelect() {
+  state.localLabels = [];
+  vectorSources.localLabel.clear();
+  localLabelSelectEl.replaceChildren();
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = "无本地标注";
+  localLabelSelectEl.append(option);
+  localLabelSelectEl.disabled = true;
+  delete state.metaParts.localLabel;
+}
+
 async function loadSentinelTiles(shapeId) {
-  const payload = await fetchJson(`/api/lakes/${shapeId}/sentinel/tiles`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/sentinel/tiles`));
   if (state.activeId !== shapeId) return;
   renderTileGrid(payload.tiles || []);
   sentinelTileEl.replaceChildren();
@@ -491,7 +635,7 @@ function renderTileGrid(tiles) {
 }
 
 async function loadImageryOptions(shapeId) {
-  const payload = await fetchJson(`/api/lakes/${shapeId}/imagery`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/imagery`));
   if (state.activeId !== shapeId) return;
   state.imagery = payload;
   trainingPanelEl.hidden = false;
@@ -516,7 +660,7 @@ function renderImageryOptions() {
   for (const product of products) {
     const option = document.createElement("option");
     option.value = product.product;
-    option.textContent = `${product.active ? "当前，" : ""}时间: ${formatDateText(product.date)}，云量 ${formatCloud(product.cloud_cover)}`;
+    option.textContent = formatImageryOptionText(product);
     imageryProductEl.append(option);
     if (product.active) imageryProductEl.value = product.product;
   }
@@ -526,7 +670,7 @@ function renderImageryOptions() {
 async function loadTrainingReadiness(shapeId) {
   state.trainingReady = null;
   renderTrainingReadiness();
-  const payload = await fetchJson(`/api/lakes/${shapeId}/training-samples/readiness?buffer_ratio=0.8`);
+  const payload = await fetchJson(apiPath(`/lakes/${shapeId}/training-samples/readiness?buffer_ratio=0.8`));
   if (state.activeId !== shapeId) return;
   state.trainingReady = payload;
   renderTrainingReadiness();
@@ -542,7 +686,8 @@ function renderTrainingReadiness() {
   trainingSaveEl.disabled = !ready.ready;
   if (ready.ready) {
     const tiles = (ready.required_tiles || []).join(", ");
-    trainingStatusEl.textContent = `训练区域完备：${ready.ready_count}/${ready.required_count} 个 tile 已设为影像；${tiles}`;
+    const assets = formatImageryAssetLabels((ready.products || []).map((item) => item.asset_label || item.asset_type));
+    trainingStatusEl.textContent = `训练区域完备：${ready.ready_count}/${ready.required_count} 个 tile 已设为影像；${assets}；${tiles}`;
     return;
   }
   const missing = (ready.missing_tiles || []).join(", ");
@@ -571,7 +716,7 @@ async function saveTrainingSample() {
   trainingStatusEl.textContent = "保存中";
   const labelSource = trainingLabelSourceEl.value;
   try {
-    const payload = await postJson(`/api/lakes/${state.activeId}/training-samples`, {
+    const payload = await postJson(apiPath(`/lakes/${state.activeId}/training-samples`), {
       label_source: labelSource,
       label_threshold: labelSource === "jrc" ? trainingJrcThresholdEl.value : "",
       label_scope: trainingLabelScopeEl.value,
@@ -594,7 +739,7 @@ async function applyImagerySelection() {
   imageryApplyEl.disabled = true;
   setLoading(true, "切换影像瓦片");
   try {
-    await postJson(`/api/lakes/${state.activeId}/imagery/active`, {
+    await postJson(apiPath(`/lakes/${state.activeId}/imagery/active`), {
       tile: sentinelTileEl.value,
       product: imageryProductEl.value,
     });
@@ -623,7 +768,7 @@ async function querySentinelProducts() {
     limit: "50",
   });
   try {
-    const payload = await fetchJson(`/api/sentinel/products?${params.toString()}`);
+    const payload = await fetchJson(apiPath(`/sentinel/products?${params.toString()}`));
     renderSentinelProducts(payload.products);
   } finally {
     sentinelQueryEl.disabled = false;
@@ -661,20 +806,20 @@ function renderSentinelProducts(products) {
 async function startSentinelDownload(product, button) {
   button.disabled = true;
   button.textContent = "排队中";
-  const job = await postJson("/api/sentinel/downloads", { product });
+  const job = await postJson(apiPath("/sentinel/downloads"), { product });
   if (!job.job_id) {
     button.textContent = job.message || "已下载";
     await loadImageryOptions(state.activeId);
     return;
   }
-  state.downloadJobs.set(job.job_id, { button, product });
+  state.downloadJobs.set(job.job_id, { button, product, region: state.region });
   pollDownloadJob(job.job_id).catch(showError);
 }
 
 async function pollDownloadJob(jobId) {
   const entry = state.downloadJobs.get(jobId);
   if (!entry) return;
-  const job = await fetchJson(`/api/sentinel/downloads/${jobId}`);
+  const job = await fetchJson(apiPathFor(entry.region, `/sentinel/downloads/${jobId}`));
   entry.button.textContent = job.status === "downloading" ? `${job.progress || 0}%` : statusLabel(job.status);
   if (job.status === "completed") {
     entry.button.textContent = "已下载";
@@ -765,6 +910,7 @@ function layerVisible(layerName) {
   if (layerName === "contextHydrolakes") return toggleContextHydroEl.checked;
   if (layerName === "esa") return toggleEsaEl.checked;
   if (layerName === "jrc") return toggleJrcEl.checked;
+  if (layerName === "localLabel") return toggleLocalLabelEl.checked;
   return true;
 }
 
@@ -792,6 +938,38 @@ function formatProductList(value) {
     })
     .filter(Boolean)
     .join(", ");
+}
+
+function formatImageryOptionText(product) {
+  const parts = [];
+  if (product.active) parts.push("当前");
+  parts.push(product.asset_label || formatImageryAssetType(product.asset_type || product.source));
+  parts.push(`时间: ${formatDateText(product.date)}`);
+  if (product.asset_type === "lake_native") {
+    parts.push(`有效 ${formatPercent(product.valid_ratio)}`);
+  } else {
+    parts.push(`云量 ${formatCloud(product.cloud_cover)}`);
+    parts.push(`非0 ${formatPercent(product.valid_ratio)}`);
+  }
+  return parts.join("，");
+}
+
+function formatImageryAssetType(value) {
+  const text = String(value || "").trim();
+  if (text === "lake_native" || text === "local_img") return "本体影像";
+  if (text === "preloaded_tile" || text === "preloaded") return "预置 Sentinel tile";
+  if (text === "sentinel_tile" || text === "user_download") return "已下载 Sentinel tile";
+  return text || "影像";
+}
+
+function formatImageryAssetLabels(value) {
+  const labels = Array.isArray(value) ? value : String(value || "").split(",");
+  const unique = [];
+  for (const item of labels) {
+    const label = formatImageryAssetType(item);
+    if (label && !unique.includes(label)) unique.push(label);
+  }
+  return unique.join(" + ") || "影像";
 }
 
 function formatCloud(value) {
@@ -842,7 +1020,7 @@ function setLoading(visible, text = "加载中") {
 }
 
 function renderMeta() {
-  metaEl.textContent = [state.metaParts.base, state.metaParts.esa, state.metaParts.jrc, state.metaParts.sentinel]
+  metaEl.textContent = [state.metaParts.base, state.metaParts.context, state.metaParts.esa, state.metaParts.jrc, state.metaParts.localLabel, state.metaParts.sentinel]
     .filter(Boolean)
     .join(" | ");
 }
@@ -922,6 +1100,10 @@ for (const select of [filterTypeEl, filterAreaEl, filterNameEl, filterTciEl, fil
   });
 }
 
+regionSelectEl.addEventListener("change", () => {
+  switchRegion(regionSelectEl.value).catch(showError);
+});
+
 loadMoreEl.addEventListener("click", () => {
   loadMoreEl.disabled = true;
   loadLakes({ append: true })
@@ -943,11 +1125,16 @@ for (const [checkbox, layerName] of [
   [toggleContextHydroEl, "contextHydrolakes"],
   [toggleEsaEl, "esa"],
   [toggleJrcEl, "jrc"],
+  [toggleLocalLabelEl, "localLabel"],
 ]) {
   checkbox.addEventListener("change", () => {
     vectorLayers[layerName].setVisible(checkbox.checked);
   });
 }
+
+localLabelSelectEl.addEventListener("change", () => {
+  loadSelectedLocalLabel().catch(showError);
+});
 
 jrcThresholdEl.addEventListener("input", () => {
   jrcThresholdValueEl.textContent = `${jrcThresholdEl.value}%`;
@@ -1015,4 +1202,6 @@ function showError(error) {
   metaEl.textContent = error.message;
 }
 
-loadLakes().catch(showError);
+loadRegions()
+  .then(() => loadLakes())
+  .catch(showError);

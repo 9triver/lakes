@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>湖南湖泊工作台</title>
+    <title>湖泊工作台</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.6.1/ol.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
@@ -11,7 +11,10 @@
     <main class="app">
       <aside class="sidebar">
         <div class="sidebar-head">
-          <h1>湖南湖泊</h1>
+          <div class="brand-row">
+            <h1>湖泊工作台</h1>
+            <select id="region-select" aria-label="省份"></select>
+          </div>
           <div class="sidebar-tabs" role="tablist" aria-label="侧栏视图">
             <button id="tab-lakes" type="button" class="active">湖泊</button>
             <button id="tab-training" type="button">训练集</button>
@@ -86,6 +89,10 @@
             <label><input id="toggle-context-hydro" type="checkbox" checked /> 其他 HydroLAKES</label>
             <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
             <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
+            <label><input id="toggle-local-label" type="checkbox" checked /> 本地水体标注</label>
+            <select id="local-label-select" class="layer-select" aria-label="本地水体标注" disabled>
+              <option value="">无本地标注</option>
+            </select>
             <label class="slider-tool">
               JRC 阈值
               <input id="jrc-threshold" type="range" min="1" max="100" step="1" value="75" />

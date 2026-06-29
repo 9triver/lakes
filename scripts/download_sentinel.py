@@ -6,8 +6,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from lakes_browser.sentinel_download import (
     download_copernicus_product,
@@ -18,16 +23,15 @@ from lakes_browser.sentinel_download import (
     upsert_csv_row,
     valid_ratio_for_tci,
 )
+from lakes_browser.region_config import load_region_configs
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data" / "raw"
-DEFAULT_OUT_DIR = DATA_DIR / "hunan_single_tiles" / "products"
-DEFAULT_INDEX = PROJECT_ROOT / "data" / "processed" / "sentinel_products.csv"
+REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     query = subparsers.add_parser("query", help="query Copernicus products by Sentinel tile")
@@ -43,8 +47,8 @@ def main() -> None:
     download.add_argument("--product-id", required=True, help="Copernicus product UUID")
     download.add_argument("--name", required=True, help="product SAFE name")
     download.add_argument("--cloud-cover", default="", help="cloud cover value to record in local index")
-    download.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="SAFE output directory")
-    download.add_argument("--index", type=Path, default=DEFAULT_INDEX, help="local downloaded product CSV index")
+    download.add_argument("--out-dir", type=Path, default=None, help="SAFE output directory")
+    download.add_argument("--index", type=Path, default=None, help="local downloaded product CSV index")
     download.add_argument("--env", type=Path, default=None, help="optional .env file with Copernicus credentials")
 
     args = parser.parse_args()
@@ -62,6 +66,9 @@ def main() -> None:
         else:
             print_products(products)
     elif args.command == "download":
+        region = REGIONS[args.region]
+        out_dir = args.out_dir or region.sentinel_download_dir
+        index_path = args.index or region.user_sentinel_index
         product = {
             "product_id": args.product_id,
             "name": args.name,
@@ -77,7 +84,7 @@ def main() -> None:
                 print(f"downloading {pct}% ({done}/{total or '?'})", flush=True)
                 last_pct = pct
 
-        safe_dir, tci_path = download_copernicus_product(product, args.out_dir, progress=progress, env_path=args.env)
+        safe_dir, tci_path = download_copernicus_product(product, out_dir, progress=progress, env_path=args.env)
         row = {
             "product_id": args.product_id,
             "product_name": args.name,
@@ -92,7 +99,7 @@ def main() -> None:
             "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "valid_ratio": valid_ratio_for_tci(tci_path),
         }
-        upsert_csv_row(args.index, row, key="product_name")
+        upsert_csv_row(index_path, row, key="product_name")
         print(json.dumps(row, ensure_ascii=False, indent=2))
 
 

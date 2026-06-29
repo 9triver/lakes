@@ -1,0 +1,111 @@
+default = "hunan"
+
+[regions.hunan]
+name = "湖南省"
+data_dir = "data/regions/hunan/raw"
+processed_dir = "data/regions/hunan/processed"
+cache_dir = "data/cache/hunan"
+bounds = [108.5, 24.5, 114.5, 30.3]
+metadata_source = "osm"
+uid_prefix = "hunan"
+geofabrik = "https://download.geofabrik.de/asia/china/hunan-latest-free.gpkg.zip"
+esa_tiles = ["N24E108", "N24E111", "N24E114", "N27E108", "N27E111", "N27E114", "N30E108", "N30E111", "N30E114"]
+jrc_tiles = ["100E_30N", "110E_30N"]
+
+[regions.gansu]
+name = "甘肃省"
+data_dir = "data/regions/gansu/raw"
+processed_dir = "data/regions/gansu/processed"
+cache_dir = "data/cache/gansu"
+bounds = [92.2, 32.1, 108.8, 42.8]
+metadata_source = "img_bounds"
+uid_prefix = "gansu"
+geofabrik = "https://download.geofabrik.de/asia/china/gansu-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+source_img_root = "data/regions/gansu/raw/local_imagery/gansu20260605_mu"
+esa_tiles = [
+  "N30E090",
+  "N30E093",
+  "N30E096",
+  "N30E099",
+  "N30E102",
+  "N30E105",
+  "N30E108",
+  "N33E090",
+  "N33E093",
+  "N33E096",
+  "N33E099",
+  "N33E102",
+  "N33E105",
+  "N33E108",
+  "N36E090",
+  "N36E093",
+  "N36E096",
+  "N36E099",
+  "N36E102",
+  "N36E105",
+  "N36E108",
+  "N39E090",
+  "N39E093",
+  "N39E096",
+  "N39E099",
+  "N39E102",
+  "N39E105",
+  "N39E108",
+  "N42E090",
+  "N42E093",
+  "N42E096",
+  "N42E099",
+  "N42E102",
+  "N42E105",
+  "N42E108",
+]
+jrc_tiles = ["90E_40N", "100E_40N", "90E_30N", "100E_30N"]
+
+[regions.shaanxi]
+name = "陕西省"
+data_dir = "data/regions/shaanxi/raw"
+processed_dir = "data/regions/shaanxi/processed"
+cache_dir = "data/cache/shaanxi"
+bounds = [105.3, 31.6, 111.4, 39.6]
+metadata_source = "img_bounds"
+uid_prefix = "shaanxi"
+geofabrik = "https://download.geofabrik.de/asia/china/shaanxi-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+source_img_root = "data/regions/shaanxi/raw/local_imagery/shanxi20260605_wuhaiman"
+esa_tiles = [
+  "N30E105",
+  "N30E108",
+  "N30E111",
+  "N33E105",
+  "N33E108",
+  "N33E111",
+  "N36E105",
+  "N36E108",
+  "N36E111",
+  "N39E105",
+  "N39E108",
+  "N39E111",
+]
+jrc_tiles = ["100E_30N", "100E_40N", "110E_30N", "110E_40N"]
+
+[regions.yunnan]
+name = "云南省"
+data_dir = "data/regions/yunnan/raw"
+processed_dir = "data/regions/yunnan/processed"
+cache_dir = "data/cache/yunnan"
+bounds = [97.4, 23.7, 100.1, 29.1]
+metadata_source = "img_bounds"
+uid_prefix = "yunnan"
+geofabrik = "https://download.geofabrik.de/asia/china/yunnan-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+source_img_root = "data/regions/yunnan/raw/local_imagery/yunnan20260610_lishuaijie"
+esa_tiles = [
+  "N21E096",
+  "N21E099",
+  "N24E096",
+  "N24E099",
+  "N27E096",
+  "N27E099",
+]
+jrc_tiles = ["90E_30N", "100E_30N"]
