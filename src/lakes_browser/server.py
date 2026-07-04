@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import pyogrio
 import rasterio
+from affine import Affine
 from PIL import Image
 from pyproj import Transformer
 from rasterio.enums import Resampling
@@ -41,7 +42,7 @@ from rasterio.features import shapes
 from rasterio.mask import mask
 from rasterio.merge import merge
 from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.windows import from_bounds
+from rasterio.windows import from_bounds, transform as window_transform
 from rasterio.warp import reproject, transform_bounds, transform_geom as rasterio_transform_geom
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import unary_union
@@ -66,9 +67,17 @@ WORKSPACE_ROOT = PROJECT_ROOT.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 WEB_MERCATOR_LIMIT = 20037508.342789244
+TILE_RENDER_SEMAPHORE = threading.BoundedSemaphore(max(1, int(os.environ.get("LAKES_TILE_RENDER_WORKERS", "1"))))
+MODEL_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(1)
+MODEL_VALIDATION_SEMAPHORE = threading.BoundedSemaphore(1)
+MODEL_VALIDATION_MAX_DIM = max(256, int(os.environ.get("LAKES_MODEL_VALIDATION_MAX_DIM", "2048")))
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
+
+
+class ModelInferenceBusy(RuntimeError):
+    """Raised when a model inference request is already running."""
 
 
 @dataclass
@@ -659,6 +668,7 @@ class LakeCatalog:
             label = f"{path.parent.name}/{path.name}" if not legacy else f"旧目录 / {path.parent.name}/{path.name}"
             try:
                 model = load_unet_checkpoint(path)
+                metadata = model_training_metadata(path, self.region.key)
                 item = {
                     "key": key,
                     "label": label,
@@ -671,6 +681,7 @@ class LakeCatalog:
                     "scope": self.region.key,
                     "legacy": legacy,
                     "default": path.resolve() == default_path.resolve(),
+                    **metadata,
                 }
             except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
                 item = {
@@ -692,6 +703,7 @@ class LakeCatalog:
             label = f"全部区域 / {path.parent.name}/{path.name}"
             try:
                 model = load_unet_checkpoint(path)
+                metadata = model_training_metadata(path, "all")
                 item = {
                     "key": key,
                     "label": label,
@@ -704,6 +716,7 @@ class LakeCatalog:
                     "scope": "all",
                     "legacy": False,
                     "default": False,
+                    **metadata,
                 }
             except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
                 item = {
@@ -718,8 +731,9 @@ class LakeCatalog:
                     "default": False,
                 }
             items.append(item)
-        if not default_key and items:
-            default_key = items[0]["key"]
+        items.sort(key=model_sort_key)
+        if items:
+            default_key = next((item["key"] for item in items if not item.get("error")), items[0]["key"])
         return {"region": self.region.key, "default": default_key, "items": items}
 
     def model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
@@ -733,6 +747,8 @@ class LakeCatalog:
                 continue
             try:
                 prediction = self.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+            except ModelInferenceBusy:
+                raise
             except Exception as exc:  # noqa: BLE001 - keep looking for a usable random validation target.
                 skipped.append(f"{lake.object_id}: {type(exc).__name__}: {exc}")
                 continue
@@ -764,14 +780,20 @@ class LakeCatalog:
         if not rows:
             raise FileNotFoundError(f"No active imagery matching model bands for lake {lake.object_id}")
         rows = sorted(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
-        cache_path = self._model_prediction_cache_path(lake, model.path, rows, threshold)
+        prediction_bounds = padded_bounds(lake.bbox, 0.8)
+        cache_path = self._model_prediction_cache_path(lake, model.path, rows, threshold, prediction_bounds)
         if cache_path.exists():
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
             payload["cached"] = True
             return payload
 
         row = rows[0]
-        prediction, stats = predict_water_geojson(row["tci_path"], model, threshold=threshold)
+        if not MODEL_INFERENCE_SEMAPHORE.acquire(blocking=False):
+            raise ModelInferenceBusy("模型推理正在运行，请稍后再试")
+        try:
+            prediction, stats = predict_water_geojson(row["tci_path"], model, threshold=threshold, bounds=prediction_bounds)
+        finally:
+            MODEL_INFERENCE_SEMAPHORE.release()
         payload = {
             "region": self.region.key,
             "lake_id": lake.object_id,
@@ -864,10 +886,18 @@ class LakeCatalog:
         except ValueError:
             return self.region.processed_dir / "model_predictions" / "legacy" / model_path.parent.name
 
-    def _model_prediction_cache_path(self, lake: LakeRecord, model_path: Path, rows: list[dict], threshold: float) -> Path:
+    def _model_prediction_cache_path(
+        self,
+        lake: LakeRecord,
+        model_path: Path,
+        rows: list[dict],
+        threshold: float,
+        prediction_bounds: tuple[float, float, float, float],
+    ) -> Path:
         payload = {
             "lake_id": lake.object_id,
             "threshold": round(float(threshold), 4),
+            "bounds": [round(value, 8) for value in prediction_bounds],
             "model": display_path(model_path),
             "model_mtime": model_path.stat().st_mtime,
             "rows": [
@@ -2011,19 +2041,76 @@ def water_polygons_from_raster(path: Path, clip_geom, target_geom, water_mask_fn
     return geoms
 
 
-def predict_water_geojson(path: Path, model, threshold: float = 0.5) -> tuple[dict, dict]:
+def predict_water_geojson(
+    path: Path,
+    model,
+    threshold: float = 0.5,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> tuple[dict, dict]:
     threshold = float(threshold)
     with rasterio.open(path) as src:
         if src.count < model.in_channels:
             raise ValueError(f"Raster has {src.count} bands, model needs {model.in_channels}: {display_path(path)}")
-        image = src.read(indexes=list(range(1, model.in_channels + 1))).astype(np.float32)
+        window = None
+        if bounds is not None:
+            source_bounds = bounds
+            if src.crs and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
+                source_bounds = transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=21)
+            raster_bounds = (src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top)
+            if not boxes_intersect(source_bounds, raster_bounds):
+                stats = {
+                    "threshold": threshold,
+                    "valid_pixels": 0,
+                    "predicted_pixels": 0,
+                    "predicted_ratio": 0.0,
+                    "polygon_count": 0,
+                    "area_km2": 0.0,
+                    "mean_probability": 0.0,
+                    "max_probability": 0.0,
+                }
+                return {"type": "FeatureCollection", "features": []}, stats
+            left = max(source_bounds[0], raster_bounds[0])
+            bottom = max(source_bounds[1], raster_bounds[1])
+            right = min(source_bounds[2], raster_bounds[2])
+            top = min(source_bounds[3], raster_bounds[3])
+            window = from_bounds(left, bottom, right, top, transform=src.transform).round_offsets().round_lengths()
+        out_shape = None
+        transform_scale = Affine.identity()
+        read_height = int(window.height) if window is not None else src.height
+        read_width = int(window.width) if window is not None else src.width
+        max_dim = MODEL_VALIDATION_MAX_DIM
+        if max(read_height, read_width) > max_dim:
+            scale = max_dim / max(read_height, read_width)
+            out_height = max(1, int(round(read_height * scale)))
+            out_width = max(1, int(round(read_width * scale)))
+            out_shape = (model.in_channels, out_height, out_width)
+            transform_scale = Affine.scale(read_width / out_width, read_height / out_height)
+        image = src.read(
+            indexes=list(range(1, model.in_channels + 1)),
+            window=window,
+            out_shape=out_shape,
+            resampling=Resampling.bilinear,
+        ).astype(np.float32)
+        if image.shape[1] == 0 or image.shape[2] == 0:
+            stats = {
+                "threshold": threshold,
+                "valid_pixels": 0,
+                "predicted_pixels": 0,
+                "predicted_ratio": 0.0,
+                "polygon_count": 0,
+                "area_km2": 0.0,
+                "mean_probability": 0.0,
+                "max_probability": 0.0,
+            }
+            return {"type": "FeatureCollection", "features": []}, stats
         finite = np.all(np.isfinite(image), axis=0)
         valid = finite & np.any(image != 0, axis=0)
         if src.nodata is not None:
             valid &= np.any(image != float(src.nodata), axis=0)
         probability = predict_array(model, image, valid=valid)
         predicted = (probability >= threshold) & valid
-        transform = src.transform
+        transform = window_transform(window, src.transform) if window is not None else src.transform
+        transform = transform * transform_scale
         src_crs = src.crs
 
     valid_pixels = int(valid.sum())
@@ -2345,6 +2432,238 @@ def build_combined_training_manifest(output_dir: Path) -> Path:
     return manifest
 
 
+def read_json_file(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def timestamp_for_path(path: Path) -> str:
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(path.stat().st_mtime))
+    except OSError:
+        return ""
+
+
+def region_key_from_patch_row(row: dict, fallback: str = "") -> str:
+    region = clean_optional(row.get("source_region") or row.get("region"))
+    if region:
+        return region
+    lake_id = clean_optional(row.get("lake_id")) or ""
+    if "_" in lake_id:
+        prefix = lake_id.split("_", 1)[0]
+        if prefix in REGIONS:
+            return prefix
+    return fallback
+
+
+def summarize_training_manifest(manifest_path: Path, region_key: str = "") -> dict:
+    rows = read_csv_records(manifest_path)
+    included_rows = []
+    excluded = 0
+    usable = 0
+    sample_ids = set()
+    lake_ids = set()
+    regions = set()
+    water_pixels = 0
+    valid_pixels = 0
+    npz_shape = None
+    first_npz = ""
+    for row in rows:
+        include = clean_optional(row.get("include") or row.get("included"))
+        included = True if include is None else truthy_flag(include, default=True)
+        if included:
+            included_rows.append(row)
+        else:
+            excluded += 1
+        sample_id = clean_optional(row.get("sample_id"))
+        lake_id = clean_optional(row.get("lake_id"))
+        if sample_id:
+            sample_ids.add(sample_id)
+        if lake_id:
+            lake_ids.add(lake_id)
+        row_region = region_key_from_patch_row(row, region_key)
+        if row_region:
+            regions.add(row_region)
+        if included:
+            water_pixels += parse_int_or_default(row.get("water_pixels"), 0)
+            valid_pixels += parse_int_or_default(row.get("valid_pixels"), 0)
+            npz_path_text = clean_optional(row.get("npz_path"))
+            if npz_path_text:
+                npz_path = resolve_data_path(npz_path_text, REGIONS.get(row_region or region_key) or REGIONS[DEFAULT_REGION_KEY])
+                if npz_path.exists():
+                    usable += 1
+                    if npz_shape is None:
+                        try:
+                            with np.load(npz_path) as data:
+                                npz_shape = list(data["image"].shape)
+                            first_npz = display_path(npz_path)
+                        except Exception:
+                            npz_shape = None
+    channels = int(npz_shape[0]) if npz_shape else 0
+    patch_size = list(npz_shape[1:]) if npz_shape and len(npz_shape) >= 3 else []
+    return {
+        "manifest": display_path(manifest_path),
+        "modified_at": timestamp_for_path(manifest_path),
+        "total_patches": len(rows),
+        "included_patches": len(included_rows),
+        "excluded_patches": excluded,
+        "usable_patches": usable,
+        "sample_count": len(sample_ids),
+        "lake_count": len(lake_ids),
+        "regions": sorted(regions),
+        "water_pixels": water_pixels,
+        "valid_pixels": valid_pixels,
+        "water_ratio": (water_pixels / valid_pixels) if valid_pixels else 0,
+        "in_channels": channels,
+        "patch_size": patch_size,
+        "first_npz": first_npz,
+    }
+
+
+def merge_training_dataset_summaries(scope: str, summaries: list[dict]) -> dict:
+    totals = {
+        "scope": scope,
+        "manifests": summaries,
+        "total_patches": sum(item.get("total_patches", 0) for item in summaries),
+        "included_patches": sum(item.get("included_patches", 0) for item in summaries),
+        "excluded_patches": sum(item.get("excluded_patches", 0) for item in summaries),
+        "usable_patches": sum(item.get("usable_patches", 0) for item in summaries),
+        "sample_count": sum(item.get("sample_count", 0) for item in summaries),
+        "lake_count": sum(item.get("lake_count", 0) for item in summaries),
+        "water_pixels": sum(item.get("water_pixels", 0) for item in summaries),
+        "valid_pixels": sum(item.get("valid_pixels", 0) for item in summaries),
+    }
+    regions = set()
+    for item in summaries:
+        regions.update(item.get("regions") or [])
+    totals["regions"] = sorted(regions)
+    totals["water_ratio"] = (totals["water_pixels"] / totals["valid_pixels"]) if totals["valid_pixels"] else 0
+    first = next((item for item in summaries if item.get("in_channels")), {})
+    totals["in_channels"] = first.get("in_channels", 0)
+    totals["patch_size"] = first.get("patch_size", [])
+    return totals
+
+
+def current_training_dataset_summary(scope: str) -> dict:
+    try:
+        if scope == "all":
+            summaries = []
+            for region in REGIONS.values():
+                try:
+                    summaries.append(summarize_training_manifest(latest_patch_manifest_for_region(region), region.key))
+                except FileNotFoundError:
+                    continue
+            if not summaries:
+                raise FileNotFoundError("no patch manifest found for any region")
+            return merge_training_dataset_summaries(scope, summaries)
+        region = REGIONS.get(scope) or REGIONS[DEFAULT_REGION_KEY]
+        summary = summarize_training_manifest(latest_patch_manifest_for_region(region), region.key)
+        return merge_training_dataset_summaries(scope, [summary])
+    except Exception as exc:  # noqa: BLE001 - reported in local UI.
+        return {
+            "scope": scope,
+            "manifests": [],
+            "total_patches": 0,
+            "included_patches": 0,
+            "excluded_patches": 0,
+            "usable_patches": 0,
+            "sample_count": 0,
+            "lake_count": 0,
+            "regions": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def dataset_summary_from_config(config: dict) -> dict:
+    manifest_text = clean_optional(config.get("manifest"))
+    scope = clean_optional(config.get("scope") or config.get("region")) or "all"
+    if not manifest_text:
+        return {"scope": scope, "manifests": [], "error": "missing manifest"}
+    manifest = resolve_data_path(manifest_text, REGIONS[DEFAULT_REGION_KEY])
+    if not manifest.exists():
+        return {"scope": scope, "manifests": [{"manifest": manifest_text}], "error": f"manifest not found: {manifest_text}"}
+    summary = summarize_training_manifest(manifest, "" if scope == "all" else scope)
+    merged = merge_training_dataset_summaries(scope, [summary])
+    if config.get("train_count") is not None:
+        merged["train_count"] = config.get("train_count")
+    if config.get("val_count") is not None:
+        merged["val_count"] = config.get("val_count")
+    return merged
+
+
+def model_training_metadata(model_path: Path, scope: str) -> dict:
+    run_dir = model_path.parent
+    config = read_json_file(run_dir / "config.json", {})
+    if not isinstance(config, dict):
+        config = {}
+    history = read_json_file(run_dir / "history.json", [])
+    if not isinstance(history, list):
+        history = []
+    best_iou = None
+    best_epoch = None
+    for record in history:
+        val = record.get("val") or {}
+        train = record.get("train") or {}
+        score = parse_float(val.get("iou"))
+        if score is None:
+            score = parse_float(train.get("iou"))
+        if score is None:
+            continue
+        if best_iou is None or score > best_iou:
+            best_iou = score
+            best_epoch = parse_int_or_default(record.get("epoch"), 0)
+    latest = history[-1] if history else {}
+    return {
+        "run_name": run_dir.name,
+        "scope": clean_optional(config.get("scope")) or scope,
+        "config": {
+            key: config.get(key)
+            for key in (
+                "epochs",
+                "batch_size",
+                "lr",
+                "weight_decay",
+                "base_channels",
+                "val_ratio",
+                "seed",
+                "threshold",
+                "no_augment",
+                "device",
+                "device_requested",
+                "train_count",
+                "val_count",
+                "manifest",
+            )
+            if key in config
+        },
+        "dataset": dataset_summary_from_config(config) if config else {},
+        "history_count": len(history),
+        "best_iou": best_iou,
+        "best_epoch": best_epoch,
+        "latest": latest,
+        "updated_at": timestamp_for_path(run_dir / "history.json") or timestamp_for_path(model_path),
+    }
+
+
+def model_sort_key(item: dict) -> tuple:
+    score = parse_float(item.get("best_iou"))
+    valid_rank = 1 if item.get("error") else 0
+    missing_score = 1 if score is None else 0
+    weight_rank = 0 if item.get("weight") == "best.pt" else 1
+    return (
+        valid_rank,
+        missing_score,
+        -(score or 0),
+        weight_rank,
+        -(parse_int_or_default(item.get("epoch"), 0)),
+        item.get("label", ""),
+    )
+
+
 def run_training_job(scope: str, options: dict, progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
     scripts_dir = PROJECT_ROOT / "scripts"
     if str(scripts_dir) not in sys.path:
@@ -2596,10 +2915,16 @@ class TrainingManager:
         self._lock = threading.Lock()
         self.jobs: dict[str, dict] = {}
         self.cancel_events: dict[str, threading.Event] = {}
+        self._load_persisted_jobs()
+
+    @property
+    def model_dir(self) -> Path:
+        return PROJECT_ROOT / "data" / "models" / self.scope
 
     def create(self, options: dict) -> dict:
         job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
+        dataset = current_training_dataset_summary(self.scope)
         job = {
             "job_id": job_id,
             "scope": self.scope,
@@ -2610,6 +2935,7 @@ class TrainingManager:
             "epochs": parse_int_or_default(options.get("epochs"), 30),
             "history": [],
             "options": options,
+            "dataset": dataset,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
@@ -2629,7 +2955,7 @@ class TrainingManager:
         with self._lock:
             jobs = [dict(job) for job in self.jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return {"scope": self.scope, "items": jobs}
+        return {"scope": self.scope, "dataset": current_training_dataset_summary(self.scope), "items": jobs}
 
     def cancel(self, job_id: str) -> dict | None:
         with self._lock:
@@ -2689,6 +3015,58 @@ class TrainingManager:
         finally:
             with self._lock:
                 self.cancel_events.pop(job_id, None)
+
+    def _load_persisted_jobs(self) -> None:
+        if not self.model_dir.exists():
+            return
+        for config_path in sorted(self.model_dir.glob("*/config.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+            run_dir = config_path.parent
+            job = self._job_from_model_dir(run_dir)
+            if job:
+                self.jobs[job["job_id"]] = job
+
+    def _job_from_model_dir(self, run_dir: Path) -> dict | None:
+        config = read_json_file(run_dir / "config.json", {})
+        if not isinstance(config, dict) or not config:
+            return None
+        history = read_json_file(run_dir / "history.json", [])
+        if not isinstance(history, list):
+            history = []
+        result = {
+            "status": "completed",
+            "output_dir": display_path(run_dir),
+            "manifest": config.get("manifest") or display_path(run_dir / "manifest.csv"),
+            "best_model": display_path(run_dir / "best.pt") if (run_dir / "best.pt").exists() else "",
+            "last_model": display_path(run_dir / "last.pt") if (run_dir / "last.pt").exists() else "",
+            "history": history,
+            "config": config,
+        }
+        if history:
+            best_iou = max((parse_float((record.get("val") or {}).get("iou")) or 0 for record in history), default=0)
+            result["best_iou"] = best_iou
+        status = "completed" if result["best_model"] or result["last_model"] or history else "configured"
+        epoch = parse_int_or_default((history[-1] if history else {}).get("epoch"), 0)
+        epochs = parse_int_or_default(config.get("epochs"), epoch)
+        created_at = timestamp_for_path(config_path := (run_dir / "config.json"))
+        updated_at = timestamp_for_path(run_dir / "history.json") or timestamp_for_path(config_path)
+        return {
+            "job_id": run_dir.name,
+            "scope": self.scope,
+            "run_name": run_dir.name,
+            "status": status,
+            "message": "历史训练任务",
+            "progress": 100 if status == "completed" else 5,
+            "epoch": epoch,
+            "epochs": epochs,
+            "history": history,
+            "config": config,
+            "dataset": dataset_summary_from_config(config),
+            "result": result,
+            "output_dir": display_path(run_dir),
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "persisted": True,
+        }
 
 
 def resolve_data_path(value, region: RegionConfig | None = None) -> Path:
@@ -3229,11 +3607,19 @@ class LakeHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
                 model_key = params.get("model", [""])[0]
+                if not MODEL_VALIDATION_SEMAPHORE.acquire(blocking=False):
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, "模型推理正在运行，请稍后再试")
+                    return
                 try:
                     self._json(self._all_model_validation_random(threshold=threshold, model_key=model_key))
+                except ModelInferenceBusy as exc:
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                    return
                 except (FileNotFoundError, ValueError) as exc:
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
+                finally:
+                    MODEL_VALIDATION_SEMAPHORE.release()
             elif path == "/api/lakes":
                 params = parse_qs(parsed.query)
                 query = params.get("q", [""])[0]
@@ -3305,18 +3691,19 @@ class LakeHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 padding = float(params.get("padding", ["0.8"])[0])
                 try:
-                    payload, _meta = self.catalog.tile_png_for_lake(
-                        lake,
-                        z=int(match.group(2)),
-                        x=int(match.group(3)),
-                        y=int(match.group(4)),
-                        padding=padding,
-                    )
+                    with TILE_RENDER_SEMAPHORE:
+                        payload, _meta = self.catalog.tile_png_for_lake(
+                            lake,
+                            z=int(match.group(2)),
+                            x=int(match.group(3)),
+                            y=int(match.group(4)),
+                            padding=padding,
+                        )
                 except FileNotFoundError:
                     payload = blank_png(256)
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "image/png")
-                self.send_header("Cache-Control", "no-store")
+                self.send_header("Cache-Control", "public, max-age=600")
                 self.end_headers()
                 self.wfile.write(payload)
             elif re.fullmatch(r"/api/lakes/[^/]+/esa", path):
@@ -3429,11 +3816,19 @@ class LakeHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
                 model_key = params.get("model", [""])[0]
+                if not MODEL_VALIDATION_SEMAPHORE.acquire(blocking=False):
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, "模型推理正在运行，请稍后再试")
+                    return
                 try:
                     self._json(self.catalog.model_validation_random(threshold=threshold, model_key=model_key))
+                except ModelInferenceBusy as exc:
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                    return
                 except (FileNotFoundError, ValueError) as exc:
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
+                finally:
+                    MODEL_VALIDATION_SEMAPHORE.release()
             elif re.fullmatch(r"/api/lakes/[^/]+/model-prediction", path):
                 lake_key = path.split("/")[-2]
                 lake = self.catalog.get_lake(lake_key)
@@ -3443,11 +3838,19 @@ class LakeHandler(BaseHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
                 model_key = params.get("model", [""])[0]
+                if not MODEL_VALIDATION_SEMAPHORE.acquire(blocking=False):
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, "模型推理正在运行，请稍后再试")
+                    return
                 try:
                     self._json(self.catalog.model_prediction_for_lake(lake, threshold=threshold, model_key=model_key))
+                except ModelInferenceBusy as exc:
+                    self._error(HTTPStatus.TOO_MANY_REQUESTS, str(exc))
+                    return
                 except (FileNotFoundError, ValueError) as exc:
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
+                finally:
+                    MODEL_VALIDATION_SEMAPHORE.release()
             elif path == "/api/sentinel/products":
                 params = parse_qs(parsed.query)
                 tile = params.get("tile", [""])[0]
@@ -3771,6 +4174,7 @@ class LakeHandler(BaseHTTPRequestHandler):
             label = f"全部区域 / {path.parent.name}/{path.name}"
             try:
                 model = load_unet_checkpoint(path)
+                metadata = model_training_metadata(path, "all")
                 item = {
                     "key": key,
                     "label": label,
@@ -3784,6 +4188,7 @@ class LakeHandler(BaseHTTPRequestHandler):
                     "region_name": "全部区域",
                     "scope": "all",
                     "default": path.name == "best.pt" and not default_key,
+                    **metadata,
                 }
             except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
                 item = {
@@ -3818,7 +4223,9 @@ class LakeHandler(BaseHTTPRequestHandler):
                 if item.get("default") and not default_key:
                     default_key = global_key
                 items.append(out)
-        return {"region": "all", "default": default_key or (items[0]["key"] if items else ""), "items": items, "all_regions": True}
+        items.sort(key=model_sort_key)
+        default_key = next((item["key"] for item in items if not item.get("error")), items[0]["key"] if items else "")
+        return {"region": "all", "default": default_key, "items": items, "all_regions": True}
 
     def _all_model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
         region_key, local_model_key = split_global_model_key(model_key)
@@ -3856,6 +4263,8 @@ class LakeHandler(BaseHTTPRequestHandler):
                     continue
                 try:
                     prediction = catalog.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+                except ModelInferenceBusy:
+                    raise
                 except Exception as exc:  # noqa: BLE001 - keep looking for a usable validation target.
                     skipped.append(f"{region_key}/{lake.object_id}: {type(exc).__name__}: {exc}")
                     continue

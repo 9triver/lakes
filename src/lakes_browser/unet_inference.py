@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,67 +14,78 @@ torch = None
 nn = None
 F = None
 UNet = None
+_TORCH_INIT_LOCK = threading.Lock()
 
 
 def init_torch() -> None:
     global torch, nn, F, UNet
     if torch is not None:
         return
-    import torch as _torch
-    import torch.nn as _nn
-    import torch.nn.functional as _F
+    with _TORCH_INIT_LOCK:
+        if torch is not None:
+            return
+        import torch as _torch
+        import torch.nn as _nn
+        import torch.nn.functional as _F
 
-    class DoubleConv(_nn.Module):
-        def __init__(self, in_channels: int, out_channels: int) -> None:
-            super().__init__()
-            self.block = _nn.Sequential(
-                _nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                _nn.BatchNorm2d(out_channels),
-                _nn.ReLU(inplace=True),
-                _nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                _nn.BatchNorm2d(out_channels),
-                _nn.ReLU(inplace=True),
-            )
+        torch_threads = max(1, int(os.environ.get("LAKES_TORCH_THREADS", "1")))
+        _torch.set_num_threads(torch_threads)
+        try:
+            _torch.set_num_interop_threads(torch_threads)
+        except RuntimeError:
+            pass
 
-        def forward(self, x):
-            return self.block(x)
+        class DoubleConv(_nn.Module):
+            def __init__(self, in_channels: int, out_channels: int) -> None:
+                super().__init__()
+                self.block = _nn.Sequential(
+                    _nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                    _nn.BatchNorm2d(out_channels),
+                    _nn.ReLU(inplace=True),
+                    _nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+                    _nn.BatchNorm2d(out_channels),
+                    _nn.ReLU(inplace=True),
+                )
 
-    class _UNet(_nn.Module):
-        def __init__(self, in_channels: int, base_channels: int = 32) -> None:
-            super().__init__()
-            c = base_channels
-            self.down1 = DoubleConv(in_channels, c)
-            self.down2 = DoubleConv(c, c * 2)
-            self.down3 = DoubleConv(c * 2, c * 4)
-            self.down4 = DoubleConv(c * 4, c * 8)
-            self.pool = _nn.MaxPool2d(2)
-            self.bottleneck = DoubleConv(c * 8, c * 16)
-            self.up4 = _nn.ConvTranspose2d(c * 16, c * 8, kernel_size=2, stride=2)
-            self.conv4 = DoubleConv(c * 16, c * 8)
-            self.up3 = _nn.ConvTranspose2d(c * 8, c * 4, kernel_size=2, stride=2)
-            self.conv3 = DoubleConv(c * 8, c * 4)
-            self.up2 = _nn.ConvTranspose2d(c * 4, c * 2, kernel_size=2, stride=2)
-            self.conv2 = DoubleConv(c * 4, c * 2)
-            self.up1 = _nn.ConvTranspose2d(c * 2, c, kernel_size=2, stride=2)
-            self.conv1 = DoubleConv(c * 2, c)
-            self.head = _nn.Conv2d(c, 1, kernel_size=1)
+            def forward(self, x):
+                return self.block(x)
 
-        def forward(self, x):
-            d1 = self.down1(x)
-            d2 = self.down2(self.pool(d1))
-            d3 = self.down3(self.pool(d2))
-            d4 = self.down4(self.pool(d3))
-            x = self.bottleneck(self.pool(d4))
-            x = self.conv4(_torch.cat([self.up4(x), d4], dim=1))
-            x = self.conv3(_torch.cat([self.up3(x), d3], dim=1))
-            x = self.conv2(_torch.cat([self.up2(x), d2], dim=1))
-            x = self.conv1(_torch.cat([self.up1(x), d1], dim=1))
-            return self.head(x)
+        class _UNet(_nn.Module):
+            def __init__(self, in_channels: int, base_channels: int = 32) -> None:
+                super().__init__()
+                c = base_channels
+                self.down1 = DoubleConv(in_channels, c)
+                self.down2 = DoubleConv(c, c * 2)
+                self.down3 = DoubleConv(c * 2, c * 4)
+                self.down4 = DoubleConv(c * 4, c * 8)
+                self.pool = _nn.MaxPool2d(2)
+                self.bottleneck = DoubleConv(c * 8, c * 16)
+                self.up4 = _nn.ConvTranspose2d(c * 16, c * 8, kernel_size=2, stride=2)
+                self.conv4 = DoubleConv(c * 16, c * 8)
+                self.up3 = _nn.ConvTranspose2d(c * 8, c * 4, kernel_size=2, stride=2)
+                self.conv3 = DoubleConv(c * 8, c * 4)
+                self.up2 = _nn.ConvTranspose2d(c * 4, c * 2, kernel_size=2, stride=2)
+                self.conv2 = DoubleConv(c * 4, c * 2)
+                self.up1 = _nn.ConvTranspose2d(c * 2, c, kernel_size=2, stride=2)
+                self.conv1 = DoubleConv(c * 2, c)
+                self.head = _nn.Conv2d(c, 1, kernel_size=1)
 
-    torch = _torch
-    nn = _nn
-    F = _F
-    UNet = _UNet
+            def forward(self, x):
+                d1 = self.down1(x)
+                d2 = self.down2(self.pool(d1))
+                d3 = self.down3(self.pool(d2))
+                d4 = self.down4(self.pool(d3))
+                x = self.bottleneck(self.pool(d4))
+                x = self.conv4(_torch.cat([self.up4(x), d4], dim=1))
+                x = self.conv3(_torch.cat([self.up3(x), d3], dim=1))
+                x = self.conv2(_torch.cat([self.up2(x), d2], dim=1))
+                x = self.conv1(_torch.cat([self.up1(x), d1], dim=1))
+                return self.head(x)
+
+        torch = _torch
+        nn = _nn
+        F = _F
+        UNet = _UNet
 
 
 @dataclass(frozen=True)
@@ -89,14 +102,16 @@ class LoadedUNet:
 
 
 _MODEL_CACHE: dict[Path, LoadedUNet] = {}
+_MODEL_CACHE_LOCK = threading.Lock()
 
 
 def load_unet_checkpoint(path: Path, device: str = "auto") -> LoadedUNet:
     init_torch()
     path = path.resolve()
-    cached = _MODEL_CACHE.get(path)
-    if cached is not None:
-        return cached
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_CACHE.get(path)
+        if cached is not None:
+            return cached
     if device == "auto":
         resolved_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -127,7 +142,8 @@ def load_unet_checkpoint(path: Path, device: str = "auto") -> LoadedUNet:
         epoch=int(checkpoint.get("epoch") or 0),
         config=config,
     )
-    _MODEL_CACHE[path] = loaded
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE[path] = loaded
     return loaded
 
 

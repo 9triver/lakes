@@ -17,8 +17,10 @@ const state = {
   localLabels: [],
   trainingSamples: [],
   trainingPatches: [],
+  trainingDataset: null,
   sidebarMode: "lakes",
   trainingView: "samples",
+  trainingLoadId: 0,
   patchIncludeFilter: "",
   patchWaterFilter: "",
   patchPage: 1,
@@ -49,6 +51,7 @@ const trainingSummaryEl = document.querySelector("#training-summary");
 const trainingRefreshEl = document.querySelector("#training-refresh");
 const modelSummaryEl = document.querySelector("#model-summary");
 const modelSelectEl = document.querySelector("#model-select");
+const modelDetailEl = document.querySelector("#model-detail");
 const modelRandomEl = document.querySelector("#model-random");
 const trainingViewSamplesEl = document.querySelector("#training-view-samples");
 const trainingViewPatchesEl = document.querySelector("#training-view-patches");
@@ -86,8 +89,10 @@ const titleEl = document.querySelector("#lake-title");
 const subtitleEl = document.querySelector("#lake-subtitle");
 const metaEl = document.querySelector("#meta");
 const emptyEl = document.querySelector("#empty");
+const toolbarEl = document.querySelector(".toolbar");
 const mapWrapEl = document.querySelector("#map-wrap");
 const toolsEl = document.querySelector(".tools");
+const modelPredictionToolEl = document.querySelector("#model-prediction-tool");
 const mapEl = document.querySelector("#map");
 const loadingEl = document.querySelector("#loading");
 const loadingTextEl = document.querySelector("#loading-text");
@@ -111,8 +116,7 @@ const toggleImageEl = document.querySelector("#toggle-image");
 const toggleTileGridEl = document.querySelector("#toggle-tile-grid");
 const toggleOsmEl = document.querySelector("#toggle-osm");
 const toggleHydroEl = document.querySelector("#toggle-hydro");
-const toggleContextOsmEl = document.querySelector("#toggle-context-osm");
-const toggleContextHydroEl = document.querySelector("#toggle-context-hydro");
+const toggleContextWaterEl = document.querySelector("#toggle-context-water");
 const toggleEsaEl = document.querySelector("#toggle-esa");
 const toggleJrcEl = document.querySelector("#toggle-jrc");
 const toggleLocalLabelEl = document.querySelector("#toggle-local-label");
@@ -120,6 +124,7 @@ const toggleModelPredictionEl = document.querySelector("#toggle-model-prediction
 const localLabelSelectEl = document.querySelector("#local-label-select");
 const jrcThresholdEl = document.querySelector("#jrc-threshold");
 const jrcThresholdValueEl = document.querySelector("#jrc-threshold-value");
+const lakeControlsEl = document.querySelector("#lake-controls");
 const sentinelPanelEl = document.querySelector("#sentinel-panel");
 const sentinelTileEl = document.querySelector("#sentinel-tile");
 const imageryProductEl = document.querySelector("#imagery-product");
@@ -138,6 +143,15 @@ const zoomTileEl = document.querySelector("#zoom-tile");
 
 let searchTimer = null;
 let jrcTimer = null;
+
+function syncLakeControlsVisibility() {
+  lakeControlsEl.hidden = sentinelPanelEl.hidden && trainingPanelEl.hidden;
+}
+
+for (const panel of [sentinelPanelEl, trainingPanelEl]) {
+  new MutationObserver(syncLakeControlsVisibility).observe(panel, { attributes: true, attributeFilter: ["hidden"] });
+}
+syncLakeControlsVisibility();
 
 setDefaultSentinelFilters();
 
@@ -398,6 +412,7 @@ function resetSelection() {
   modelSummaryEl.textContent = "模型验证未运行";
   modelSelectEl.replaceChildren();
   modelSelectEl.disabled = true;
+  modelDetailEl.textContent = "";
   sentinelProductsEl.replaceChildren();
   imageryProductEl.replaceChildren();
   resetLocalLabelSelect();
@@ -439,9 +454,22 @@ async function loadLakes({ append = false } = {}) {
   renderList();
 }
 
-async function loadTrainingSamples() {
-  trainingSummaryEl.textContent = "训练集加载中";
+function isCurrentTrainingLoad(loadId, view) {
+  return loadId === state.trainingLoadId && state.sidebarMode === "training" && state.trainingView === view;
+}
+
+async function loadTrainingSamples(loadId = null) {
+  loadId = loadId ?? ++state.trainingLoadId;
+  if (isCurrentTrainingLoad(loadId, "samples")) {
+    trainingListEl.replaceChildren();
+    const loading = document.createElement("div");
+    loading.className = "empty-list";
+    loading.textContent = "训练样本加载中";
+    trainingListEl.append(loading);
+    trainingSummaryEl.textContent = "训练集加载中";
+  }
   const payload = await fetchJson(apiPath("/training-samples"));
+  if (!isCurrentTrainingLoad(loadId, "samples")) return;
   state.trainingSamples = payload.items || [];
   const bad = state.trainingSamples.filter((item) => item.status !== "ok").length;
   trainingSummaryEl.textContent = bad
@@ -450,21 +478,38 @@ async function loadTrainingSamples() {
   renderTrainingSamples();
 }
 
-async function loadTrainingPatches() {
-  trainingSummaryEl.textContent = "Patch 加载中";
+async function loadTrainingPatches(loadId = null) {
+  loadId = loadId ?? ++state.trainingLoadId;
+  if (isCurrentTrainingLoad(loadId, "patches")) {
+    patchReviewSummaryEl.textContent = "Patch 加载中";
+    patchGridEl.replaceChildren();
+    const loading = document.createElement("div");
+    loading.className = "patch-empty";
+    loading.textContent = "Patch 加载中";
+    patchGridEl.append(loading);
+    trainingSummaryEl.textContent = "Patch 加载中";
+  }
   const params = new URLSearchParams();
   if (state.patchIncludeFilter) params.set("include", state.patchIncludeFilter);
   const suffix = params.toString() ? `?${params.toString()}` : "";
   const payload = await fetchJson(apiPath(`/training-patches${suffix}`));
+  if (!isCurrentTrainingLoad(loadId, "patches")) return;
   state.trainingPatches = payload.items || [];
   trainingSummaryEl.textContent = `${payload.total} 个 patch，包含 ${payload.included_count || 0}，排除 ${payload.excluded_count || 0}`;
   normalizePatchPage();
   renderPatchReview();
 }
 
-async function loadTrainingRuns() {
-  trainingSummaryEl.textContent = "训练任务加载中";
+async function loadTrainingRuns(loadId = null) {
+  loadId = loadId ?? ++state.trainingLoadId;
+  if (isCurrentTrainingLoad(loadId, "train")) {
+    trainingRunSummaryEl.textContent = "训练任务加载中";
+    trainingRunBodyEl.innerHTML = `<div class="training-run-empty">训练任务加载中</div>`;
+    trainingSummaryEl.textContent = "训练任务加载中";
+  }
   const payload = await fetchJson(apiPath("/training-runs"));
+  if (!isCurrentTrainingLoad(loadId, "train")) return;
+  state.trainingDataset = payload.dataset || null;
   state.trainingRuns = payload.items || [];
   const running = state.trainingRuns.find((job) => ["queued", "configured", "running", "cancel_requested"].includes(job.status));
   state.activeTrainingJob = running || state.trainingRuns[0] || state.activeTrainingJob;
@@ -477,7 +522,7 @@ async function loadTrainingRuns() {
 async function loadModelOptions(preferred = state.selectedModel) {
   modelSummaryEl.textContent = "模型列表加载中";
   const payload = await fetchJson(apiPath("/model-validation/models"));
-  state.modelOptions = payload.items || [];
+  state.modelOptions = sortModelOptions(payload.items || []);
   state.selectedModel = preferred && state.modelOptions.some((item) => item.key === preferred)
     ? preferred
     : payload.default || state.modelOptions[0]?.key || "";
@@ -496,6 +541,7 @@ function renderModelOptions() {
     modelSelectEl.append(option);
     modelSelectEl.disabled = true;
     modelRandomEl.disabled = true;
+    modelDetailEl.textContent = "无可用模型";
     return;
   }
   modelSelectEl.disabled = false;
@@ -505,16 +551,90 @@ function renderModelOptions() {
     option.value = item.key;
     option.textContent = item.error
       ? `${item.label}（不可用）`
-      : `${item.label} · epoch ${item.epoch || 0} · ${item.in_channels || "?"} band`;
+      : formatModelOptionText(item);
     option.disabled = Boolean(item.error);
     option.selected = item.key === state.selectedModel;
     option.title = item.error || item.path || item.label;
     modelSelectEl.append(option);
   }
   modelSelectEl.value = state.selectedModel;
+  renderSelectedModelDetail();
 }
 
-function setSidebarMode(mode) {
+function sortModelOptions(items) {
+  return [...items].sort((a, b) => {
+    const aScore = Number(a.best_iou);
+    const bScore = Number(b.best_iou);
+    const aHasScore = Number.isFinite(aScore);
+    const bHasScore = Number.isFinite(bScore);
+    if (Boolean(a.error) !== Boolean(b.error)) return a.error ? 1 : -1;
+    if (aHasScore !== bHasScore) return aHasScore ? -1 : 1;
+    if (aHasScore && bHasScore && bScore !== aScore) return bScore - aScore;
+    if ((a.weight === "best.pt") !== (b.weight === "best.pt")) return a.weight === "best.pt" ? -1 : 1;
+    return String(a.label || "").localeCompare(String(b.label || ""), "zh-CN");
+  });
+}
+
+function formatModelOptionText(item) {
+  const parts = [item.label];
+  const score = Number(item.best_iou);
+  if (Number.isFinite(score)) parts.push(`best IoU ${formatNumber(score, 4)}`);
+  if (item.epoch) parts.push(`epoch ${item.epoch}`);
+  if (item.in_channels) parts.push(`${item.in_channels} band`);
+  return parts.filter(Boolean).join(" · ");
+}
+
+function renderSelectedModelDetail() {
+  const model = state.modelOptions.find((item) => item.key === state.selectedModel);
+  modelDetailEl.replaceChildren();
+  if (!model) {
+    modelDetailEl.textContent = "未选择模型";
+    return;
+  }
+  const title = document.createElement("div");
+  title.className = "model-detail-title";
+  title.innerHTML = `<strong>${escapeHtml(model.name || model.label || model.key)}</strong><span>${escapeHtml(model.weight || "")}</span>`;
+  modelDetailEl.append(title);
+  if (model.error) {
+    const error = document.createElement("div");
+    error.className = "model-detail-error";
+    error.textContent = model.error;
+    modelDetailEl.append(error);
+    return;
+  }
+  const latest = model.latest || {};
+  const train = latest.train || {};
+  const val = latest.val || {};
+  const dataset = model.dataset || {};
+  const config = model.config || {};
+  const fields = [
+    ["范围", model.scope === "all" ? "全部区域" : currentRegionName(model.scope || model.region)],
+    ["best IoU", Number.isFinite(Number(model.best_iou)) ? formatNumber(Number(model.best_iou), 4) : ""],
+    ["best epoch", model.best_epoch || ""],
+    ["最新 val IoU", Number.isFinite(Number(val.iou)) ? formatNumber(Number(val.iou), 4) : ""],
+    ["最新 train IoU", Number.isFinite(Number(train.iou)) ? formatNumber(Number(train.iou), 4) : ""],
+    ["epoch", model.epoch ? `${model.epoch}${config.epochs ? ` / ${config.epochs}` : ""}` : ""],
+    ["输入", [model.in_channels ? `${model.in_channels} band` : "", model.base_channels ? `宽度 ${model.base_channels}` : ""].filter(Boolean).join(" · ")],
+    ["训练 Patch", dataset.usable_patches != null ? `${dataset.usable_patches} 可用 / ${dataset.included_patches || 0} 包含` : ""],
+    ["样本/水体", dataset.sample_count != null ? `${dataset.sample_count || 0} / ${dataset.lake_count || 0}` : ""],
+    ["训练/验证", config.train_count != null || config.val_count != null ? `${config.train_count || 0} / ${config.val_count || 0}` : ""],
+    ["更新时间", formatDateTimeText(model.updated_at)],
+    ["路径", model.path || ""],
+  ];
+  const grid = document.createElement("div");
+  grid.className = "model-detail-grid";
+  for (const [label, value] of fields) {
+    if (!value) continue;
+    const row = document.createElement("div");
+    row.className = "model-detail-row";
+    row.innerHTML = `<span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong>`;
+    grid.append(row);
+  }
+  modelDetailEl.append(grid);
+}
+
+function setSidebarMode(mode, options = {}) {
+  const previousMode = state.sidebarMode;
   state.sidebarMode = mode;
   const trainingMode = mode === "training";
   const modelMode = mode === "model";
@@ -528,15 +648,19 @@ function setSidebarMode(mode) {
   trainingSidebarPanelEl.hidden = !trainingMode;
   modelSidebarPanelEl.hidden = !modelMode;
   renderTrainingViewMode();
-  if (trainingMode) loadActiveTrainingView().catch(showError);
+  if (!trainingMode && previousMode === "training") state.trainingLoadId += 1;
+  if (trainingMode && options.load !== false) loadActiveTrainingView().catch(showError);
   if (modelMode && !state.modelOptions.length) loadModelOptions().catch(showError);
   updateRouteUrl();
 }
 
-function setTrainingView(view) {
-  state.trainingView = view;
+function setTrainingView(view, options = {}) {
+  const validView = ["samples", "patches", "train"].includes(view) ? view : "samples";
+  const changed = state.trainingView !== validView;
+  state.trainingView = validView;
+  if (changed) state.trainingLoadId += 1;
   renderTrainingViewMode();
-  loadActiveTrainingView().catch(showError);
+  if (state.sidebarMode === "training" && options.load !== false && changed) loadActiveTrainingView().catch(showError);
   updateRouteUrl();
 }
 
@@ -555,8 +679,11 @@ function renderTrainingViewMode() {
   trainingRunControlsEl.hidden = !trainMode;
   patchReviewEl.hidden = !patchMode;
   trainingRunViewEl.hidden = !trainMode;
+  toolbarEl.hidden = patchMode || trainMode;
   mapWrapEl.hidden = patchMode || trainMode;
   toolsEl.hidden = patchMode || trainMode;
+  modelPredictionToolEl.hidden = !modelMode;
+  if (!modelMode) vectorLayers.modelPrediction.setVisible(false);
   if (patchMode) {
     titleEl.textContent = "Patch 审核";
     subtitleEl.textContent = "浏览训练 patch 并标记包含或排除";
@@ -588,15 +715,17 @@ function isTrainingWorkspaceView() {
 }
 
 async function loadActiveTrainingView() {
+  if (state.sidebarMode !== "training") return;
+  const loadId = ++state.trainingLoadId;
   if (state.trainingView === "patches") {
-    await loadTrainingPatches();
+    await loadTrainingPatches(loadId);
     return;
   }
   if (state.trainingView === "train") {
-    await loadTrainingRuns();
+    await loadTrainingRuns(loadId);
     return;
   }
-  await loadTrainingSamples();
+  await loadTrainingSamples(loadId);
 }
 
 async function runRandomModelValidation() {
@@ -610,14 +739,27 @@ async function runRandomModelValidation() {
   setLoading(true, "模型推理中");
   try {
     rasterLayer.setSource(null);
-    toggleImageEl.checked = false;
-    rasterLayer.setVisible(false);
+    toggleImageEl.checked = true;
+    rasterLayer.setVisible(true);
     toggleModelPredictionEl.checked = true;
     vectorLayers.modelPrediction.setVisible(true);
     const params = new URLSearchParams();
     if (state.selectedModel) params.set("model", state.selectedModel);
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    const payload = await fetchJson(apiPath(`/model-validation/random${suffix}`));
+    let payload;
+    try {
+      payload = await fetchJson(apiPath(`/model-validation/random${suffix}`));
+    } catch (error) {
+      if (error.status === 429) {
+        modelSummaryEl.textContent = error.message || "模型推理正在运行，请稍后再试";
+        return;
+      }
+      if (error instanceof TypeError) {
+        modelSummaryEl.textContent = "服务暂时不可用，请稍后再试";
+        return;
+      }
+      throw error;
+    }
     if (runId !== state.modelValidationRunId) return;
     state.modelValidation = payload;
     setSidebarMode("model");
@@ -968,10 +1110,11 @@ function renderTrainingRunView() {
   const running = job && ["queued", "configured", "running", "cancel_requested"].includes(job.status);
   trainStartEl.disabled = Boolean(running);
   trainCancelEl.disabled = !running;
+  const dataset = job?.dataset || job?.result?.dataset || state.trainingDataset;
   if (!job) {
     trainingRunSummaryEl.textContent = "选择参数后开始训练";
     trainStatusEl.textContent = "未开始";
-    trainingRunBodyEl.innerHTML = `<div class="training-run-empty">训练会使用当前区域最新生成且未排除的 patch；区域选择为“全部”时会合并所有区域的最新 patch manifest。</div>`;
+    trainingRunBodyEl.append(renderTrainingDatasetPanel(dataset, "当前训练数据"));
     return;
   }
   const result = job.result || {};
@@ -982,13 +1125,13 @@ function renderTrainingRunView() {
   const val = latest.val || {};
   const progress = Math.max(0, Math.min(100, Number(job.progress || 0)));
   trainingRunSummaryEl.textContent = [
-    statusLabel(job.status),
+    trainingStatusLabel(job.status),
     job.epoch && job.epochs ? `epoch ${job.epoch}/${job.epochs}` : "",
     result.best_model ? `best ${result.best_model}` : "",
   ].filter(Boolean).join(" · ");
-  trainStatusEl.textContent = job.message || statusLabel(job.status);
+  trainStatusEl.textContent = job.message || trainingStatusLabel(job.status);
   const metrics = [
-    ["状态", statusLabel(job.status)],
+    ["状态", trainingStatusLabel(job.status)],
     ["进度", `${formatNumber(progress, 0)}%`],
     ["epoch", job.epoch && job.epochs ? `${job.epoch}/${job.epochs}` : "0"],
     ["train IoU", Number.isFinite(Number(train.iou)) ? formatNumber(Number(train.iou), 4) : ""],
@@ -1022,19 +1165,144 @@ function renderTrainingRunView() {
   log.textContent = lines.length ? lines.join("\n") : (job.message || "等待训练日志");
   const previous = document.createElement("div");
   previous.className = "training-run-history";
-  for (const item of state.trainingRuns.slice(0, 8)) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = item.job_id === job.job_id ? "active" : "";
-    button.textContent = `${statusLabel(item.status)} · ${item.job_id}`;
-    button.title = item.result?.output_dir || item.message || item.job_id;
-    button.addEventListener("click", () => {
+  const previousTitle = document.createElement("div");
+  previousTitle.className = "training-run-history-title";
+  previousTitle.textContent = `历史任务 ${state.trainingRuns.length}`;
+  const previousList = document.createElement("div");
+  previousList.className = "training-run-history-list";
+  for (const item of state.trainingRuns) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = item.job_id === job.job_id ? "active" : "";
+    row.title = item.result?.output_dir || item.message || item.job_id;
+    row.innerHTML = formatTrainingHistoryRow(item);
+    row.addEventListener("click", () => {
       state.activeTrainingJob = item;
       renderTrainingRunView();
     });
-    previous.append(button);
+    previousList.append(row);
   }
-  trainingRunBodyEl.append(bar, cards, log, previous);
+  previous.append(previousTitle, previousList);
+  trainingRunBodyEl.append(renderTrainingDatasetPanel(dataset, "本任务数据"), bar, cards, log, previous);
+}
+
+function renderTrainingDatasetPanel(dataset, title) {
+  const panel = document.createElement("section");
+  panel.className = "training-dataset-panel";
+  const heading = document.createElement("div");
+  heading.className = "training-dataset-heading";
+  const scopeLabel = dataset?.scope === "all" ? "全部区域" : (currentRegionName(dataset?.scope) || dataset?.scope || "当前区域");
+  heading.innerHTML = `<strong>${escapeHtml(title)}</strong><span>${escapeHtml(scopeLabel)}</span>`;
+  panel.append(heading);
+  if (!dataset || dataset.error) {
+    const empty = document.createElement("div");
+    empty.className = "training-run-empty";
+    empty.textContent = dataset?.error || "还没有可用于训练的 patch，请先在 Patch 页生成。";
+    panel.append(empty);
+    return panel;
+  }
+  const patchSize = Array.isArray(dataset.patch_size) && dataset.patch_size.length
+    ? dataset.patch_size.join(" x ")
+    : "";
+  const manifests = (dataset.manifests || []).map((item) => item.manifest).filter(Boolean);
+  const fields = [
+    ["范围", scopeLabel],
+    ["区域", (dataset.regions || []).join(", ")],
+    ["可用 Patch", String(dataset.usable_patches ?? dataset.included_patches ?? 0)],
+    ["包含/排除", `${dataset.included_patches || 0} / ${dataset.excluded_patches || 0}`],
+    ["样本", String(dataset.sample_count || 0)],
+    ["水体", String(dataset.lake_count || 0)],
+    ["训练/验证", dataset.train_count != null || dataset.val_count != null ? `${dataset.train_count || 0} / ${dataset.val_count || 0}` : ""],
+    ["输入", [dataset.in_channels ? `${dataset.in_channels} band` : "", patchSize].filter(Boolean).join(" · ")],
+    ["水体像元", formatPercentText(dataset.water_ratio)],
+    ["Manifest", manifests.join(" | ")],
+  ];
+  const cards = document.createElement("div");
+  cards.className = "training-run-metrics training-dataset-metrics";
+  for (const [label, value] of fields) {
+    if (!value) continue;
+    const card = document.createElement("div");
+    card.className = "training-run-metric";
+    card.innerHTML = `<span>${escapeHtml(label)}</span><strong title="${escapeHtml(value)}">${escapeHtml(value)}</strong>`;
+    cards.append(card);
+  }
+  panel.append(cards);
+  return panel;
+}
+
+function currentRegionName(key) {
+  if (!key) return "";
+  if (key === "all") return "全部区域";
+  return state.regions.find((region) => region.key === key)?.name || key;
+}
+
+function trainingStatusLabel(status) {
+  const labels = {
+    queued: "排队中",
+    configured: "已配置",
+    running: "训练中",
+    cancel_requested: "取消中",
+    cancelled: "已取消",
+    completed: "已完成",
+    failed: "失败",
+  };
+  return labels[status] || status || "处理中";
+}
+
+function formatTrainingHistoryLabel(item) {
+  const result = item.result || {};
+  const config = item.config || result.config || {};
+  const history = item.history || result.history || [];
+  const latest = history[history.length - 1] || {};
+  const val = latest.val || {};
+  const iou = Number(result.best_iou ?? val.iou);
+  const name = item.run_name || config.output_dir?.split("/")?.pop() || item.job_id;
+  const parts = [
+    name,
+    trainingStatusLabel(item.status),
+    Number.isFinite(iou) ? `best IoU ${formatNumber(iou, 4)}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function formatTrainingHistoryRow(item) {
+  const result = item.result || {};
+  const config = item.config || result.config || {};
+  const history = item.history || result.history || [];
+  const latest = history[history.length - 1] || {};
+  const train = latest.train || {};
+  const val = latest.val || {};
+  const name = item.run_name || config.output_dir?.split("/")?.pop() || item.job_id;
+  const bestIou = Number(result.best_iou ?? val.iou);
+  const valIou = Number(val.iou);
+  const trainIou = Number(train.iou);
+  const timeText = formatDateTimeText(item.updated_at || item.created_at);
+  const status = trainingStatusLabel(item.status);
+  const epoch = item.epoch && item.epochs ? `${item.epoch}/${item.epochs}` : (item.epoch || "");
+  const metrics = [
+    epoch ? `epoch ${epoch}` : "",
+    Number.isFinite(bestIou) ? `best ${formatNumber(bestIou, 4)}` : "",
+    Number.isFinite(valIou) ? `val ${formatNumber(valIou, 4)}` : "",
+    Number.isFinite(trainIou) ? `train ${formatNumber(trainIou, 4)}` : "",
+  ].filter(Boolean).join(" · ");
+  return `
+    <span class="training-run-history-main">
+      <strong>${escapeHtml(name)}</strong>
+      <span>${escapeHtml(metrics || item.job_id)}</span>
+    </span>
+    <span class="training-run-history-side">
+      <span>${escapeHtml(status)}</span>
+      <span>${escapeHtml(timeText)}</span>
+    </span>
+  `;
+}
+
+function formatDateTimeText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}`;
+  return text;
 }
 
 function openPatchModal(patch) {
@@ -1159,12 +1427,13 @@ function renderActiveLakeTitle() {
   subtitleEl.textContent = `${typeLabel(state.lake.water_type)} · ${state.lake.lake_id}${hylak ? ` · Hylak ${hylak}` : ""}`;
 }
 
-async function loadTileLayer(shapeId, lake) {
+async function loadTileLayer(shapeId, lake, options = {}) {
+  const forceSource = Boolean(options.forceSource);
   setLoading(true, "加载影像瓦片");
   const payload = await fetchJson(activeApiPath(`/lakes/${shapeId}/tile-meta?padding=0.8&v=${Date.now()}`));
   if (state.activeId !== shapeId) return;
   state.tileMeta = payload;
-  if (state.sidebarMode !== "model" || toggleImageEl.checked) {
+  if (forceSource || state.sidebarMode !== "model" || toggleImageEl.checked) {
     rasterLayer.setSource(
       new ol.source.XYZ({
         url: activeApiPath(`/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`),
@@ -1388,7 +1657,7 @@ function renderImageryOptions() {
 
 function renderTrainingReadiness() {
   trainingSaveEl.disabled = !state.activeId || trainingPanelEl.hidden;
-  trainingStatusEl.textContent = trainingPanelEl.hidden ? "" : "将记录当前影像、可见图层和地图视图";
+  if (trainingPanelEl.hidden) trainingStatusEl.textContent = "";
 }
 
 async function saveTrainingSample() {
@@ -1426,8 +1695,8 @@ function captureTrainingViewState() {
       tile_grid: toggleTileGridEl.checked,
       osm: toggleOsmEl.checked,
       hydrolakes: toggleHydroEl.checked,
-      context_osm: toggleContextOsmEl.checked,
-      context_hydrolakes: toggleContextHydroEl.checked,
+      context_osm: toggleContextWaterEl.checked,
+      context_hydrolakes: toggleContextWaterEl.checked,
       esa: toggleEsaEl.checked,
       jrc: toggleJrcEl.checked,
       local_label: toggleLocalLabelEl.checked,
@@ -1647,8 +1916,8 @@ function layerVisible(layerName) {
   if (layerName === "tileGrid") return toggleTileGridEl.checked;
   if (layerName === "osm") return toggleOsmEl.checked;
   if (layerName === "hydrolakes") return toggleHydroEl.checked;
-  if (layerName === "contextOsm") return toggleContextOsmEl.checked;
-  if (layerName === "contextHydrolakes") return toggleContextHydroEl.checked;
+  if (layerName === "contextOsm") return toggleContextWaterEl.checked;
+  if (layerName === "contextHydrolakes") return toggleContextWaterEl.checked;
   if (layerName === "esa") return toggleEsaEl.checked;
   if (layerName === "jrc") return toggleJrcEl.checked;
   if (layerName === "localLabel") return toggleLocalLabelEl.checked;
@@ -1897,7 +2166,7 @@ loadMoreEl.addEventListener("click", () => {
 toggleImageEl.addEventListener("change", () => {
   rasterLayer.setVisible(toggleImageEl.checked);
   if (toggleImageEl.checked && !rasterLayer.getSource() && state.activeId && state.lake) {
-    loadTileLayer(state.activeId, state.lake).catch(showError);
+    loadTileLayer(state.activeId, state.lake, { forceSource: true }).catch(showError);
   }
 });
 
@@ -1905,8 +2174,8 @@ for (const [checkbox, layerName] of [
   [toggleTileGridEl, "tileGrid"],
   [toggleOsmEl, "osm"],
   [toggleHydroEl, "hydrolakes"],
-  [toggleContextOsmEl, "contextOsm"],
-  [toggleContextHydroEl, "contextHydrolakes"],
+  [toggleContextWaterEl, "contextOsm"],
+  [toggleContextWaterEl, "contextHydrolakes"],
   [toggleEsaEl, "esa"],
   [toggleJrcEl, "jrc"],
   [toggleLocalLabelEl, "localLabel"],
@@ -1953,6 +2222,7 @@ modelRandomEl.addEventListener("click", () => {
 
 modelSelectEl.addEventListener("change", () => {
   state.selectedModel = modelSelectEl.value;
+  renderSelectedModelDetail();
   updateRouteUrl({ replace: true });
   if (state.sidebarMode === "model" && state.activeId) {
     const params = new URLSearchParams();
@@ -2099,7 +2369,7 @@ async function restoreFromRoute(route = parseRoute()) {
     }
     if (route.lakeId) {
       if (route.lakeRegion) state.activeRegion = route.lakeRegion;
-      await selectLake(route.lakeId);
+      await selectLake(route.lakeId, { waitForTile: route.mode !== "model" });
       if (route.mode === "model") {
         state.sidebarMode = "model";
         setSidebarMode("model");

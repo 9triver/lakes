@@ -147,6 +147,7 @@
           <section id="model-sidebar-panel" class="model-sidebar-panel" hidden>
             <div id="model-summary" class="count">模型验证未运行</div>
             <select id="model-select" class="model-select" aria-label="模型权重"></select>
+            <div id="model-detail" class="model-detail"></div>
             <button id="model-random" class="load-more compact" type="button">随机验证一个湖泊</button>
           </section>
         </div>
@@ -161,42 +162,56 @@
             <div id="lake-subtitle" class="muted">可见光影像和 polygon 会在这里显示</div>
           </div>
           <div class="tools">
-            <label><input id="toggle-image" type="checkbox" checked /> 影像</label>
-            <label><input id="toggle-tile-grid" type="checkbox" checked /> Tile</label>
-            <label><input id="toggle-osm" type="checkbox" checked /> OSM</label>
-            <label><input id="toggle-hydro" type="checkbox" checked /> HydroLAKES</label>
-            <label><input id="toggle-context-osm" type="checkbox" checked /> 其他 OSM</label>
-            <label><input id="toggle-context-hydro" type="checkbox" checked /> 其他 HydroLAKES</label>
-            <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
-            <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
-            <label><input id="toggle-local-label" type="checkbox" checked /> 本地水体标注</label>
-            <label><input id="toggle-model-prediction" type="checkbox" checked /> 模型预测</label>
-            <select id="local-label-select" class="layer-select" aria-label="本地水体标注" disabled>
-              <option value="">无本地标注</option>
-            </select>
-            <label class="slider-tool">
-              JRC 阈值
-              <input id="jrc-threshold" type="range" min="1" max="100" step="1" value="75" />
+            <div class="tool-group">
+              <label><input id="toggle-image" type="checkbox" checked /> 影像</label>
+              <label><input id="toggle-tile-grid" type="checkbox" checked /> Tile</label>
+            </div>
+            <div class="tool-group">
+              <label><input id="toggle-osm" type="checkbox" checked /> OSM</label>
+              <label><input id="toggle-hydro" type="checkbox" checked /> HydroLAKES</label>
+              <label><input id="toggle-context-water" type="checkbox" checked /> 其他</label>
+              <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
+            </div>
+            <div class="tool-group jrc-tool">
+              <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
+              <input id="jrc-threshold" type="range" min="1" max="100" step="1" value="75" aria-label="JRC 阈值" />
               <span id="jrc-threshold-value">75%</span>
-            </label>
-            <button id="zoom-lake" type="button">水体</button>
-            <button id="zoom-tile" type="button">Tile</button>
+            </div>
+            <div id="model-prediction-tool" class="tool-group" hidden>
+              <label><input id="toggle-model-prediction" type="checkbox" checked /> 模型预测</label>
+            </div>
+            <div class="tool-group local-label-tool">
+              <label><input id="toggle-local-label" type="checkbox" checked /> 本地水体标注</label>
+              <select id="local-label-select" class="layer-select" aria-label="本地水体标注" disabled>
+                <option value="">无本地标注</option>
+              </select>
+            </div>
+            <div class="tool-group fit-tool">
+              <button id="zoom-lake" type="button">水体</button>
+              <button id="zoom-tile" type="button">Tile</button>
+            </div>
           </div>
         </header>
-        <section id="sentinel-panel" class="sentinel-panel" hidden>
-          <select id="sentinel-tile" aria-label="Sentinel tile"></select>
-          <select id="imagery-product" aria-label="本地影像"></select>
-          <button id="imagery-apply" type="button">设为影像</button>
-          <input id="sentinel-start" type="date" aria-label="开始日期" />
-          <input id="sentinel-end" type="date" aria-label="结束日期" />
-          <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="50" />%</label>
-          <button id="sentinel-query" type="button">查询产品</button>
-          <div id="sentinel-products" class="sentinel-products"></div>
-        </section>
-        <section id="training-panel" class="training-panel" hidden>
-          <input id="training-notes" type="text" aria-label="备注" placeholder="备注" />
-          <button id="training-save" type="button" disabled>记录当前视图为训练区域</button>
-          <div id="training-status" class="training-status"></div>
+        <section id="lake-controls" class="lake-controls" hidden>
+          <div id="sentinel-panel" class="sentinel-panel" hidden>
+            <div class="control-group imagery-select-control">
+              <select id="sentinel-tile" aria-label="Sentinel tile"></select>
+              <select id="imagery-product" aria-label="本地影像"></select>
+              <button id="imagery-apply" type="button">设为影像</button>
+            </div>
+            <div class="control-group sentinel-query-control">
+              <input id="sentinel-start" type="date" aria-label="开始日期" />
+              <input id="sentinel-end" type="date" aria-label="结束日期" />
+              <label class="cloud-input">云量 ≤ <input id="sentinel-cloud" type="number" min="0" max="100" step="1" value="50" />%</label>
+              <button id="sentinel-query" type="button">查询产品</button>
+            </div>
+            <div id="sentinel-products" class="sentinel-products"></div>
+          </div>
+          <div id="training-panel" class="training-panel control-group" hidden>
+            <input id="training-notes" type="text" aria-label="备注" placeholder="备注" />
+            <button id="training-save" type="button" disabled>记录当前视图为训练区域</button>
+            <div id="training-status" class="training-status"></div>
+          </div>
         </section>
         <section id="patch-review" class="patch-review" hidden>
           <div class="patch-review-head">
