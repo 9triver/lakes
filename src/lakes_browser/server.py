@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import contextlib
 import hashlib
 import io
 import json
 import mimetypes
 import os
+import random
 import re
+import sys
 import threading
 import time
 import uuid
@@ -39,8 +42,9 @@ from rasterio.mask import mask
 from rasterio.merge import merge
 from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.windows import from_bounds
-from rasterio.warp import reproject, transform_bounds
+from rasterio.warp import reproject, transform_bounds, transform_geom as rasterio_transform_geom
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
+from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from lakes_browser.sentinel_download import (
@@ -54,11 +58,13 @@ from lakes_browser.sentinel_download import (
     valid_ratio_for_tci as calculate_valid_ratio_for_tci,
 )
 from lakes_browser.region_config import RegionConfig, load_region_configs
+from lakes_browser.unet_inference import load_unet_checkpoint, predict_array
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = PROJECT_ROOT.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 WEB_MERCATOR_LIMIT = 20037508.342789244
 
 
@@ -644,6 +650,273 @@ class LakeCatalog:
             "geojson": {"type": "FeatureCollection", "features": features},
         }
 
+    def model_validation_models(self) -> dict:
+        items = []
+        default_key = ""
+        default_path = self._default_model_path()
+        for path, legacy in self._iter_model_paths():
+            key = self._model_key(path)
+            label = f"{path.parent.name}/{path.name}" if not legacy else f"旧目录 / {path.parent.name}/{path.name}"
+            try:
+                model = load_unet_checkpoint(path)
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "epoch": model.epoch,
+                    "in_channels": model.in_channels,
+                    "base_channels": model.base_channels,
+                    "scope": self.region.key,
+                    "legacy": legacy,
+                    "default": path.resolve() == default_path.resolve(),
+                }
+            except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "scope": self.region.key,
+                    "legacy": legacy,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "default": path.resolve() == default_path.resolve(),
+                }
+            if item["default"]:
+                default_key = item["key"]
+            items.append(item)
+        for path in iter_global_model_paths():
+            key = global_model_key(path)
+            label = f"全部区域 / {path.parent.name}/{path.name}"
+            try:
+                model = load_unet_checkpoint(path)
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "epoch": model.epoch,
+                    "in_channels": model.in_channels,
+                    "base_channels": model.base_channels,
+                    "scope": "all",
+                    "legacy": False,
+                    "default": False,
+                }
+            except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "scope": "all",
+                    "legacy": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "default": False,
+                }
+            items.append(item)
+        if not default_key and items:
+            default_key = items[0]["key"]
+        return {"region": self.region.key, "default": default_key, "items": items}
+
+    def model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
+        model = self._load_validation_model(model_key)
+        candidates = list(self.lakes)
+        random.shuffle(candidates)
+        skipped = []
+        for lake in candidates:
+            rows = self._model_validation_rows(lake, model.in_channels)
+            if not rows:
+                continue
+            try:
+                prediction = self.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+            except Exception as exc:  # noqa: BLE001 - keep looking for a usable random validation target.
+                skipped.append(f"{lake.object_id}: {type(exc).__name__}: {exc}")
+                continue
+            return {
+                "region": self.region.key,
+                "lake_id": lake.object_id,
+                "lake": self._summary(lake),
+                "model": prediction["model"],
+                "prediction": prediction["prediction"],
+                "stats": prediction["stats"],
+                "imagery": prediction["imagery"],
+                "skipped_count": len(skipped),
+            }
+        model_path = model.path
+        raise FileNotFoundError(
+            f"No lake with active imagery matching model bands ({model.in_channels}) for {self.region.key}: {display_path(model_path)}"
+        )
+
+    def model_prediction_for_lake(
+        self,
+        lake: LakeRecord,
+        threshold: float = 0.5,
+        rows: list[dict] | None = None,
+        model=None,
+        model_key: str = "",
+    ) -> dict:
+        model = model or self._load_validation_model(model_key)
+        rows = rows or self._model_validation_rows(lake, model.in_channels)
+        if not rows:
+            raise FileNotFoundError(f"No active imagery matching model bands for lake {lake.object_id}")
+        rows = sorted(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
+        cache_path = self._model_prediction_cache_path(lake, model.path, rows, threshold)
+        if cache_path.exists():
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            payload["cached"] = True
+            return payload
+
+        row = rows[0]
+        prediction, stats = predict_water_geojson(row["tci_path"], model, threshold=threshold)
+        payload = {
+            "region": self.region.key,
+            "lake_id": lake.object_id,
+            "cached": False,
+            "model": {
+                "key": self._model_key(model.path),
+                "name": model.path.parent.name,
+                "path": display_path(model.path),
+                "device": str(model.device),
+                "epoch": model.epoch,
+                "in_channels": model.in_channels,
+                "base_channels": model.base_channels,
+                "threshold": threshold,
+            },
+            "imagery": {
+                **mosaic_source_meta([row]),
+                "source": row.get("source") or "",
+                "asset": self._imagery_asset_meta(row, lake_id=lake.object_id),
+            },
+            "stats": stats,
+            "prediction": prediction,
+        }
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return payload
+
+    def _load_validation_model(self, model_key: str = ""):
+        model_path = self._model_path_from_key(model_key)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found for {self.region.key}: {display_path(model_path)}")
+        return load_unet_checkpoint(model_path)
+
+    def _default_model_path(self) -> Path:
+        preferred = self.region.model_dir / "unet_current_v1" / "best.pt"
+        if preferred.exists():
+            return preferred
+        return self.region.legacy_model_dir / "unet_current_v1" / "best.pt"
+
+    def _iter_model_paths(self) -> list[tuple[Path, bool]]:
+        paths: list[tuple[Path, bool]] = []
+        if self.region.model_dir.exists():
+            paths.extend((path, False) for path in sorted(self.region.model_dir.glob("*/*.pt")))
+        if self.region.legacy_model_dir.exists():
+            paths.extend((path, True) for path in sorted(self.region.legacy_model_dir.glob("*/*.pt")))
+        return paths
+
+    def _model_path_from_key(self, model_key: str = "") -> Path:
+        key = clean_optional(model_key) or ""
+        if not key:
+            default_path = self._default_model_path()
+            if default_path.exists():
+                return default_path
+            candidates = [path for path, _legacy in self._iter_model_paths()]
+            if candidates:
+                return candidates[0]
+            return default_path
+        path = Path(key)
+        if path.is_absolute():
+            raise ValueError("absolute model paths are not allowed")
+        parts = path.parts
+        if len(parts) == 3 and parts[0] == "all":
+            return global_model_path_from_key(key)
+        if len(parts) == 3 and parts[0] == "legacy":
+            if parts[1] in {"", ".", ".."} or parts[2] in {"", ".", ".."}:
+                raise ValueError(f"invalid model key: {key}")
+            return self.region.legacy_model_dir / parts[1] / parts[2]
+        if len(parts) != 2 or parts[0] in {"", ".", ".."} or parts[1] in {"", ".", ".."}:
+            raise ValueError(f"invalid model key: {key}")
+        return self.region.model_dir / path
+
+    def _model_key(self, path: Path) -> str:
+        path = path.resolve()
+        try:
+            return f"all/{path.relative_to(GLOBAL_MODEL_DIR.resolve())}"
+        except ValueError:
+            pass
+        try:
+            return str(path.relative_to(self.region.model_dir.resolve()))
+        except ValueError:
+            pass
+        try:
+            return f"legacy/{path.relative_to(self.region.legacy_model_dir.resolve())}"
+        except ValueError:
+            return path.name
+
+    def _model_validation_cache_dir(self, model_path: Path) -> Path:
+        try:
+            relative = model_path.resolve().relative_to((PROJECT_ROOT / "data" / "models").resolve())
+            return PROJECT_ROOT / "data" / "model_predictions" / relative.parent
+        except ValueError:
+            return self.region.processed_dir / "model_predictions" / "legacy" / model_path.parent.name
+
+    def _model_prediction_cache_path(self, lake: LakeRecord, model_path: Path, rows: list[dict], threshold: float) -> Path:
+        payload = {
+            "lake_id": lake.object_id,
+            "threshold": round(float(threshold), 4),
+            "model": display_path(model_path),
+            "model_mtime": model_path.stat().st_mtime,
+            "rows": [
+                {
+                    "tile": row.get("tile"),
+                    "product": row.get("product"),
+                    "path": display_path(row["tci_path"]),
+                    "mtime": row["tci_path"].stat().st_mtime,
+                }
+                for row in rows
+            ],
+        }
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+        return self._model_validation_cache_dir(model_path) / f"{safe_filename(lake.object_id)}_{digest}.geojson"
+
+    def _model_validation_rows(self, lake: LakeRecord, in_channels: int) -> list[dict]:
+        rows = []
+        for tile in self._model_validation_tiles(lake):
+            row = self._active_imagery_row(tile, lake)
+            if row is None or row.get("tci_path") is None:
+                continue
+            path = row["tci_path"]
+            if not path.exists():
+                continue
+            try:
+                with rasterio.open(path) as src:
+                    if src.count < in_channels:
+                        continue
+            except Exception:
+                continue
+            rows.append(row)
+        return rows
+
+    def _model_validation_tiles(self, lake: LakeRecord) -> list[str]:
+        tiles = [item["tile"] for item in self.sentinel_tiles_for_lake(lake)["tiles"]]
+        active_lake_tiles = [
+            tile
+            for tile, rows in self.user_tci_rows.items()
+            if any(row.get("lake_id") == lake.object_id for row in rows)
+        ]
+        seen = set()
+        result = []
+        for tile in active_lake_tiles + tiles:
+            tile = str(tile).upper().removeprefix("T")
+            if tile and tile not in seen:
+                seen.add(tile)
+                result.append(tile)
+        return result
+
     def _local_imagery_dirs_for_lake(self, lake: LakeRecord) -> list[Path]:
         directories = []
         seen = set()
@@ -791,31 +1064,46 @@ class LakeCatalog:
 
     def create_training_sample(self, lake: LakeRecord, payload: dict) -> dict:
         readiness = self.training_sample_readiness(lake)
-        if not readiness["ready"]:
-            missing = ", ".join(readiness["missing_tiles"])
-            raise ValueError(f"active imagery is incomplete; missing tiles: {missing}")
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
-        label_scope = clean_optional(payload.get("label_scope")) or "target_only"
-        mask_policy = clean_optional(payload.get("mask_policy")) or "other_water_ignore"
-        context_sources = clean_optional(payload.get("context_sources")) or "osm,hydrolakes"
-        ignore_sources = clean_optional(payload.get("ignore_sources")) or "osm,hydrolakes,esa,jrc"
-        quality = clean_optional(payload.get("quality")) or "good"
+        view_state = payload.get("view_state") if isinstance(payload.get("view_state"), dict) else {}
+        is_current_view = label_source == "current_view" or bool(view_state)
+        label_scope = clean_optional(payload.get("label_scope")) or ("current_view" if is_current_view else "target_only")
+        mask_policy = clean_optional(payload.get("mask_policy")) or ("current_view" if is_current_view else "other_water_ignore")
+        context_sources = clean_optional(payload.get("context_sources")) or ("" if is_current_view else "osm,hydrolakes")
+        ignore_sources = clean_optional(payload.get("ignore_sources")) or ("" if is_current_view else "osm,hydrolakes,esa,jrc")
+        quality = clean_optional(payload.get("quality")) or ""
         notes = clean_optional(payload.get("notes")) or ""
         buffer_ratio = parse_float_or_default(payload.get("buffer_ratio"), 0.8)
         aoi = lake_aoi_geometry(lake, padding=buffer_ratio)
-        label_layer = self.training_label_layer(lake, label_source, label_threshold)
-        if label_layer is None or not label_layer.get("geometry"):
+        if is_current_view:
+            label_source = "current_view"
+            label_layer = self.current_view_training_label_layer(lake, view_state, buffer_ratio=buffer_ratio)
+            label_threshold = clean_optional(label_layer.get("properties", {}).get("jrc_threshold")) or label_threshold
+            context_sources = clean_optional(label_layer.get("properties", {}).get("visible_sources")) or context_sources
+        else:
+            label_layer = self.training_label_layer(lake, label_source, label_threshold)
+        has_label_geometry = bool(
+            label_layer
+            and (
+                label_layer.get("geometry")
+                or (label_layer.get("type") == "FeatureCollection" and label_layer.get("features"))
+            )
+        )
+        if not has_label_geometry:
             raise ValueError(f"label source has no geometry: {label_source}")
 
         product_names = [item["product_name"] for item in readiness["products"]]
         tile_names = [item["tile"] for item in readiness["products"]]
+        required_tile_names = readiness.get("required_tiles") or []
+        missing_tile_names = readiness.get("missing_tiles") or []
         product_key = ",".join(product_names)
         asset_types = [item.get("asset_type", "") for item in readiness["products"]]
         asset_scopes = [item.get("asset_scope", "") for item in readiness["products"]]
         asset_labels = [item.get("asset_label", "") for item in readiness["products"]]
+        view_state_json = json.dumps(view_state, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if view_state else ""
         sample_hash = hashlib.sha1(
-            (product_key + label_source + label_threshold + label_scope + mask_policy).encode("utf-8")
+            (product_key + label_source + label_threshold + label_scope + mask_policy + view_state_json).encode("utf-8")
         ).hexdigest()[:12]
         sample_id = f"{lake.object_id}_{sample_hash}"
         label_path = write_training_label(
@@ -835,6 +1123,10 @@ class LakeCatalog:
             "lake_name": lake.name or "",
             "tile": ",".join(tile_names),
             "tiles": ",".join(tile_names),
+            "required_tiles": ",".join(required_tile_names),
+            "ready_tiles": ",".join(tile_names),
+            "missing_tiles": ",".join(missing_tile_names),
+            "imagery_ready": "true" if readiness.get("ready") else "false",
             "product_id": ",".join(item.get("product_id", "") for item in readiness["products"]),
             "product_name": product_key,
             "products": product_key,
@@ -862,11 +1154,74 @@ class LakeCatalog:
             "buffer_ratio": buffer_ratio,
             "quality": quality,
             "split": clean_optional(payload.get("split")) or "",
+            "view_state_json": view_state_json,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "notes": notes,
         }
         upsert_csv_row(self.region.training_samples, row, key="sample_id")
         return row
+
+    def current_view_training_label_layer(self, lake: LakeRecord, view_state: dict, buffer_ratio: float = 0.8) -> dict:
+        visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
+        features = []
+        sources = []
+
+        def add_layer(key: str, source_name: str, layer: dict | None) -> None:
+            if not visible.get(key) or not layer or not layer.get("geometry"):
+                return
+            props = {**(layer.get("properties") or {})}
+            props.update({"training_layer": key, "source": props.get("source") or layer.get("source") or source_name})
+            features.append({"type": "Feature", "geometry": layer["geometry"], "properties": props})
+            sources.append(key)
+
+        def add_collection(key: str, collection: dict | None) -> None:
+            if not visible.get(key) or not collection:
+                return
+            added = 0
+            for feature in collection.get("features") or []:
+                if not feature.get("geometry"):
+                    continue
+                props = {**(feature.get("properties") or {})}
+                props["training_layer"] = key
+                features.append({"type": "Feature", "geometry": feature["geometry"], "properties": props})
+                added += 1
+            if added:
+                sources.append(key)
+
+        add_layer("osm", "OSM", self._osm_layer(lake))
+        add_layer("hydrolakes", "HydroLAKES", self._match_hydrolakes(lake))
+        add_layer("esa", "ESA", self._esa_smoothed_layer(lake))
+
+        if visible.get("jrc"):
+            threshold = parse_int_or_default(view_state.get("jrc_threshold"), 75)
+            add_layer("jrc", "JRC", self._jrc_occurrence_layer(lake, threshold=threshold))
+        else:
+            threshold = parse_int_or_default(view_state.get("jrc_threshold"), 75)
+
+        if visible.get("context_osm") or visible.get("context_hydrolakes"):
+            context = self.context_water_for_lake(lake, padding=buffer_ratio, min_area_km2=10, limit=500)
+            add_collection("context_osm", context.get("sources", {}).get("osm"))
+            add_collection("context_hydrolakes", context.get("sources", {}).get("hydrolakes"))
+
+        local_label = view_state.get("selected_local_label") if isinstance(view_state.get("selected_local_label"), dict) else {}
+        local_label_id = clean_optional(local_label.get("id"))
+        if visible.get("local_label") and local_label_id:
+            local_payload = self.local_label_geojson(lake, local_label_id)
+            add_collection("local_label", local_payload.get("geojson"))
+
+        if not features:
+            raise ValueError("current view has no visible label geometry")
+
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {
+                "source": "current_view",
+                "visible_sources": ",".join(sources),
+                "jrc_threshold": threshold,
+                "view_state": view_state,
+            },
+        }
 
     def list_training_samples(self) -> dict:
         rows = read_csv_records(self.region.training_samples)
@@ -907,6 +1262,87 @@ class LakeCatalog:
             raise KeyError(f"training sample not found: {sample_id}")
         write_csv_records(self.region.training_samples, kept)
         return {"sample_id": sample_id, "deleted": True}
+
+    def list_training_patches(self, include: str = "") -> dict:
+        rows = []
+        for manifest_path in self.training_patch_manifest_paths():
+            for row in read_csv_records(manifest_path):
+                item = self._training_patch_summary(row, manifest_path)
+                if include == "included" and not item["included"]:
+                    continue
+                if include == "excluded" and item["included"]:
+                    continue
+                rows.append(item)
+        rows.sort(key=lambda item: (item.get("sample_id", ""), int(item.get("row_off") or 0), int(item.get("col_off") or 0)))
+        included_count = sum(1 for item in rows if item["included"])
+        excluded_count = len(rows) - included_count
+        return {
+            "total": len(rows),
+            "included_count": included_count,
+            "excluded_count": excluded_count,
+            "items": rows,
+        }
+
+    def update_training_patch(self, patch_id: str, payload: dict) -> dict:
+        patch_id = str(patch_id)
+        for manifest_path in self.training_patch_manifest_paths():
+            rows = read_csv_records(manifest_path)
+            updated = None
+            for row in rows:
+                if row.get("patch_id") != patch_id:
+                    continue
+                if "include" in payload or "included" in payload:
+                    value = payload.get("include") if "include" in payload else payload.get("included")
+                    row["include"] = "true" if truthy_flag(value, default=False) else "false"
+                if "patch_notes" in payload:
+                    row["patch_notes"] = clean_optional(payload.get("patch_notes")) or ""
+                updated = row
+                break
+            if updated is None:
+                continue
+            write_csv_records(manifest_path, rows)
+            return self._training_patch_summary(updated, manifest_path)
+        raise KeyError(f"training patch not found: {patch_id}")
+
+    def training_patch_preview(self, patch_id: str) -> tuple[bytes, str]:
+        patch = self.training_patch_by_id(patch_id)
+        preview_path = resolve_data_path(patch.get("preview_path", ""), self.region)
+        if not preview_path.exists():
+            raise FileNotFoundError(f"patch preview not found: {patch_id}")
+        return preview_path.read_bytes(), mimetypes.guess_type(preview_path.name)[0] or "image/png"
+
+    def training_patch_by_id(self, patch_id: str) -> dict:
+        patch_id = str(patch_id)
+        for manifest_path in self.training_patch_manifest_paths():
+            for row in read_csv_records(manifest_path):
+                if row.get("patch_id") == patch_id:
+                    return self._training_patch_summary(row, manifest_path)
+        raise KeyError(f"training patch not found: {patch_id}")
+
+    def training_patch_manifest_paths(self) -> list[Path]:
+        root = self.region.processed_dir / "training_patches"
+        if not root.exists():
+            return []
+        return sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+    def _training_patch_summary(self, row: dict, manifest_path: Path) -> dict:
+        patch_id = row.get("patch_id", "")
+        preview_path = resolve_data_path(row.get("preview_path", ""), self.region) if row.get("preview_path") else None
+        npz_path = resolve_data_path(row.get("npz_path", ""), self.region) if row.get("npz_path") else None
+        include_value = clean_optional(row.get("include") or row.get("included"))
+        included = True if include_value is None else truthy_flag(include_value, default=True)
+        lake_id = row.get("lake_id", "")
+        lake = self.get_lake(lake_id) if lake_id else None
+        return {
+            **row,
+            "included": included,
+            "include": "true" if included else "false",
+            "lake_display_name": (lake.properties.get("display_name") if lake else None) or row.get("lake_name") or lake_id,
+            "manifest_path": display_path(manifest_path),
+            "preview_exists": bool(preview_path and preview_path.exists()),
+            "npz_exists": bool(npz_path and npz_path.exists()),
+            "preview_url": f"/api/regions/{self.region.key}/training-patches/{patch_id}/preview.png" if patch_id and preview_path and preview_path.exists() else "",
+        }
 
     def _training_sample_summary(self, row: dict) -> dict:
         lake_id = row.get("lake_id", "")
@@ -1414,11 +1850,18 @@ def write_training_label(region: RegionConfig, sample_id: str, layer: dict, extr
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_id)
     path = region.training_label_dir / f"{safe_id}.geojson"
     properties = {**(layer.get("properties") or {}), **(extra_properties or {})}
-    payload = {
-        "type": "Feature",
-        "properties": properties,
-        "geometry": layer.get("geometry"),
-    }
+    if layer.get("type") == "FeatureCollection":
+        payload = {
+            "type": "FeatureCollection",
+            "properties": properties,
+            "features": layer.get("features") or [],
+        }
+    else:
+        payload = {
+            "type": "Feature",
+            "properties": properties,
+            "geometry": layer.get("geometry"),
+        }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
@@ -1568,6 +2011,81 @@ def water_polygons_from_raster(path: Path, clip_geom, target_geom, water_mask_fn
     return geoms
 
 
+def predict_water_geojson(path: Path, model, threshold: float = 0.5) -> tuple[dict, dict]:
+    threshold = float(threshold)
+    with rasterio.open(path) as src:
+        if src.count < model.in_channels:
+            raise ValueError(f"Raster has {src.count} bands, model needs {model.in_channels}: {display_path(path)}")
+        image = src.read(indexes=list(range(1, model.in_channels + 1))).astype(np.float32)
+        finite = np.all(np.isfinite(image), axis=0)
+        valid = finite & np.any(image != 0, axis=0)
+        if src.nodata is not None:
+            valid &= np.any(image != float(src.nodata), axis=0)
+        probability = predict_array(model, image, valid=valid)
+        predicted = (probability >= threshold) & valid
+        transform = src.transform
+        src_crs = src.crs
+
+    valid_pixels = int(valid.sum())
+    predicted_pixels = int(predicted.sum())
+    raw_geoms = []
+    for geom_json, value in shapes(predicted.astype("uint8"), mask=predicted, transform=transform):
+        if int(value) != 1:
+            continue
+        geom = shape(geom_json)
+        if geom.is_empty:
+            continue
+        if src_crs and str(src_crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
+            geom = shape(rasterio_transform_geom(src_crs, "EPSG:4326", mapping(geom), precision=7))
+        raw_geoms.append(make_valid(geom))
+
+    metric_geoms = []
+    for geom in raw_geoms:
+        try:
+            metric = make_valid(transform_geom(geom, "EPSG:4326", "EPSG:3857"))
+        except Exception:
+            continue
+        parts = list(metric.geoms) if isinstance(metric, MultiPolygon) else [metric]
+        metric_geoms.extend(part for part in parts if not part.is_empty and part.area >= 1000)
+
+    features = []
+    area_m2 = 0.0
+    if metric_geoms:
+        merged = make_valid(unary_union(metric_geoms))
+        parts = list(merged.geoms) if isinstance(merged, MultiPolygon) else [merged]
+        parts = [make_valid(part.simplify(5, preserve_topology=True)) for part in parts if not part.is_empty]
+        parts.sort(key=lambda part: part.area, reverse=True)
+        for index, part in enumerate(parts[:500], start=1):
+            if part.is_empty:
+                continue
+            area_m2 += float(part.area)
+            geom_wgs84 = transform_geom(part, "EPSG:3857", "EPSG:4326")
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": mapping(geom_wgs84),
+                    "properties": {
+                        "source": "model_prediction",
+                        "part": index,
+                        "threshold": threshold,
+                        "area_m2": round(float(part.area), 2),
+                    },
+                }
+            )
+
+    stats = {
+        "threshold": threshold,
+        "valid_pixels": valid_pixels,
+        "predicted_pixels": predicted_pixels,
+        "predicted_ratio": predicted_pixels / max(valid_pixels, 1),
+        "polygon_count": len(features),
+        "area_km2": area_m2 / 1_000_000,
+        "mean_probability": float(probability[valid].mean()) if valid_pixels else 0.0,
+        "max_probability": float(probability[valid].max()) if valid_pixels else 0.0,
+    }
+    return {"type": "FeatureCollection", "features": features}, stats
+
+
 def smooth_jrc_geometry(geom, lake_area_km2: float):
     if lake_area_km2 > 250:
         metric = transform_geom(geom, "EPSG:4326", "EPSG:3857")
@@ -1671,6 +2189,13 @@ def parse_float_or_default(value, default: float) -> float:
     return default if parsed is None else parsed
 
 
+def parse_int_or_default(value, default: int) -> int:
+    try:
+        return int(float(str(value).strip()))
+    except Exception:
+        return default
+
+
 def truthy_flag(value, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1704,10 +2229,169 @@ def split_semicolon(value) -> list[str]:
     return [item.strip() for item in text.split(";") if item.strip()]
 
 
+def run_patch_export(region_key: str, options: dict) -> dict:
+    scripts_dir = PROJECT_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from export_training_patches import export_training_patches  # noqa: PLC0415
+
+    patch_size = parse_int_or_default(options.get("patch_size"), 256)
+    stride = parse_int_or_default(options.get("stride"), 128)
+    min_valid_ratio = parse_float_or_default(options.get("min_valid_ratio"), 0.6)
+    min_water_pixels = parse_int_or_default(options.get("min_water_pixels"), 1)
+    negative_ratio = parse_float_or_default(options.get("negative_ratio"), 0.25)
+    preview_scale = parse_int_or_default(options.get("preview_scale"), 2)
+    preview_limit = parse_int_or_default(options.get("preview_limit"), 0)
+    sample_ids = split_commas(options.get("sample_id") or options.get("sample_ids"))
+    output_dir_text = clean_optional(options.get("output_dir")) or ""
+    args = argparse.Namespace(
+        region=region_key,
+        sample_id=sample_ids or None,
+        patch_size=patch_size,
+        stride=stride,
+        min_valid_ratio=min_valid_ratio,
+        min_water_pixels=min_water_pixels,
+        negative_ratio=negative_ratio,
+        all_touched=truthy_flag(options.get("all_touched"), default=False),
+        output_dir=resolve_data_path(output_dir_text, REGIONS[region_key]) if output_dir_text else None,
+        overwrite=truthy_flag(options.get("overwrite"), default=False),
+        preview_limit=preview_limit,
+        preview_scale=max(1, preview_scale),
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = export_training_patches(args)
+    return {
+        **result,
+        "manifest": display_path(Path(result["manifest"])),
+        "npz_dir": display_path(Path(result["npz_dir"])),
+        "preview_dir": display_path(Path(result["preview_dir"])),
+        "options": {
+            "patch_size": patch_size,
+            "stride": stride,
+            "min_valid_ratio": min_valid_ratio,
+            "min_water_pixels": min_water_pixels,
+            "negative_ratio": negative_ratio,
+            "preview_scale": max(1, preview_scale),
+            "preview_limit": preview_limit,
+            "all_touched": truthy_flag(options.get("all_touched"), default=False),
+            "overwrite": truthy_flag(options.get("overwrite"), default=False),
+            "sample_ids": sample_ids,
+        },
+    }
+
+
+def latest_patch_manifest_for_region(region: RegionConfig) -> Path:
+    root = region.processed_dir / "training_patches"
+    manifests = sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not manifests:
+        raise FileNotFoundError(f"no patch manifest found under {display_path(root)}")
+    return manifests[0]
+
+
+def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
+    scripts_dir = PROJECT_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    scope = scope if scope == "all" else (scope if scope in REGIONS else DEFAULT_REGION_KEY)
+    run_name = clean_optional(options.get("run_name")) or f"unet_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = safe_filename(run_name)
+    output_dir = PROJECT_ROOT / "data" / "models" / scope / run_name
+    manifest_text = clean_optional(options.get("manifest")) or ""
+    patch_dir_text = clean_optional(options.get("patch_dir")) or ""
+    manifest = resolve_data_path(manifest_text, REGIONS[DEFAULT_REGION_KEY]) if manifest_text else None
+    patch_dir = resolve_data_path(patch_dir_text, REGIONS[DEFAULT_REGION_KEY]) if patch_dir_text else None
+    if scope == "all" and manifest is None and patch_dir is None:
+        manifest = build_combined_training_manifest(output_dir)
+    return argparse.Namespace(
+        region=scope,
+        manifest=manifest,
+        patch_dir=patch_dir,
+        output_dir=output_dir,
+        epochs=parse_int_or_default(options.get("epochs"), 30),
+        batch_size=parse_int_or_default(options.get("batch_size"), 8),
+        lr=parse_float_or_default(options.get("lr"), 1e-3),
+        weight_decay=parse_float_or_default(options.get("weight_decay"), 1e-4),
+        base_channels=parse_int_or_default(options.get("base_channels"), 32),
+        val_ratio=parse_float_or_default(options.get("val_ratio"), 0.25),
+        seed=parse_int_or_default(options.get("seed"), 42),
+        num_workers=parse_int_or_default(options.get("num_workers"), 0),
+        device=clean_optional(options.get("device")) or "auto",
+        threshold=parse_float_or_default(options.get("threshold"), 0.5),
+        pos_weight=clean_optional(options.get("pos_weight")) or "auto",
+        max_norm_patches=parse_int_or_default(options.get("max_norm_patches"), 0),
+        no_augment=truthy_flag(options.get("no_augment"), default=False),
+        dry_run=truthy_flag(options.get("dry_run"), default=False),
+    )
+
+
+def build_combined_training_manifest(output_dir: Path) -> Path:
+    rows = []
+    for region in REGIONS.values():
+        try:
+            manifest = latest_patch_manifest_for_region(region)
+        except FileNotFoundError:
+            continue
+        for row in read_csv_records(manifest):
+            include = (row.get("include") or row.get("included") or "true").strip().lower()
+            if include in {"0", "false", "no", "n"}:
+                continue
+            row = {**row, "source_region": region.key, "source_manifest": display_path(manifest)}
+            rows.append(row)
+    if not rows:
+        raise FileNotFoundError("no included patch rows found for all-region training")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest = output_dir / "manifest.csv"
+    write_csv_records(manifest, rows)
+    return manifest
+
+
+def run_training_job(scope: str, options: dict, progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
+    scripts_dir = PROJECT_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from train_unet import train_unet  # noqa: PLC0415
+
+    args = prepare_training_args(scope, options)
+    return train_unet(args, progress_callback=progress_callback, cancel_event=cancel_event)
+
+
+def iter_global_model_paths() -> list[Path]:
+    if not GLOBAL_MODEL_DIR.exists():
+        return []
+    return sorted(GLOBAL_MODEL_DIR.glob("*/*.pt"))
+
+
+def global_model_key(path: Path) -> str:
+    try:
+        return f"all/{path.resolve().relative_to(GLOBAL_MODEL_DIR.resolve())}"
+    except ValueError:
+        return f"all/{path.name}"
+
+
+def global_model_path_from_key(model_key: str) -> Path:
+    key = clean_optional(model_key) or ""
+    path = Path(key)
+    if path.is_absolute():
+        raise ValueError("absolute model paths are not allowed")
+    parts = path.parts
+    if len(parts) == 3 and parts[0] == "all":
+        run_name, weight = parts[1], parts[2]
+    elif len(parts) == 2:
+        run_name, weight = parts
+    else:
+        raise ValueError(f"invalid model key: {key}")
+    if run_name in {"", ".", ".."} or weight in {"", ".", ".."}:
+        raise ValueError(f"invalid model key: {key}")
+    return GLOBAL_MODEL_DIR / run_name / weight
+
+
 def read_csv_records(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    table = pd.read_csv(path, dtype=str).fillna("")
+    try:
+        table = pd.read_csv(path, dtype=str).fillna("")
+    except pd.errors.EmptyDataError:
+        return []
     return table.to_dict("records")
 
 
@@ -1843,6 +2527,170 @@ class DownloadManager:
             )
 
 
+class PatchExportManager:
+    def __init__(self, catalog: LakeCatalog | None = None, catalogs: dict[str, LakeCatalog] | None = None) -> None:
+        self.catalog = catalog
+        self.catalogs = catalogs or {}
+        self._lock = threading.Lock()
+        self.jobs: dict[str, dict] = {}
+
+    def create(self, options: dict) -> dict:
+        job_id = uuid.uuid4().hex[:12]
+        job = {
+            "job_id": job_id,
+            "status": "queued",
+            "message": "排队中",
+            "progress": 0,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "options": options,
+        }
+        with self._lock:
+            self.jobs[job_id] = job
+        thread = threading.Thread(target=self._run, args=(job_id,), daemon=True)
+        thread.start()
+        return dict(job)
+
+    def get(self, job_id: str) -> dict | None:
+        with self._lock:
+            job = self.jobs.get(job_id)
+            return dict(job) if job else None
+
+    def _update(self, job_id: str, **updates) -> None:
+        with self._lock:
+            job = self.jobs[job_id]
+            job.update(updates)
+            job["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def _run(self, job_id: str) -> None:
+        options = self.get(job_id)["options"]
+        try:
+            self._update(job_id, status="running", message="生成 patch 中", progress=10)
+            if self.catalogs:
+                results = []
+                for index, (region_key, _catalog) in enumerate(self.catalogs.items(), start=1):
+                    self._update(job_id, message=f"生成 {region_key} patch 中", progress=max(10, int(index * 80 / max(1, len(self.catalogs)))))
+                    results.append(run_patch_export(region_key, options))
+                result = {
+                    "region": "all",
+                    "regions": results,
+                    "samples": sum(item.get("samples", 0) for item in results),
+                    "patches": sum(item.get("patches", 0) for item in results),
+                }
+            else:
+                result = run_patch_export(self.catalog.region.key, options)
+            self._update(
+                job_id,
+                status="completed",
+                message=f"生成完成：{result.get('patches', 0)} 个 patch",
+                progress=100,
+                result=result,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to local UI.
+            self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")
+
+
+class TrainingManager:
+    def __init__(self, scope: str) -> None:
+        self.scope = scope
+        self._lock = threading.Lock()
+        self.jobs: dict[str, dict] = {}
+        self.cancel_events: dict[str, threading.Event] = {}
+
+    def create(self, options: dict) -> dict:
+        job_id = uuid.uuid4().hex[:12]
+        cancel_event = threading.Event()
+        job = {
+            "job_id": job_id,
+            "scope": self.scope,
+            "status": "queued",
+            "message": "排队中",
+            "progress": 0,
+            "epoch": 0,
+            "epochs": parse_int_or_default(options.get("epochs"), 30),
+            "history": [],
+            "options": options,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        with self._lock:
+            self.jobs[job_id] = job
+            self.cancel_events[job_id] = cancel_event
+        thread = threading.Thread(target=self._run, args=(job_id,), daemon=True)
+        thread.start()
+        return dict(job)
+
+    def get(self, job_id: str) -> dict | None:
+        with self._lock:
+            job = self.jobs.get(job_id)
+            return dict(job) if job else None
+
+    def list(self) -> dict:
+        with self._lock:
+            jobs = [dict(job) for job in self.jobs.values()]
+        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return {"scope": self.scope, "items": jobs}
+
+    def cancel(self, job_id: str) -> dict | None:
+        with self._lock:
+            event = self.cancel_events.get(job_id)
+            job = self.jobs.get(job_id)
+            if job is None:
+                return None
+            if event is not None:
+                event.set()
+            if job.get("status") in {"queued", "running", "configured"}:
+                job["status"] = "cancel_requested"
+                job["message"] = "正在取消"
+                job["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            return dict(job)
+
+    def _update(self, job_id: str, **updates) -> None:
+        with self._lock:
+            job = self.jobs[job_id]
+            job.update(updates)
+            job["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    def _progress(self, job_id: str, payload: dict) -> None:
+        updates = {
+            "status": payload.get("status", "running"),
+            "message": payload.get("message", ""),
+            "progress": payload.get("progress", 0),
+        }
+        for key in ("epoch", "epochs", "record", "best_iou", "output_dir", "config", "result"):
+            if key in payload:
+                updates[key] = payload[key]
+        if "record" in payload:
+            current = self.get(job_id) or {}
+            history = list(current.get("history") or [])
+            history.append(payload["record"])
+            updates["history"] = history
+        self._update(job_id, **updates)
+
+    def _run(self, job_id: str) -> None:
+        job = self.get(job_id)
+        options = job["options"]
+        cancel_event = self.cancel_events[job_id]
+        try:
+            self._update(job_id, status="running", message="准备训练数据", progress=2)
+            result = run_training_job(
+                self.scope,
+                options,
+                progress_callback=lambda payload: self._progress(job_id, payload),
+                cancel_event=cancel_event,
+            )
+            status = result.get("status") or "completed"
+            if status == "cancelled":
+                self._update(job_id, status="cancelled", message="训练已取消", progress=100, result=result)
+            else:
+                self._update(job_id, status="completed", message="训练完成", progress=100, result=result)
+        except Exception as exc:  # noqa: BLE001 - surfaced to local UI.
+            self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")
+        finally:
+            with self._lock:
+                self.cancel_events.pop(job_id, None)
+
+
 def resolve_data_path(value, region: RegionConfig | None = None) -> Path:
     path = Path(str(value))
     if path.is_absolute():
@@ -1859,6 +2707,25 @@ def display_path(path: Path) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+
+def safe_filename(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "item"
+
+
+def split_global_model_key(value: str) -> tuple[str, str]:
+    text = clean_optional(value) or ""
+    parts = text.split("/", 1)
+    if len(parts) != 2:
+        return "", text
+    return parts[0], parts[1]
+
+
+def is_frontend_route(path: str) -> bool:
+    if path == "/":
+        return True
+    first = path.strip("/").split("/", 1)[0]
+    return first in {"regions", "lakes", "training", "model"}
 
 
 def transform_geom(geom, src_crs: str, dst_crs: str):
@@ -2282,28 +3149,91 @@ def render_tci_png(
 class LakeHandler(BaseHTTPRequestHandler):
     catalogs: dict[str, LakeCatalog]
     downloads_by_region: dict[str, DownloadManager]
+    patch_exports_by_region: dict[str, PatchExportManager]
+    training_runs_by_scope: dict[str, TrainingManager]
+    all_patch_exports: PatchExportManager
     catalog: LakeCatalog
     downloads: DownloadManager
+    patch_exports: PatchExportManager
+    training_runs: TrainingManager
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
-            if path.startswith("/api/regions/"):
+            if path.startswith("/api/regions/all/"):
+                path = "/api/all" + path.removeprefix("/api/regions/all")
+                self.catalog = self.__class__.catalog
+                self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.all_patch_exports
+                self.training_runs = self.__class__.training_runs_by_scope["all"]
+            elif path.startswith("/api/regions/"):
                 context = self._route_region_path(path)
                 if context is None:
                     return
                 path, self.catalog, self.downloads = context
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
             else:
                 self.catalog = self.__class__.catalog
                 self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
 
-            if path == "/":
+            if is_frontend_route(path):
                 self._serve_file(STATIC_DIR / "index.html")
             elif path.startswith("/static/"):
                 self._serve_file(STATIC_DIR / path.removeprefix("/static/"))
             elif path == "/api/regions":
                 self._json(self._regions_payload())
+            elif path == "/api/all/lakes":
+                params = parse_qs(parsed.query)
+                query = params.get("q", [""])[0]
+                limit = int(params.get("limit", ["200"])[0])
+                offset = int(params.get("offset", ["0"])[0])
+                filters = {
+                    key: params.get(key, [""])[0]
+                    for key in [
+                        "water_type",
+                        "province",
+                        "city",
+                        "county",
+                        "polygon_quality",
+                        "metadata_quality",
+                        "area_bucket",
+                        "has_tci",
+                        "has_name",
+                        "min_area",
+                        "max_area",
+                    ]
+                }
+                self._json(self._all_lakes_payload(query=query, limit=limit, offset=offset, filters=filters))
+            elif path == "/api/all/training-samples":
+                self._json(self._all_training_samples_payload())
+            elif path == "/api/all/training-patches":
+                params = parse_qs(parsed.query)
+                include = params.get("include", [""])[0]
+                self._json(self._all_training_patches_payload(include=include))
+            elif path == "/api/all/training-runs":
+                self._json(self.training_runs.list())
+            elif re.fullmatch(r"/api/all/training-runs/[^/]+", path):
+                job_id = path.rsplit("/", 1)[-1]
+                job = self.training_runs.get(job_id)
+                if job is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Training job not found")
+                    return
+                self._json(job)
+            elif path == "/api/all/model-validation/models":
+                self._json(self._all_model_validation_models_payload())
+            elif path == "/api/all/model-validation/random":
+                params = parse_qs(parsed.query)
+                threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
+                model_key = params.get("model", [""])[0]
+                try:
+                    self._json(self._all_model_validation_random(threshold=threshold, model_key=model_key))
+                except (FileNotFoundError, ValueError) as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
             elif path == "/api/lakes":
                 params = parse_qs(parsed.query)
                 query = params.get("q", [""])[0]
@@ -2461,6 +3391,63 @@ class LakeHandler(BaseHTTPRequestHandler):
                 self._json(self.catalog.training_sample_readiness(lake, buffer_ratio=buffer_ratio))
             elif path == "/api/training-samples":
                 self._json(self.catalog.list_training_samples())
+            elif path == "/api/training-patches":
+                params = parse_qs(parsed.query)
+                include = params.get("include", [""])[0]
+                self._json(self.catalog.list_training_patches(include=include))
+            elif re.fullmatch(r"/api/(?:all/)?training-patches/export-jobs/[^/]+", path):
+                job_id = path.rsplit("/", 1)[-1]
+                job = self.patch_exports.get(job_id)
+                if job is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Patch export job not found")
+                    return
+                self._json(job)
+            elif path == "/api/training-runs":
+                self._json(self.training_runs.list())
+            elif re.fullmatch(r"/api/training-runs/[^/]+", path):
+                job_id = path.rsplit("/", 1)[-1]
+                job = self.training_runs.get(job_id)
+                if job is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Training job not found")
+                    return
+                self._json(job)
+            elif re.fullmatch(r"/api/training-patches/[^/]+/preview\.png", path):
+                patch_id = path.split("/")[-2]
+                try:
+                    payload, content_type = self.catalog.training_patch_preview(patch_id)
+                except (KeyError, FileNotFoundError) as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(payload)
+            elif path == "/api/model-validation/models":
+                self._json(self.catalog.model_validation_models())
+            elif path == "/api/model-validation/random":
+                params = parse_qs(parsed.query)
+                threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
+                model_key = params.get("model", [""])[0]
+                try:
+                    self._json(self.catalog.model_validation_random(threshold=threshold, model_key=model_key))
+                except (FileNotFoundError, ValueError) as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
+            elif re.fullmatch(r"/api/lakes/[^/]+/model-prediction", path):
+                lake_key = path.split("/")[-2]
+                lake = self.catalog.get_lake(lake_key)
+                if lake is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Lake not found")
+                    return
+                params = parse_qs(parsed.query)
+                threshold = parse_float_or_default(params.get("threshold", ["0.5"])[0], 0.5)
+                model_key = params.get("model", [""])[0]
+                try:
+                    self._json(self.catalog.model_prediction_for_lake(lake, threshold=threshold, model_key=model_key))
+                except (FileNotFoundError, ValueError) as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
             elif path == "/api/sentinel/products":
                 params = parse_qs(parsed.query)
                 tile = params.get("tile", [""])[0]
@@ -2512,8 +3499,10 @@ class LakeHandler(BaseHTTPRequestHandler):
                 except FileNotFoundError as exc:
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
-            else:
+            elif path.startswith("/api/"):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
+            else:
+                self._serve_file(STATIC_DIR / "index.html")
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -2521,14 +3510,24 @@ class LakeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
-            if path.startswith("/api/regions/"):
+            if path.startswith("/api/regions/all/"):
+                path = "/api/all" + path.removeprefix("/api/regions/all")
+                self.catalog = self.__class__.catalog
+                self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.all_patch_exports
+                self.training_runs = self.__class__.training_runs_by_scope["all"]
+            elif path.startswith("/api/regions/"):
                 context = self._route_region_path(path)
                 if context is None:
                     return
                 path, self.catalog, self.downloads = context
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
             else:
                 self.catalog = self.__class__.catalog
                 self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
 
             if path == "/api/sentinel/downloads":
                 payload = self._read_json()
@@ -2579,6 +3578,17 @@ class LakeHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.BAD_REQUEST, str(exc))
                     return
                 self._json({"sample": result})
+            elif path in {"/api/training-patches/export-jobs", "/api/all/training-patches/export-jobs"}:
+                self._json(self.patch_exports.create(self._read_json()))
+            elif path in {"/api/training-runs", "/api/all/training-runs"}:
+                self._json(self.training_runs.create(self._read_json()))
+            elif re.fullmatch(r"/api/(?:all/)?training-runs/[^/]+/cancel", path):
+                job_id = path.split("/")[-2]
+                job = self.training_runs.cancel(job_id)
+                if job is None:
+                    self._error(HTTPStatus.NOT_FOUND, "Training job not found")
+                    return
+                self._json(job)
             else:
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
@@ -2588,14 +3598,24 @@ class LakeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
-            if path.startswith("/api/regions/"):
+            if path.startswith("/api/regions/all/"):
+                path = "/api/all" + path.removeprefix("/api/regions/all")
+                self.catalog = self.__class__.catalog
+                self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.all_patch_exports
+                self.training_runs = self.__class__.training_runs_by_scope["all"]
+            elif path.startswith("/api/regions/"):
                 context = self._route_region_path(path)
                 if context is None:
                     return
                 path, self.catalog, self.downloads = context
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
             else:
                 self.catalog = self.__class__.catalog
                 self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
 
             if re.fullmatch(r"/api/training-samples/[^/]+", path):
                 sample_id = path.rsplit("/", 1)[-1]
@@ -2605,6 +3625,14 @@ class LakeHandler(BaseHTTPRequestHandler):
                     self._error(HTTPStatus.NOT_FOUND, str(exc))
                     return
                 self._json({"sample": result})
+            elif re.fullmatch(r"/api/training-patches/[^/]+", path):
+                patch_id = path.rsplit("/", 1)[-1]
+                try:
+                    result = self.catalog.update_training_patch(patch_id, self._read_json())
+                except KeyError as exc:
+                    self._error(HTTPStatus.NOT_FOUND, str(exc))
+                    return
+                self._json({"patch": result})
             else:
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
@@ -2614,14 +3642,24 @@ class LakeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
-            if path.startswith("/api/regions/"):
+            if path.startswith("/api/regions/all/"):
+                path = "/api/all" + path.removeprefix("/api/regions/all")
+                self.catalog = self.__class__.catalog
+                self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.all_patch_exports
+                self.training_runs = self.__class__.training_runs_by_scope["all"]
+            elif path.startswith("/api/regions/"):
                 context = self._route_region_path(path)
                 if context is None:
                     return
                 path, self.catalog, self.downloads = context
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
             else:
                 self.catalog = self.__class__.catalog
                 self.downloads = self.__class__.downloads
+                self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
+                self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
 
             if re.fullmatch(r"/api/training-samples/[^/]+", path):
                 sample_id = path.rsplit("/", 1)[-1]
@@ -2673,6 +3711,175 @@ class LakeHandler(BaseHTTPRequestHandler):
             )
         return {"default": DEFAULT_REGION_KEY, "items": items}
 
+    def _all_lakes_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
+        merged = []
+        total = 0
+        for key, catalog in self.__class__.catalogs.items():
+            payload = catalog.list_lakes(query=query, limit=10**9, offset=0, filters=filters)
+            total += payload["total"]
+            for item in payload["items"]:
+                merged.append({
+                    **item,
+                    "region": key,
+                    "region_name": catalog.region.name,
+                })
+        merged.sort(key=lambda item: (-(item.get("area_km2") or 0), item.get("region", ""), item.get("object_id", "")))
+        page = merged[offset : offset + limit]
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "items": page,
+            "all_regions": True,
+        }
+
+    def _all_training_samples_payload(self) -> dict:
+        items = []
+        total = 0
+        for key, catalog in self.__class__.catalogs.items():
+            payload = catalog.list_training_samples()
+            total += payload.get("total", 0)
+            for item in payload.get("items", []):
+                items.append({**item, "region": key, "region_name": catalog.region.name})
+        items.sort(key=lambda item: (item.get("region", ""), item.get("created_at", ""), item.get("sample_id", "")), reverse=True)
+        return {"total": total, "items": items, "all_regions": True}
+
+    def _all_training_patches_payload(self, include: str = "") -> dict:
+        items = []
+        included_count = 0
+        excluded_count = 0
+        for key, catalog in self.__class__.catalogs.items():
+            payload = catalog.list_training_patches(include=include)
+            included_count += payload.get("included_count", 0)
+            excluded_count += payload.get("excluded_count", 0)
+            for item in payload.get("items", []):
+                items.append({**item, "region": key, "region_name": catalog.region.name})
+        items.sort(key=lambda item: (item.get("region", ""), item.get("sample_id", ""), int(item.get("row_off") or 0), int(item.get("col_off") or 0)))
+        return {
+            "total": len(items),
+            "included_count": included_count,
+            "excluded_count": excluded_count,
+            "items": items,
+            "all_regions": True,
+        }
+
+    def _all_model_validation_models_payload(self) -> dict:
+        items = []
+        default_key = ""
+        for path in iter_global_model_paths():
+            key = global_model_key(path)
+            label = f"全部区域 / {path.parent.name}/{path.name}"
+            try:
+                model = load_unet_checkpoint(path)
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "epoch": model.epoch,
+                    "in_channels": model.in_channels,
+                    "base_channels": model.base_channels,
+                    "region": "all",
+                    "region_name": "全部区域",
+                    "scope": "all",
+                    "default": path.name == "best.pt" and not default_key,
+                }
+            except Exception as exc:  # noqa: BLE001 - broken checkpoints should be visible, not fatal.
+                item = {
+                    "key": key,
+                    "label": label,
+                    "name": path.parent.name,
+                    "weight": path.name,
+                    "path": display_path(path),
+                    "region": "all",
+                    "region_name": "全部区域",
+                    "scope": "all",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "default": False,
+                }
+            if item["default"] and not default_key:
+                default_key = key
+            items.append(item)
+        for key, catalog in self.__class__.catalogs.items():
+            payload = catalog.model_validation_models()
+            for item in payload.get("items", []):
+                if item.get("scope") == "all":
+                    continue
+                global_key = f"{key}/{item['key']}"
+                out = {
+                    **item,
+                    "key": global_key,
+                    "label": f"{catalog.region.name} / {item['label']}",
+                    "region": key,
+                    "region_name": catalog.region.name,
+                    "scope": key,
+                }
+                if item.get("default") and not default_key:
+                    default_key = global_key
+                items.append(out)
+        return {"region": "all", "default": default_key or (items[0]["key"] if items else ""), "items": items, "all_regions": True}
+
+    def _all_model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
+        region_key, local_model_key = split_global_model_key(model_key)
+        if not region_key:
+            payload = self._all_model_validation_models_payload()
+            if not payload["default"]:
+                raise FileNotFoundError("No model weights found")
+            region_key, local_model_key = split_global_model_key(payload["default"])
+        if region_key == "all":
+            return self._all_model_validation_random_global(threshold=threshold, model_key=local_model_key)
+        if region_key not in self.__class__.catalogs:
+            raise FileNotFoundError(f"Region not found for model: {region_key}")
+        result = self.__class__.catalogs[region_key].model_validation_random(threshold=threshold, model_key=local_model_key)
+        result["model"]["key"] = f"{region_key}/{result['model']['key']}"
+        result["model"]["scope"] = region_key
+        result["model"]["region_name"] = self.__class__.catalogs[region_key].region.name
+        result["lake"]["region"] = region_key
+        result["lake"]["region_name"] = self.__class__.catalogs[region_key].region.name
+        return result
+
+    def _all_model_validation_random_global(self, threshold: float = 0.5, model_key: str = "") -> dict:
+        model_path = global_model_path_from_key(model_key)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Global model not found: {display_path(model_path)}")
+        model = load_unet_checkpoint(model_path)
+        catalogs = list(self.__class__.catalogs.items())
+        random.shuffle(catalogs)
+        skipped = []
+        for region_key, catalog in catalogs:
+            candidates = list(catalog.lakes)
+            random.shuffle(candidates)
+            for lake in candidates:
+                rows = catalog._model_validation_rows(lake, model.in_channels)
+                if not rows:
+                    continue
+                try:
+                    prediction = catalog.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+                except Exception as exc:  # noqa: BLE001 - keep looking for a usable validation target.
+                    skipped.append(f"{region_key}/{lake.object_id}: {type(exc).__name__}: {exc}")
+                    continue
+                prediction["model"]["key"] = global_model_key(model_path)
+                prediction["model"]["scope"] = "all"
+                prediction["model"]["region_name"] = "全部区域"
+                return {
+                    "region": region_key,
+                    "lake_id": lake.object_id,
+                    "lake": {
+                        **catalog._summary(lake),
+                        "region": region_key,
+                        "region_name": catalog.region.name,
+                    },
+                    "model": prediction["model"],
+                    "prediction": prediction["prediction"],
+                    "stats": prediction["stats"],
+                    "imagery": prediction["imagery"],
+                    "skipped_count": len(skipped),
+                }
+        raise FileNotFoundError(
+            f"No lake with active imagery matching global model bands ({model.in_channels}): {display_path(model_path)}"
+        )
+
     def _json(self, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(HTTPStatus.OK)
@@ -2706,6 +3913,7 @@ class LakeHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -2720,8 +3928,18 @@ def main() -> None:
     LakeHandler.downloads_by_region = {
         key: DownloadManager(catalog) for key, catalog in LakeHandler.catalogs.items()
     }
+    LakeHandler.patch_exports_by_region = {
+        key: PatchExportManager(catalog) for key, catalog in LakeHandler.catalogs.items()
+    }
+    LakeHandler.all_patch_exports = PatchExportManager(catalogs=LakeHandler.catalogs)
+    LakeHandler.training_runs_by_scope = {
+        **{key: TrainingManager(key) for key in LakeHandler.catalogs},
+        "all": TrainingManager("all"),
+    }
     LakeHandler.catalog = LakeHandler.catalogs[DEFAULT_REGION_KEY]
     LakeHandler.downloads = LakeHandler.downloads_by_region[DEFAULT_REGION_KEY]
+    LakeHandler.patch_exports = LakeHandler.patch_exports_by_region[DEFAULT_REGION_KEY]
+    LakeHandler.training_runs = LakeHandler.training_runs_by_scope[DEFAULT_REGION_KEY]
     server = ThreadingHTTPServer((args.host, args.port), LakeHandler)
     print(f"Lake browser running: http://{args.host}:{args.port}")
     for key, catalog in LakeHandler.catalogs.items():

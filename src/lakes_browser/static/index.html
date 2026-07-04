@@ -18,6 +18,7 @@
           <div class="sidebar-tabs" role="tablist" aria-label="侧栏视图">
             <button id="tab-lakes" type="button" class="active">湖泊</button>
             <button id="tab-training" type="button">训练集</button>
+            <button id="tab-model" type="button">模型验证</button>
           </div>
           <section id="lake-sidebar-panel">
           <input id="search" type="search" placeholder="搜索名称 / OSM ID" autocomplete="off" />
@@ -67,7 +68,86 @@
           </section>
           <section id="training-sidebar-panel" class="training-sidebar-panel" hidden>
             <div id="training-summary" class="count">训练集未加载</div>
-            <button id="training-refresh" class="load-more compact" type="button">刷新训练集</button>
+            <div class="training-view-tabs" role="tablist" aria-label="训练集视图">
+              <button id="training-view-samples" type="button" class="active">样本</button>
+              <button id="training-view-patches" type="button">Patch</button>
+              <button id="training-view-train" type="button">训练</button>
+            </div>
+            <div id="patch-controls" class="patch-controls" hidden>
+              <select id="patch-include-filter" aria-label="Patch 状态">
+                <option value="">全部 Patch</option>
+                <option value="included">已包含</option>
+                <option value="excluded">已排除</option>
+              </select>
+              <select id="patch-water-filter" aria-label="Patch 水体">
+                <option value="">全部内容</option>
+                <option value="water">含水体</option>
+                <option value="negative">无水体</option>
+              </select>
+            </div>
+            <div id="patch-export-controls" class="patch-export-controls" hidden>
+              <label class="patch-export-field">
+                <span>Patch 尺寸</span>
+                <input id="patch-size" type="number" min="64" max="1024" step="64" value="256" aria-label="Patch 尺寸" />
+              </label>
+              <label class="patch-export-field">
+                <span>步长</span>
+                <input id="patch-stride" type="number" min="32" max="1024" step="32" value="128" aria-label="Patch 步长" />
+              </label>
+              <label class="patch-export-field">
+                <span>预览倍率</span>
+                <input id="patch-preview-scale" type="number" min="1" max="4" step="1" value="2" aria-label="预览倍率" />
+              </label>
+              <label class="patch-export-check" title="删除同参数输出目录后重新生成；不勾选时会尽量保留已有 include/exclude 状态">
+                <input id="patch-overwrite" type="checkbox" />
+                <span>覆盖重建</span>
+              </label>
+              <button id="patch-export" class="load-more compact" type="button">生成 Patch</button>
+              <div id="patch-export-status" class="count">未生成</div>
+            </div>
+            <div id="training-run-controls" class="training-run-controls" hidden>
+              <label class="patch-export-field">
+                <span>模型名称</span>
+                <input id="train-run-name" type="text" value="" placeholder="自动生成" aria-label="模型名称" />
+              </label>
+              <label class="patch-export-field">
+                <span>轮数</span>
+                <input id="train-epochs" type="number" min="1" max="500" step="1" value="30" aria-label="训练轮数" />
+              </label>
+              <label class="patch-export-field">
+                <span>Batch</span>
+                <input id="train-batch-size" type="number" min="1" max="128" step="1" value="8" aria-label="Batch size" />
+              </label>
+              <label class="patch-export-field">
+                <span>学习率</span>
+                <input id="train-lr" type="number" min="0.000001" max="1" step="0.0001" value="0.001" aria-label="学习率" />
+              </label>
+              <label class="patch-export-field">
+                <span>模型宽度</span>
+                <input id="train-base-channels" type="number" min="4" max="128" step="4" value="32" aria-label="模型宽度" />
+              </label>
+              <label class="patch-export-field">
+                <span>设备</span>
+                <select id="train-device" aria-label="训练设备">
+                  <option value="cuda">GPU</option>
+                  <option value="auto">自动</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </label>
+              <label class="patch-export-check">
+                <input id="train-no-augment" type="checkbox" />
+                <span>关闭增强</span>
+              </label>
+              <button id="train-start" class="load-more compact" type="button">开始训练</button>
+              <button id="train-cancel" class="load-more compact danger" type="button" disabled>取消训练</button>
+              <div id="train-status" class="count">未开始</div>
+            </div>
+            <button id="training-refresh" class="load-more compact" type="button">刷新</button>
+          </section>
+          <section id="model-sidebar-panel" class="model-sidebar-panel" hidden>
+            <div id="model-summary" class="count">模型验证未运行</div>
+            <select id="model-select" class="model-select" aria-label="模型权重"></select>
+            <button id="model-random" class="load-more compact" type="button">随机验证一个湖泊</button>
           </section>
         </div>
         <div id="lake-list" class="lake-list"></div>
@@ -90,6 +170,7 @@
             <label><input id="toggle-esa" type="checkbox" checked /> ESA 平滑</label>
             <label><input id="toggle-jrc" type="checkbox" checked /> JRC</label>
             <label><input id="toggle-local-label" type="checkbox" checked /> 本地水体标注</label>
+            <label><input id="toggle-model-prediction" type="checkbox" checked /> 模型预测</label>
             <select id="local-label-select" class="layer-select" aria-label="本地水体标注" disabled>
               <option value="">无本地标注</option>
             </select>
@@ -113,36 +194,34 @@
           <div id="sentinel-products" class="sentinel-products"></div>
         </section>
         <section id="training-panel" class="training-panel" hidden>
-          <select id="training-label-source" aria-label="标注来源">
-            <option value="osm">OSM</option>
-            <option value="hydrolakes">HydroLAKES</option>
-            <option value="esa">ESA</option>
-            <option value="jrc">JRC</option>
-          </select>
-          <select id="training-jrc-threshold" aria-label="JRC 阈值">
-            <option value="50">JRC 50%</option>
-            <option value="75" selected>JRC 75%</option>
-            <option value="90">JRC 90%</option>
-          </select>
-          <select id="training-quality" aria-label="样本质量">
-            <option value="good">good</option>
-            <option value="usable">usable</option>
-            <option value="needs_edit">needs_edit</option>
-            <option value="bad">bad</option>
-          </select>
-          <select id="training-label-scope" aria-label="标注范围">
-            <option value="target_only" selected>当前水体</option>
-            <option value="aoi_water">AOI 水体</option>
-          </select>
-          <select id="training-mask-policy" aria-label="掩膜策略">
-            <option value="other_water_ignore" selected>其他水体忽略</option>
-            <option value="visible_water_positive">可见水体为正</option>
-          </select>
           <input id="training-notes" type="text" aria-label="备注" placeholder="备注" />
-          <button id="training-save" type="button" disabled>加入训练区域</button>
+          <button id="training-save" type="button" disabled>记录当前视图为训练区域</button>
           <div id="training-status" class="training-status"></div>
         </section>
-        <div class="map-wrap">
+        <section id="patch-review" class="patch-review" hidden>
+          <div class="patch-review-head">
+            <div>
+              <h2>Patch 审核</h2>
+              <div id="patch-review-summary" class="muted">暂无 patch</div>
+            </div>
+            <div class="patch-pager">
+              <button id="patch-prev" type="button">上一页</button>
+              <span id="patch-page-label">1 / 1</span>
+              <button id="patch-next" type="button">下一页</button>
+            </div>
+          </div>
+          <div id="patch-grid" class="patch-grid"></div>
+        </section>
+        <section id="training-run-view" class="training-run-view" hidden>
+          <div class="patch-review-head">
+            <div>
+              <h2>模型训练</h2>
+              <div id="training-run-summary" class="muted">未开始</div>
+            </div>
+          </div>
+          <div id="training-run-body" class="training-run-body"></div>
+        </section>
+        <div id="map-wrap" class="map-wrap">
           <div id="empty" class="empty">从左侧列表选择湖泊</div>
           <div id="loading" class="loading" hidden>
             <div class="spinner"></div>
@@ -153,6 +232,26 @@
         <footer id="meta" class="meta"></footer>
       </section>
     </main>
+    <div id="patch-modal" class="patch-modal" hidden>
+      <div class="patch-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="patch-modal-title">
+        <div class="patch-modal-head">
+          <div>
+            <h2 id="patch-modal-title">Patch 预览</h2>
+            <div id="patch-modal-subtitle" class="muted"></div>
+          </div>
+          <button id="patch-modal-close" type="button" aria-label="关闭">关闭</button>
+        </div>
+        <div class="patch-modal-body">
+          <div class="patch-modal-image-wrap">
+            <img id="patch-modal-image" alt="" />
+          </div>
+          <div class="patch-modal-info">
+            <div id="patch-modal-meta" class="patch-modal-meta"></div>
+            <button id="patch-modal-toggle" type="button"></button>
+          </div>
+        </div>
+      </div>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/ol@10.6.1/dist/ol.js"></script>
     <script src="/static/app.js"></script>
   </body>
