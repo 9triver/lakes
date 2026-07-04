@@ -610,8 +610,8 @@ async function runRandomModelValidation() {
   setLoading(true, "模型推理中");
   try {
     rasterLayer.setSource(null);
-    toggleImageEl.checked = true;
-    rasterLayer.setVisible(true);
+    toggleImageEl.checked = false;
+    rasterLayer.setVisible(false);
     toggleModelPredictionEl.checked = true;
     vectorLayers.modelPrediction.setVisible(true);
     const params = new URLSearchParams();
@@ -640,8 +640,6 @@ async function runRandomModelValidation() {
 function applyModelPrediction(payload) {
   if (!payload?.prediction) return;
   addFeatureCollection("modelPrediction", payload.prediction);
-  toggleImageEl.checked = true;
-  rasterLayer.setVisible(true);
   toggleModelPredictionEl.checked = true;
   vectorLayers.modelPrediction.setVisible(true);
   fitToPredictionOrLake(payload);
@@ -1166,15 +1164,17 @@ async function loadTileLayer(shapeId, lake) {
   const payload = await fetchJson(activeApiPath(`/lakes/${shapeId}/tile-meta?padding=0.8&v=${Date.now()}`));
   if (state.activeId !== shapeId) return;
   state.tileMeta = payload;
-  rasterLayer.setSource(
-    new ol.source.XYZ({
-      url: activeApiPath(`/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`),
-      tileSize: 256,
-      minZoom: 5,
-      maxZoom: 16,
-      transition: 120,
-    }),
-  );
+  if (state.sidebarMode !== "model" || toggleImageEl.checked) {
+    rasterLayer.setSource(
+      new ol.source.XYZ({
+        url: activeApiPath(`/lakes/${shapeId}/tiles/{z}/{x}/{y}.png?v=${Date.now()}`),
+        tileSize: 256,
+        minZoom: 5,
+        maxZoom: 16,
+        transition: 120,
+      }),
+    );
+  }
   rasterLayer.setVisible(toggleImageEl.checked);
   const focusBounds = payload.lake_bounds || payload.bounds || lake.bbox;
   fitToBounds(focusBounds);
@@ -1896,6 +1896,9 @@ loadMoreEl.addEventListener("click", () => {
 
 toggleImageEl.addEventListener("change", () => {
   rasterLayer.setVisible(toggleImageEl.checked);
+  if (toggleImageEl.checked && !rasterLayer.getSource() && state.activeId && state.lake) {
+    loadTileLayer(state.activeId, state.lake).catch(showError);
+  }
 });
 
 for (const [checkbox, layerName] of [
