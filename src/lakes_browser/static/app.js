@@ -700,7 +700,7 @@ function renderTrainingViewMode() {
   } else if (state.lake) {
     renderActiveLakeTitle();
     sentinelPanelEl.hidden = modelMode || !(state.imagery?.tiles?.length);
-    trainingPanelEl.hidden = modelMode || !state.imagery;
+    trainingPanelEl.hidden = !state.imagery;
     renderMeta();
     ensureMapVisible();
   } else {
@@ -781,6 +781,7 @@ async function runRandomModelValidation() {
 
 function applyModelPrediction(payload) {
   if (!payload?.prediction) return;
+  state.modelValidation = payload;
   addFeatureCollection("modelPrediction", payload.prediction);
   toggleModelPredictionEl.checked = true;
   vectorLayers.modelPrediction.setVisible(true);
@@ -872,6 +873,7 @@ function renderTrainingSamples() {
       </div>
       <div class="training-meta-line">${escapeHtml(formatTrainingLabelSource(sample.label_source, sample.label_threshold))} · ${escapeHtml(formatLabelScope(sample.label_scope))} · ${escapeHtml(formatMaskPolicy(sample.mask_policy))}</div>
       <div class="training-meta-line">${escapeHtml(sample.tile_count || 0)} tile · ${escapeHtml(formatImageryAssetLabels(sample.imagery_asset_labels || sample.imagery_asset_label))} · ${escapeHtml(sample.product_date || "")}</div>
+      ${sample.diagnostic_model_name || sample.diagnostic_model_key ? `<div class="training-meta-line">诊断模型 ${escapeHtml(sample.diagnostic_model_name || sample.diagnostic_model_key)} · 预测水体 ${escapeHtml(formatPercentText(sample.diagnostic_prediction_ratio))}</div>` : ""}
       <div class="training-meta-line" title="${escapeHtml(sample.sample_id || "")}">${escapeHtml(sample.sample_id || "")}</div>
     `;
     const edit = document.createElement("div");
@@ -1627,7 +1629,7 @@ async function loadImageryOptions(shapeId) {
   const payload = await fetchJson(activeApiPath(`/lakes/${shapeId}/imagery`));
   if (state.activeId !== shapeId) return;
   state.imagery = payload;
-  trainingPanelEl.hidden = state.sidebarMode === "model";
+  trainingPanelEl.hidden = !state.imagery;
   renderImageryOptions();
 }
 
@@ -1700,6 +1702,7 @@ function captureTrainingViewState() {
       esa: toggleEsaEl.checked,
       jrc: toggleJrcEl.checked,
       local_label: toggleLocalLabelEl.checked,
+      model_prediction: state.sidebarMode === "model" && toggleModelPredictionEl.checked,
     },
     jrc_threshold: Number(jrcThresholdEl.value),
     selected_local_label: selectedLocalLabel
@@ -1712,12 +1715,36 @@ function captureTrainingViewState() {
       : null,
     selected_tile: sentinelTileEl.value || "",
     selected_product: imageryProductEl.value || "",
+    model_prediction_excluded: true,
+    model_validation: captureModelValidationState(),
     map: {
       center,
       zoom: view.getZoom(),
       extent,
     },
   };
+}
+
+function captureModelValidationState() {
+  if (state.sidebarMode !== "model" && !state.modelValidation) return null;
+  const validation = state.modelValidation || {};
+  const model = validation.model || selectedModelOption() || {};
+  const stats = validation.stats || {};
+  return {
+    model_key: state.selectedModel || model.key || "",
+    model_name: model.name || model.label || "",
+    model_path: model.path || "",
+    model_weight: model.weight || "",
+    threshold: Number(model.threshold ?? stats.threshold ?? 0.5),
+    predicted_area_km2: Number(stats.area_km2 || 0),
+    predicted_ratio: Number(stats.predicted_ratio || 0),
+    prediction_feature_count: validation.prediction?.features?.length || 0,
+    device: model.device || "",
+  };
+}
+
+function selectedModelOption() {
+  return state.modelOptions.find((item) => item.key === state.selectedModel) || null;
 }
 
 async function applyImagerySelection() {

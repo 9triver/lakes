@@ -1097,6 +1097,8 @@ class LakeCatalog:
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
         view_state = payload.get("view_state") if isinstance(payload.get("view_state"), dict) else {}
+        model_validation = view_state.get("model_validation") if isinstance(view_state.get("model_validation"), dict) else {}
+        model_prediction_excluded = truthy_flag(view_state.get("model_prediction_excluded"), default=True)
         is_current_view = label_source == "current_view" or bool(view_state)
         label_scope = clean_optional(payload.get("label_scope")) or ("current_view" if is_current_view else "target_only")
         mask_policy = clean_optional(payload.get("mask_policy")) or ("current_view" if is_current_view else "other_water_ignore")
@@ -1145,6 +1147,7 @@ class LakeCatalog:
                 "mask_policy": mask_policy,
                 "context_sources": context_sources,
                 "ignore_sources": ignore_sources,
+                "model_prediction_excluded": model_prediction_excluded,
             },
         )
         row = {
@@ -1185,6 +1188,16 @@ class LakeCatalog:
             "quality": quality,
             "split": clean_optional(payload.get("split")) or "",
             "view_state_json": view_state_json,
+            "model_prediction_excluded": "true" if model_prediction_excluded else "false",
+            "diagnostic_model_key": clean_optional(model_validation.get("model_key")) or "",
+            "diagnostic_model_name": clean_optional(model_validation.get("model_name")) or "",
+            "diagnostic_model_path": clean_optional(model_validation.get("model_path")) or "",
+            "diagnostic_model_weight": clean_optional(model_validation.get("model_weight")) or "",
+            "diagnostic_model_threshold": clean_optional(model_validation.get("threshold")) or "",
+            "diagnostic_prediction_area_km2": clean_optional(model_validation.get("predicted_area_km2")) or "",
+            "diagnostic_prediction_ratio": clean_optional(model_validation.get("predicted_ratio")) or "",
+            "diagnostic_prediction_feature_count": clean_optional(model_validation.get("prediction_feature_count")) or "",
+            "diagnostic_model_device": clean_optional(model_validation.get("device")) or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "notes": notes,
         }
@@ -1192,7 +1205,8 @@ class LakeCatalog:
         return row
 
     def current_view_training_label_layer(self, lake: LakeRecord, view_state: dict, buffer_ratio: float = 0.8) -> dict:
-        visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
+        visible = dict(view_state.get("visible_layers")) if isinstance(view_state.get("visible_layers"), dict) else {}
+        model_prediction_visible = truthy_flag(visible.pop("model_prediction", False), default=False)
         features = []
         sources = []
 
@@ -1249,6 +1263,8 @@ class LakeCatalog:
                 "source": "current_view",
                 "visible_sources": ",".join(sources),
                 "jrc_threshold": threshold,
+                "model_prediction_visible": model_prediction_visible,
+                "model_prediction_excluded": True,
                 "view_state": view_state,
             },
         }
