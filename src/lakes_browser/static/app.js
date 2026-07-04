@@ -1674,13 +1674,39 @@ async function saveTrainingSample() {
       mask_policy: "current_view",
       notes: trainingNotesEl.value,
       buffer_ratio: 0.8,
+      auto_patch: true,
       view_state: captureTrainingViewState(),
     });
-    trainingStatusEl.textContent = `已加入训练区域：${payload.sample.sample_id}`;
+    const similar = payload.sample.similar_samples || [];
+    const warning = similar.length ? `；有 ${similar.length} 个相似视图` : "";
+    if (payload.sample.duplicate) {
+      trainingStatusEl.textContent = `训练区域已存在，已更新记录${warning}`;
+    } else if (payload.patch_job?.job_id) {
+      trainingStatusEl.textContent = `已加入训练区域，正在生成 patch${warning}`;
+      pollTrainingSamplePatchJob(payload.patch_job.job_id, activeRegionKey()).catch(showError);
+    } else {
+      trainingStatusEl.textContent = `已加入训练区域：${payload.sample.sample_id}${warning}`;
+    }
     if (state.sidebarMode === "training") await loadTrainingSamples();
   } finally {
     trainingSaveEl.disabled = !state.activeId || trainingPanelEl.hidden;
   }
+}
+
+async function pollTrainingSamplePatchJob(jobId, regionKey = activeRegionKey()) {
+  const job = await fetchJson(apiPathFor(regionKey, `/training-patches/export-jobs/${encodeURIComponent(jobId)}`));
+  if (job.status === "completed") {
+    const count = job.result?.patches ?? 0;
+    trainingStatusEl.textContent = `训练区域已保存，已生成 ${count} 个 patch`;
+    if (state.sidebarMode === "training" && state.trainingView === "patches") await loadTrainingPatches();
+    return;
+  }
+  if (job.status === "failed") {
+    trainingStatusEl.textContent = `训练区域已保存，但 patch 生成失败：${job.message || "未知错误"}`;
+    return;
+  }
+  trainingStatusEl.textContent = job.message || "正在生成 patch";
+  setTimeout(() => pollTrainingSamplePatchJob(jobId, regionKey).catch(showError), 1500);
 }
 
 function captureTrainingViewState() {

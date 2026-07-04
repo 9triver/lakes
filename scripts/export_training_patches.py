@@ -62,9 +62,13 @@ def main() -> None:
 def export_training_patches(args: argparse.Namespace) -> dict:
     region = REGIONS[args.region]
     output_dir = args.output_dir or region.processed_dir / "training_patches" / f"ps{args.patch_size}_st{args.stride}"
-    previous_patch_state = read_patch_state(output_dir / "manifest.csv")
+    manifest_path = output_dir / "manifest.csv"
+    previous_rows = read_manifest(manifest_path)
+    previous_patch_state = read_patch_state(manifest_path)
     if output_dir.exists() and args.overwrite:
         shutil.rmtree(output_dir)
+        previous_rows = []
+        previous_patch_state = {}
     (output_dir / "npz").mkdir(parents=True, exist_ok=True)
     (output_dir / "preview").mkdir(parents=True, exist_ok=True)
 
@@ -80,12 +84,17 @@ def export_training_patches(args: argparse.Namespace) -> dict:
         manifest_rows.extend(export_sample(row, output_dir, args))
     apply_patch_state(manifest_rows, previous_patch_state)
 
-    manifest_path = output_dir / "manifest.csv"
+    if args.sample_id and not args.overwrite:
+        exported_sample_ids = {row.get("sample_id", "") for row in samples}
+        kept_rows = [row for row in previous_rows if row.get("sample_id", "") not in exported_sample_ids]
+        manifest_rows = kept_rows + manifest_rows
+
     write_manifest(manifest_path, manifest_rows)
     return {
         "region": region.key,
         "samples": len(samples),
-        "patches": len(manifest_rows),
+        "patches": sum(1 for row in manifest_rows if not args.sample_id or row.get("sample_id") in set(args.sample_id)),
+        "manifest_patches": len(manifest_rows),
         "manifest": str(manifest_path),
         "npz_dir": str(output_dir / "npz"),
         "preview_dir": str(output_dir / "preview"),
@@ -103,14 +112,9 @@ def read_samples(path: Path) -> list[dict]:
 
 
 def read_patch_state(path: Path) -> dict[str, dict]:
-    if not path.exists():
-        return {}
-    try:
-        table = pd.read_csv(path, dtype=str).fillna("")
-    except pd.errors.EmptyDataError:
-        return {}
+    rows = read_manifest(path)
     state = {}
-    for row in table.to_dict("records"):
+    for row in rows:
         patch_id = row.get("patch_id")
         if not patch_id:
             continue
@@ -120,6 +124,16 @@ def read_patch_state(path: Path) -> dict[str, dict]:
             if row.get(key, "") != ""
         }
     return state
+
+
+def read_manifest(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        table = pd.read_csv(path, dtype=str).fillna("")
+    except pd.errors.EmptyDataError:
+        return []
+    return table.to_dict("records")
 
 
 def apply_patch_state(rows: list[dict], previous: dict[str, dict]) -> None:
@@ -327,8 +341,13 @@ def write_manifest(path: Path, rows: list[dict]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
+    fieldnames = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 

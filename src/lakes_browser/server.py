@@ -1133,11 +1133,35 @@ class LakeCatalog:
         asset_types = [item.get("asset_type", "") for item in readiness["products"]]
         asset_scopes = [item.get("asset_scope", "") for item in readiness["products"]]
         asset_labels = [item.get("asset_label", "") for item in readiness["products"]]
+        fingerprint, base_fingerprint, view_extent = training_view_signature(
+            lake.object_id,
+            product_key,
+            label_source,
+            label_threshold,
+            label_scope,
+            mask_policy,
+            view_state,
+        )
+        existing_rows = read_csv_records(self.region.training_samples)
+        exact_existing = next((row for row in existing_rows if row.get("training_fingerprint") == fingerprint), None)
+        similar_samples = []
+        for existing in existing_rows:
+            if exact_existing and existing.get("sample_id") == exact_existing.get("sample_id"):
+                continue
+            if existing.get("lake_id") != lake.object_id or existing.get("training_base_fingerprint") != base_fingerprint:
+                continue
+            overlap = bbox_iou(view_extent, bbox_from_row(existing))
+            if overlap >= 0.9:
+                similar_samples.append({
+                    "sample_id": existing.get("sample_id", ""),
+                    "lake_id": existing.get("lake_id", ""),
+                    "overlap": overlap,
+                    "created_at": existing.get("created_at", ""),
+                    "notes": existing.get("notes", ""),
+                })
         view_state_json = json.dumps(view_state, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if view_state else ""
-        sample_hash = hashlib.sha1(
-            (product_key + label_source + label_threshold + label_scope + mask_policy + view_state_json).encode("utf-8")
-        ).hexdigest()[:12]
-        sample_id = f"{lake.object_id}_{sample_hash}"
+        sample_hash = fingerprint[:12]
+        sample_id = (exact_existing or {}).get("sample_id") or f"{lake.object_id}_{sample_hash}"
         label_path = write_training_label(
             self.region,
             sample_id,
@@ -1187,6 +1211,12 @@ class LakeCatalog:
             "buffer_ratio": buffer_ratio,
             "quality": quality,
             "split": clean_optional(payload.get("split")) or "",
+            "training_fingerprint": fingerprint,
+            "training_base_fingerprint": base_fingerprint,
+            "view_west": view_extent[0] if view_extent else "",
+            "view_south": view_extent[1] if view_extent else "",
+            "view_east": view_extent[2] if view_extent else "",
+            "view_north": view_extent[3] if view_extent else "",
             "view_state_json": view_state_json,
             "model_prediction_excluded": "true" if model_prediction_excluded else "false",
             "diagnostic_model_key": clean_optional(model_validation.get("model_key")) or "",
@@ -1202,7 +1232,12 @@ class LakeCatalog:
             "notes": notes,
         }
         upsert_csv_row(self.region.training_samples, row, key="sample_id")
-        return row
+        return {
+            **row,
+            "action": "updated_existing" if exact_existing else "created",
+            "duplicate": bool(exact_existing),
+            "similar_samples": similar_samples[:5],
+        }
 
     def current_view_training_label_layer(self, lake: LakeRecord, view_state: dict, buffer_ratio: float = 0.8) -> dict:
         visible = dict(view_state.get("visible_layers")) if isinstance(view_state.get("visible_layers"), dict) else {}
@@ -2330,6 +2365,82 @@ def split_semicolon(value) -> list[str]:
     if not text:
         return []
     return [item.strip() for item in text.split(";") if item.strip()]
+
+
+def rounded_float(value, digits: int = 5):
+    parsed = parse_float(value)
+    return None if parsed is None else round(parsed, digits)
+
+
+def normalized_view_extent(view_state: dict, digits: int = 5) -> list[float]:
+    map_state = view_state.get("map") if isinstance(view_state.get("map"), dict) else {}
+    extent = map_state.get("extent") if isinstance(map_state.get("extent"), list) else []
+    if len(extent) != 4:
+        return []
+    values = [rounded_float(item, digits) for item in extent]
+    return [] if any(item is None for item in values) else values
+
+
+def bbox_iou(a: list[float] | tuple[float, float, float, float], b: list[float] | tuple[float, float, float, float]) -> float:
+    if len(a) != 4 or len(b) != 4:
+        return 0.0
+    left = max(float(a[0]), float(b[0]))
+    bottom = max(float(a[1]), float(b[1]))
+    right = min(float(a[2]), float(b[2]))
+    top = min(float(a[3]), float(b[3]))
+    intersection = max(0.0, right - left) * max(0.0, top - bottom)
+    area_a = max(0.0, float(a[2]) - float(a[0])) * max(0.0, float(a[3]) - float(a[1]))
+    area_b = max(0.0, float(b[2]) - float(b[0])) * max(0.0, float(b[3]) - float(b[1]))
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def bbox_from_row(row: dict) -> list[float]:
+    values = [
+        rounded_float(row.get("view_west")),
+        rounded_float(row.get("view_south")),
+        rounded_float(row.get("view_east")),
+        rounded_float(row.get("view_north")),
+    ]
+    return [] if any(item is None for item in values) else values
+
+
+def training_view_signature(
+    lake_id: str,
+    product_key: str,
+    label_source: str,
+    label_threshold: str,
+    label_scope: str,
+    mask_policy: str,
+    view_state: dict,
+) -> tuple[str, str, list[float]]:
+    visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
+    label_layers = {
+        key: bool(visible.get(key))
+        for key in ("osm", "hydrolakes", "context_osm", "context_hydrolakes", "esa", "jrc", "local_label")
+    }
+    local_label = view_state.get("selected_local_label") if isinstance(view_state.get("selected_local_label"), dict) else {}
+    extent = normalized_view_extent(view_state)
+    base_payload = {
+        "lake_id": lake_id,
+        "product_key": product_key,
+        "label_source": label_source,
+        "label_threshold": str(label_threshold or ""),
+        "label_scope": label_scope,
+        "mask_policy": mask_policy,
+        "label_layers": label_layers,
+        "jrc_threshold": parse_int_or_default(view_state.get("jrc_threshold"), 75),
+        "local_label_id": clean_optional(local_label.get("id")) or "",
+        "local_label_path": clean_optional(local_label.get("path")) or "",
+    }
+    exact_payload = {**base_payload, "extent": extent}
+    base_json = json.dumps(base_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    exact_json = json.dumps(exact_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (
+        hashlib.sha1(exact_json.encode("utf-8")).hexdigest(),
+        hashlib.sha1(base_json.encode("utf-8")).hexdigest(),
+        extent,
+    )
 
 
 def run_patch_export(region_key: str, options: dict) -> dict:
@@ -3996,7 +4107,17 @@ class LakeHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self._error(HTTPStatus.BAD_REQUEST, str(exc))
                     return
-                self._json({"sample": result})
+                patch_job = None
+                auto_patch = truthy_flag(payload.get("auto_patch"), default=True)
+                if auto_patch and result.get("action") != "updated_existing":
+                    patch_job = self.patch_exports.create({
+                        "sample_id": result["sample_id"],
+                        "patch_size": 256,
+                        "stride": 128,
+                        "preview_scale": 2,
+                        "overwrite": False,
+                    })
+                self._json({"sample": result, "patch_job": patch_job})
             elif path in {"/api/training-patches/export-jobs", "/api/all/training-patches/export-jobs"}:
                 self._json(self.patch_exports.create(self._read_json()))
             elif path in {"/api/training-runs", "/api/all/training-runs"}:
