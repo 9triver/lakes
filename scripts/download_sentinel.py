@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Query and download Sentinel-2 products for the Lakes browser."""
+"""Query and download Sentinel-2 products for the Lakes Workbench."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lakes_browser.sentinel_download import (
+from lake_workbench.sentinel_download import (
     download_copernicus_product,
     product_date,
     product_tile_name,
@@ -23,7 +23,7 @@ from lakes_browser.sentinel_download import (
     upsert_csv_row,
     valid_ratio_for_tci,
 )
-from lakes_browser.region_config import load_region_configs
+from lake_workbench.region_config import load_region_configs
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()

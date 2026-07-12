@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Download and prepare large local datasets for the Lakes browser.
+"""Download and prepare large local datasets for the Lakes Workbench.
 
-The generated layout matches the paths used by ``lakes_browser.server`` and
+The generated layout matches the paths used by ``lake_workbench.server`` and
 ``scripts/build_lake_metadata.py``. Large data stays under each configured
 region's ``raw`` directory and is ignored by Git.
 """
@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lakes_browser.region_config import RegionConfig, load_region_configs  # noqa: E402
+from lake_workbench.region_config import RegionConfig, load_region_configs  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
@@ -154,7 +154,7 @@ def prepare_esa(region: RegionConfig, force: bool, proxy: str = "") -> None:
         tile_paths.append(path)
     if region.external_raster_mode == "tiles":
         print(f"wrote {len(tile_paths)} ESA WorldCover source tiles under {display(out_dir)}")
-        print("skip regional 10m mosaic; the browser reads intersecting source tiles on demand")
+        print("skip regional 10m mosaic; the workbench reads intersecting source tiles on demand")
         return
     clip_rasters(tile_paths, clip_path, region_geom(region), force=True)
     build_esa_water_mask(clip_path, mask_path)

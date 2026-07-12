@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the Sentinel-2 MGRS tile grid for the Lakes browser."""
+"""Download the Sentinel-2 MGRS tile grid for the Lakes Workbench."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lakes_browser.region_config import load_region_configs  # noqa: E402
+from lake_workbench.region_config import load_region_configs  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
@@ -85,7 +85,7 @@ def download_first(urls: list[str], path: Path, timeout: int) -> str:
             if path.exists() and not part_path.exists():
                 path.replace(part_path)
             downloaded = part_path.stat().st_size if part_path.exists() else 0
-            headers = {"User-Agent": "lakes-browser/0.1"}
+            headers = {"User-Agent": "lakes-workbench/0.1"}
             if downloaded:
                 headers["Range"] = f"bytes={downloaded}-"
             request = Request(url, headers=headers)
@@ -142,7 +142,7 @@ def download_plain(url: str, path: Path, timeout: int) -> None:
     clear_proxy_env()
     part_path = path.with_suffix(path.suffix + ".part")
     part_path.unlink(missing_ok=True)
-    request = Request(url, headers={"User-Agent": "lakes-browser/0.1"})
+    request = Request(url, headers={"User-Agent": "lakes-workbench/0.1"})
     opener = build_opener(ProxyHandler({}))
     total = 0
     with opener.open(request, timeout=timeout) as response:

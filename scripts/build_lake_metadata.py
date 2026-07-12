@@ -23,7 +23,7 @@ from shapely.ops import unary_union
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lakes_browser.region_config import RegionConfig, load_region_configs  # noqa: E402
+from lake_workbench.region_config import RegionConfig, load_region_configs  # noqa: E402
 
 TAG_RE = re.compile(r'"([^"]+)"=>"([^"]*)"')
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()

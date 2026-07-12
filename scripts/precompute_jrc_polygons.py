@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from lakes_browser.server import (
-    REGIONS,
-    DEFAULT_REGION_KEY,
-    LakeCatalog,
-    build_jrc_occurrence_layer,
-    write_jrc_polygon_cache,
-)
+
+from lake_workbench.catalog import LakeCatalog
+from lake_workbench.region_config import load_region_configs
+from lake_workbench.water_layers import build_jrc_occurrence_layer, write_jrc_polygon_cache
+
+
+REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     thresholds = [int(value.strip()) for value in args.thresholds.split(",") if value.strip()]
-    catalog = LakeCatalog(REGIONS[args.region])
+    catalog = LakeCatalog(REGIONS[args.region], DEFAULT_REGION_KEY)
     lakes = [lake.object_id for lake in catalog.lakes] if args.all else args.lake or ([catalog.lakes[0].object_id] if catalog.lakes else [])
     for lake_key in lakes:
         lake = catalog.get_lake(lake_key)

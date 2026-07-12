@@ -1,7 +1,7 @@
 [project]
 name = "lakes"
 version = "0.1.0"
-description = "Local web GIS browser for Hunan lake imagery and water polygons."
+description = "Multi-region lake imagery, annotation, and water-segmentation workbench."
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.24",
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lakes-browser = "lakes_browser.server:main"
+lakes-workbench = "lake_workbench.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -27,4 +27,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-lakes_browser = ["static/*"]
+lake_workbench = ["static/*", "static/**/*"]

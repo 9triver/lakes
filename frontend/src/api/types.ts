@@ -1,0 +1,149 @@
+export interface RegionSummary {
+  key: string;
+  name: string;
+  ready: boolean;
+  lake_count: number;
+}
+
+export interface RegionsResponse {
+  default: string;
+  items: RegionSummary[];
+}
+
+export interface LakeSummary {
+  object_id: string;
+  display_name?: string;
+  name?: string;
+  water_type?: string;
+  area_km2: number;
+  tiles?: string[];
+  has_tci?: boolean;
+  region?: string;
+  region_name?: string;
+  polygon_quality?: string;
+  metadata_quality?: string;
+  best_tci_date?: string;
+}
+
+export interface LakesResponse {
+  total: number;
+  items: LakeSummary[];
+  facets?: Record<string, Record<string, number>>;
+}
+
+export interface LakeFilters {
+  water_type: string;
+  area_bucket: string;
+  has_name: string;
+  has_tci: string;
+  polygon_quality: string;
+  metadata_quality: string;
+}
+
+export interface GeoJsonLayer {
+  geometry?: Record<string, unknown> | null;
+  properties?: Record<string, unknown>;
+}
+
+export interface FeatureCollection {
+  type: "FeatureCollection";
+  features: Array<{ type: "Feature"; geometry: Record<string, unknown>; properties?: Record<string, unknown> }>;
+}
+
+export interface LakeDetail extends LakeSummary {
+  lake_id: string;
+  bbox: [number, number, number, number];
+  layers?: {
+    osm?: GeoJsonLayer | null;
+    hydrolakes?: GeoJsonLayer | null;
+  };
+}
+
+export interface TileMeta {
+  lake_bounds: [number, number, number, number];
+  tile_bounds: [number, number, number, number];
+  tile_url: string;
+  tiles: string[];
+  dates: string[];
+  products: string[];
+}
+
+export interface ContextWaterResponse {
+  min_area_km2: number;
+  sources: { osm: FeatureCollection; hydrolakes: FeatureCollection };
+}
+
+export interface LocalLabelItem {
+  id: string;
+  name: string;
+  date?: string;
+  path?: string;
+}
+
+export interface ImageryProduct {
+  product: string;
+  date?: string;
+  active?: boolean;
+  asset_label?: string;
+  source?: string;
+  valid_ratio?: number;
+}
+
+export interface ImageryResponse {
+  lake_id: string;
+  tiles: Array<{ tile: string; products: ImageryProduct[] }>;
+}
+
+export interface SentinelTile {
+  tile: string;
+  downloaded: boolean;
+  geometry?: Record<string, unknown> | null;
+  aoi_coverage_ratio?: number;
+  date?: string | null;
+  product?: string | null;
+}
+
+export interface SentinelProduct {
+  product_id: string;
+  name: string;
+  tile: string;
+  date?: string;
+  cloud_cover?: number;
+  lake_coverage_ratio?: number;
+  aoi_coverage_ratio?: number;
+  downloaded?: boolean;
+}
+
+export interface TrainingSample {
+  sample_id: string;
+  lake_id: string;
+  lake_display_name?: string;
+  lake_name?: string;
+  region?: string;
+  region_name?: string;
+  status?: string;
+  split?: string;
+  notes?: string;
+  label_source?: string;
+  product_date?: string;
+  tile_count?: number;
+  imagery_asset_labels?: string[];
+}
+
+export interface TrainingPatch {
+  patch_id: string;
+  sample_id: string;
+  lake_id: string;
+  lake_display_name?: string;
+  lake_name?: string;
+  region?: string;
+  included: boolean;
+  preview_exists?: boolean;
+  preview_url?: string;
+  water_pixels?: number;
+  water_ratio_valid?: number;
+  valid_ratio?: number;
+  ignore_pixels?: number;
+  product_name?: string;
+  image_path?: string;
+}
