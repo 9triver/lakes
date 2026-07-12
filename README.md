@@ -77,9 +77,9 @@ lakes/
   data/                          大型数据和模型，不纳入 Git
 ```
 
-当前 Python 服务仍将原生 JavaScript 前端作为根页面。React 前端在最终验收前不会替换或删除现有 static 文件。
+Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，用于迁移后的对照和回退。
 
-React 迁移版已覆盖区域和湖泊筛选、hash 深链接、湖泊详情、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。当前可通过 `http://127.0.0.1:18765/static/dist/index.html` 验证；根地址仍保留原生前端。
+React 前端覆盖区域和湖泊筛选、hash 深链接、湖泊详情、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
 
 ## 区域配置
 

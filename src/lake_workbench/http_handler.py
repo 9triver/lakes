@@ -34,6 +34,8 @@ from lake_workbench.utils import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+REACT_INDEX = STATIC_DIR / "dist" / "index.html"
+LEGACY_INDEX = STATIC_DIR / "index.html"
 TILE_RENDER_SEMAPHORE = threading.BoundedSemaphore(max(1, int(os.environ.get("LAKES_TILE_RENDER_WORKERS", "1"))))
 MODEL_VALIDATION_SEMAPHORE = threading.BoundedSemaphore(1)
 
@@ -75,8 +77,12 @@ class LakeHandler(BaseHTTPRequestHandler):
                 self.patch_exports = self.__class__.patch_exports_by_region[self.catalog.region.key]
                 self.training_runs = self.__class__.training_runs_by_scope[self.catalog.region.key]
 
-            if is_frontend_route(path):
-                self._serve_file(STATIC_DIR / "index.html")
+            if path in {"/legacy", "/legacy/"}:
+                self._serve_file(LEGACY_INDEX)
+            elif path.startswith("/legacy/"):
+                self._serve_file(STATIC_DIR / path.removeprefix("/legacy/"))
+            elif is_frontend_route(path):
+                self._serve_file(REACT_INDEX)
             elif path.startswith("/static/"):
                 self._serve_file(STATIC_DIR / path.removeprefix("/static/"))
             elif path == "/api/regions":
@@ -422,7 +428,7 @@ class LakeHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/"):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
             else:
-                self._serve_file(STATIC_DIR / "index.html")
+                self._serve_file(REACT_INDEX)
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 

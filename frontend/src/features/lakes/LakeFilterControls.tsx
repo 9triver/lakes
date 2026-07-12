@@ -12,8 +12,8 @@ const options: Array<{ key: keyof LakeFilters; label: string; items: Array<[stri
 
 export function LakeFilterControls({ value, onChange }: { value: LakeFilters; onChange: (filters: LakeFilters) => void }) {
   return <>{options.map((option) => <FormControl key={option.key} fullWidth>
-    <InputLabel>{option.label}</InputLabel>
-    <Select label={option.label} value={value[option.key]} onChange={(event) => onChange({ ...value, [option.key]: event.target.value })}>
+    <InputLabel id={`${option.key}-filter-label`}>{option.label}</InputLabel>
+    <Select labelId={`${option.key}-filter-label`} label={option.label} value={value[option.key]} onChange={(event) => onChange({ ...value, [option.key]: event.target.value })}>
       {option.items.map(([itemValue, label]) => <MenuItem key={itemValue} value={itemValue}>{label}</MenuItem>)}
     </Select>
   </FormControl>)}</>;
