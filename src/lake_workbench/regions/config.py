@@ -8,8 +8,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from lake_workbench.paths import PROJECT_ROOT
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "regions.toml"
 
 

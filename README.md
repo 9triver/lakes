@@ -31,21 +31,37 @@ lakes/
       features/                  按业务组织的区域、湖泊等功能
   src/lake_workbench/
     server.py                    依赖组装和服务入口
-    http_handler.py              HTTP 路由、并发控制和响应处理
-    catalog.py                   湖泊元数据、影像库存和 Sentinel 产品目录
+    http_handler.py              HTTP 请求上下文、路由调度和响应处理
+    routes/                      按湖泊、训练、模型、Sentinel 等域组织的 API 路由
+    catalog.py                   湖泊元数据加载、筛选、详情和摘要
+    imagery/
+      inventory.py               本地/下载影像库存、active 选择和产品登记
+      raster.py                  TCI 渲染、影像拼接和模型预测矢量化
+      rendering.py               湖泊 mosaic 和 XYZ 瓦片渲染编排
+    sentinel/
+      catalog.py                 Sentinel MGRS tile 匹配和产品覆盖率
+      download.py                Copernicus 查询和下载
+    models/
+      metadata.py                模型权重发现、训练指标和持久化任务元数据
+      validation.py              模型发现、推理缓存和随机验证
+      unet.py                    U-Net checkpoint 加载和推理
+    regions/
+      config.py                  区域配置和标准数据路径
+      service.py                 跨区域列表、训练数据和模型验证聚合
+    training/
+      catalog.py                 训练样本和 Patch 的区域级持久化操作
+      identity.py                训练视图签名和范围相似度
+      datasets.py                Patch manifest 和训练数据集摘要
+      runner.py                  Patch 导出和 U-Net 训练任务适配
+    water/
+      annotations.py             OSM/HydroLAKES/ESA/JRC 水体标注编排
+      layers.py                  ESA/JRC 栅格读取、多边形生成和缓存
+    local_labels.py              本地 Shapefile 标注发现和 GeoJSON 转换
     geo.py                       坐标转换、覆盖率和几何处理
-    imagery.py                   TCI 渲染、影像拼接和模型预测矢量化
-    model_validation.py          模型发现、推理缓存和随机验证
-    water_layers.py              ESA/JRC 水体图层读取、生成和缓存
-    water_catalog.py             湖泊级外部水体匹配和上下文图层编排
-    region_service.py            跨区域列表、训练数据和模型验证聚合
     jobs.py                      下载、Patch 导出和训练后台任务
-    training.py                  训练样本签名、数据集摘要、训练与模型元数据
-    training_catalog.py          训练样本和 Patch 的区域级持久化操作
+    paths.py                     项目根路径
     utils.py                     路径、CSV、参数解析和序列化工具
-    sentinel_download.py         Copernicus 查询和下载
-    unet_inference.py            U-Net checkpoint 加载和推理
-    static/                       当前生产前端，迁移确认前保留
+    static/                       React 构建产物和 `/legacy/` 旧版回退
       dist/                       React 构建产物，不纳入 Git
       app.js                     页面状态、地图编排和事件绑定
       api.js                     JSON HTTP 客户端

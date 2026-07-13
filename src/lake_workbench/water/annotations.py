@@ -1,4 +1,4 @@
-"""Lake-level orchestration for external and contextual water layers."""
+"""Lake-level orchestration for external and contextual water annotations."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from shapely.validation import make_valid
 
 from lake_workbench.geo import geometry_coverage_ratio, lake_aoi_geometry, transform_geom
 from lake_workbench.utils import clean_optional, jsonable, parse_float, truthy_flag
-from lake_workbench.water_layers import (
+from lake_workbench.water.layers import (
     available_jrc_thresholds,
     build_esa_smoothed_layer,
     build_jrc_occurrence_layer,
@@ -20,7 +20,7 @@ from lake_workbench.water_layers import (
 )
 
 
-class WaterCatalogMixin:
+class WaterAnnotationsMixin:
     """External water-layer operations that require a lake catalog."""
 
     region: Any

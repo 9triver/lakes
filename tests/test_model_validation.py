@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from lake_workbench.model_validation import ModelValidationMixin
+from lake_workbench.models.validation import ModelValidationMixin
 
 
 class CatalogStub(ModelValidationMixin):

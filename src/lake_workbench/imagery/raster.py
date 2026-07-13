@@ -25,10 +25,10 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from lake_workbench.geo import boxes_intersect, transform_geom
-from lake_workbench.unet_inference import predict_array
+from lake_workbench.models.unet import predict_array
+from lake_workbench.paths import PROJECT_ROOT
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_MERCATOR_LIMIT = 20037508.342789244
 MODEL_VALIDATION_MAX_DIM = max(256, int(os.environ.get("LAKES_MODEL_VALIDATION_MAX_DIM", "2048")))
 

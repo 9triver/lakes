@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 
 from lake_workbench.catalog import LakeCatalog
-from lake_workbench.region_config import load_region_configs
-from lake_workbench.water_layers import build_jrc_occurrence_layer, write_jrc_polygon_cache
+from lake_workbench.regions.config import load_region_configs
+from lake_workbench.water.layers import build_jrc_occurrence_layer, write_jrc_polygon_cache
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()

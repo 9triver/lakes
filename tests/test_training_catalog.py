@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from lake_workbench.training_catalog import TrainingCatalogMixin
+from lake_workbench.training.catalog import TrainingCatalogMixin
 
 
 class TrainingCatalogStub(TrainingCatalogMixin):

@@ -6,17 +6,15 @@ import random
 from pathlib import Path
 from typing import Any
 
-from lake_workbench.training import (
+from lake_workbench.models.metadata import (
     global_model_key,
     global_model_path_from_key,
     iter_global_model_paths,
     model_sort_key,
     model_training_metadata,
 )
-from lake_workbench.unet_inference import load_unet_checkpoint
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from lake_workbench.models.unet import load_unet_checkpoint
+from lake_workbench.paths import PROJECT_ROOT
 
 
 def display_path(path: Path) -> str:

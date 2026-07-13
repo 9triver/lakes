@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lake_workbench.region_config import load_region_configs  # noqa: E402
+from lake_workbench.regions.config import load_region_configs  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()

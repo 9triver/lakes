@@ -25,7 +25,7 @@ from shapely.validation import make_valid
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lake_workbench.region_config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
+from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs(DEFAULT_CONFIG_PATH)

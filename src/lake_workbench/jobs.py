@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from lake_workbench.sentinel_download import download_copernicus_product
+from lake_workbench.sentinel.download import download_copernicus_product
 
 
 JobRunner = Callable[..., dict]

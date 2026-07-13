@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from lake_workbench.geo import lake_aoi_geometry
-from lake_workbench.sentinel_download import upsert_csv_row
-from lake_workbench.training import bbox_from_row, bbox_iou, training_view_signature
+from lake_workbench.sentinel.download import upsert_csv_row
+from lake_workbench.training.identity import bbox_from_row, bbox_iou, training_view_signature
 from lake_workbench.utils import (
     clean_optional,
     count_values,

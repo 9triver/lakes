@@ -11,7 +11,7 @@ from typing import Any
 
 import pandas as pd
 
-from lake_workbench.region_config import RegionConfig
+from lake_workbench.regions.config import RegionConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -62,7 +62,7 @@ def clean_optional(value: Any) -> str | None:
     except TypeError:
         pass
     text = str(value).strip()
-    if not text or text.lower() == "nan":
+    if not text or text.lower() in {"nan", "none", "null"}:
         return None
     if text.endswith(".0") and text[:-2].isdigit():
         return text[:-2]

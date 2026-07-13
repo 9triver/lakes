@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import time
 import zipfile
 from pathlib import Path
 from typing import Callable
@@ -19,8 +18,9 @@ import requests
 from rasterio.enums import Resampling
 from shapely.geometry import shape
 
+from lake_workbench.paths import PROJECT_ROOT
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 COPERNICUS_CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 COPERNICUS_DOWNLOAD_URL = "https://download.dataspace.copernicus.eu/odata/v1/Products"
 COPERNICUS_TOKEN_URL = (

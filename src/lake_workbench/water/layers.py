@@ -15,10 +15,8 @@ from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.validation import make_valid
 
 from lake_workbench.geo import smooth_water_geometry, transform_geom
-from lake_workbench.region_config import RegionConfig
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.regions.config import RegionConfig
 
 
 def display_path(path: Path) -> str:

@@ -13,19 +13,16 @@ import argparse
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from lake_workbench.sentinel_download import disable_proxy_env
+from lake_workbench.sentinel.download import disable_proxy_env
 from lake_workbench.jobs import DownloadManager, PatchExportManager, TrainingManager
 from lake_workbench.catalog import LakeCatalog
 from lake_workbench.http_handler import create_lake_handler
-from lake_workbench.model_validation import ModelInferenceBusy
-from lake_workbench.region_config import load_region_configs
-from lake_workbench.region_service import RegionService
-from lake_workbench.training import (
-    current_training_dataset_summary,
-    persisted_training_job,
-    run_patch_export,
-    run_training_job,
-)
+from lake_workbench.models.metadata import persisted_training_job
+from lake_workbench.models.validation import ModelInferenceBusy
+from lake_workbench.regions.config import load_region_configs
+from lake_workbench.regions.service import RegionService
+from lake_workbench.training.datasets import current_training_dataset_summary
+from lake_workbench.training.runner import run_patch_export, run_training_job
 from lake_workbench.utils import parse_int_or_default
 
 

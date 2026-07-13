@@ -9,7 +9,6 @@ region's ``raw`` directory and is ignored by Git.
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import subprocess
 import sys
@@ -24,7 +23,7 @@ from urllib.request import Request, urlopen
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from lake_workbench.region_config import RegionConfig, load_region_configs  # noqa: E402
+from lake_workbench.regions.config import RegionConfig, load_region_configs  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
@@ -314,7 +313,6 @@ def normalize_osm_water_schema(gdf):
 
 
 def build_esa_water_mask(source_path: Path, out_path: Path) -> None:
-    import numpy as np
     import rasterio
 
     with rasterio.open(source_path) as src:

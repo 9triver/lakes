@@ -13,18 +13,18 @@ import rasterio
 
 from lake_workbench.geo import padded_bounds
 from lake_workbench.imagery import mosaic_source_meta, predict_water_geojson
-from lake_workbench.training import (
+from lake_workbench.models.metadata import (
     global_model_key,
     global_model_path_from_key,
     iter_global_model_paths,
     model_sort_key,
     model_training_metadata,
 )
-from lake_workbench.unet_inference import load_unet_checkpoint
+from lake_workbench.models.unet import load_unet_checkpoint
+from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.utils import clean_optional, display_path, safe_filename
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 MODEL_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(1)
 

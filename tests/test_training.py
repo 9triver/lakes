@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from lake_workbench.training import bbox_iou, model_sort_key, training_view_signature
+from lake_workbench.models.metadata import model_sort_key
+from lake_workbench.training.identity import bbox_iou, training_view_signature
 
 
 class TrainingIdentityTests(unittest.TestCase):

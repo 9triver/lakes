@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 from shapely.geometry import box
 
-from lake_workbench.water_catalog import WaterCatalogMixin
+from lake_workbench.water.annotations import WaterAnnotationsMixin
 
 
-class WaterCatalogStub(WaterCatalogMixin):
+class WaterAnnotationsStub(WaterAnnotationsMixin):
     def __init__(self, root: Path) -> None:
         self.region = SimpleNamespace(
             esa_polygon_dir=root / "esa_polygons",
@@ -28,17 +28,17 @@ def lake(**properties):
     )
 
 
-class WaterCatalogTests(unittest.TestCase):
+class WaterAnnotationsTests(unittest.TestCase):
     def test_osm_layer_requires_osm_source_and_polygon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            catalog = WaterCatalogStub(Path(directory))
+            catalog = WaterAnnotationsStub(Path(directory))
             self.assertIsNotNone(catalog._osm_layer(lake(source_primary="osm", has_osm_polygon=True)))
             self.assertIsNone(catalog._osm_layer(lake(source_primary="local", has_osm_polygon=True)))
             self.assertIsNone(catalog._osm_layer(lake(source_primary="osm", has_osm_polygon=False)))
 
     def test_large_lakes_require_precomputed_esa_and_jrc_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            catalog = WaterCatalogStub(Path(directory))
+            catalog = WaterAnnotationsStub(Path(directory))
             target = lake(source_primary="osm")
             esa = catalog._esa_smoothed_layer(target)
             jrc = catalog._jrc_occurrence_layer(target, threshold=120)
