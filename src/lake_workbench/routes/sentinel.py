@@ -9,11 +9,11 @@ from lake_workbench.utils import default_sentinel_date_range
 
 
 def handle_sentinel_get(handler, path: str, query_string: str) -> bool:
-    if re.fullmatch(r"/api/lakes/[^/]+/sentinel/tiles", path):
+    if re.fullmatch(r"/api/sites/[^/]+/sentinel/tiles", path):
         lake_key = path.split("/")[-3]
-        lake = handler.catalog.get_lake(lake_key)
+        lake = handler.catalog.get_site(lake_key)
         if lake is None:
-            handler._error(HTTPStatus.NOT_FOUND, "Lake not found")
+            handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
         else:
             handler._json(handler.catalog.sentinel_tiles_for_lake(lake))
     elif path == "/api/sentinel/products":
@@ -23,9 +23,9 @@ def handle_sentinel_get(handler, path: str, query_string: str) -> bool:
             handler._error(HTTPStatus.BAD_REQUEST, "tile is required")
             return True
         lake = None
-        lake_key = params.get("lake_id", [""])[0]
+        lake_key = params.get("site_id", params.get("lake_id", [""]))[0]
         if lake_key:
-            lake = handler.catalog.get_lake(lake_key)
+            lake = handler.catalog.get_site(lake_key)
         default_start, default_end = default_sentinel_date_range()
         start = params.get("start", [default_start])[0]
         end = params.get("end", [default_end])[0]
@@ -48,6 +48,7 @@ def handle_sentinel_get(handler, path: str, query_string: str) -> bool:
                 "end": end,
                 "cloud": cloud,
                 "product_type": product_type,
+                "site_id": lake.object_id if lake else None,
                 "lake_id": lake.object_id if lake else None,
                 "products": products,
             }

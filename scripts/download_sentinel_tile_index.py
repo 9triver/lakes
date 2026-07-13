@@ -35,14 +35,14 @@ TILE_RE = re.compile(r"^\d{2}[A-Z]{3}$")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
+    parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY, help="deprecated; the grid is global")
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--url", action="append", help="KML URL to try before the built-in URLs")
     parser.add_argument("--geojson-url", action="append", help="GeoJSON URL to try if KML download fails")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
 
-    out_dir = args.out_dir.resolve() if args.out_dir else (REGIONS[args.region].data_dir / "sentinel_2_tiles")
+    out_dir = args.out_dir.resolve() if args.out_dir else REGIONS[args.region].shared_data_dir / "sentinel_2_tiles"
     out_dir.mkdir(parents=True, exist_ok=True)
     kml_path = out_dir / "sentinel_2_tiling_grid.kml"
     geojson_path = out_dir / "sentinel_2_index.geojson"

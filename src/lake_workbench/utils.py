@@ -82,7 +82,7 @@ def legacy_lake_keys(value: str) -> list[str]:
     if not text:
         return []
     aliases = []
-    for current, legacy in [("hunan_", "hn_"), ("gansu_", "gs_")]:
+    for current, legacy in [("gansu_", "gs_")]:
         if text.startswith(current):
             aliases.append(legacy + text[len(current) :])
         elif text.startswith(legacy):
@@ -244,4 +244,4 @@ def is_frontend_route(path: str) -> bool:
     if path == "/":
         return True
     first = path.strip("/").split("/", 1)[0]
-    return first in {"regions", "lakes", "training", "model"}
+    return first in {"regions", "sites", "lakes", "training", "model"}

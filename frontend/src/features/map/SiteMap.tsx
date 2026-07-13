@@ -10,10 +10,10 @@ import XYZ from "ol/source/XYZ";
 import VectorSource from "ol/source/Vector";
 import { Fill, Stroke, Style, Text as TextStyle } from "ol/style";
 import { toLonLat, transformExtent } from "ol/proj";
-import type { FeatureCollection, GeoJsonLayer, LakeDetail, LocalLabelItem, SentinelTile, TileMeta } from "../../api/types";
+import type { FeatureCollection, GeoJsonLayer, SiteDetail, LocalLabelItem, SentinelTile, TileMeta } from "../../api/types";
 
-interface LakeMapProps {
-  lake: LakeDetail;
+interface SiteMapProps {
+  lake: SiteDetail;
   tileMeta?: TileMeta;
   sentinelTiles?: SentinelTile[];
   contextOsm?: FeatureCollection;
@@ -29,7 +29,7 @@ interface LakeMapProps {
   modelPrediction?: FeatureCollection;
 }
 
-export interface LakeMapHandle {
+export interface SiteMapHandle {
   captureView: () => {
     imagery_visible: boolean;
     visible_layers: Record<string, boolean>;
@@ -41,7 +41,7 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const LakeMap = forwardRef<LakeMapHandle, LakeMapProps>(function LakeMap({ lake, tileMeta, sentinelTiles, contextOsm, contextHydro, esa, jrc, localLabel, localLabels, selectedLocalLabel, onLocalLabelChange, jrcThreshold, onJrcThresholdChange, modelPrediction }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ lake, tileMeta, sentinelTiles, contextOsm, contextHydro, esa, jrc, localLabel, localLabels, selectedLocalLabel, onLocalLabelChange, jrcThreshold, onJrcThresholdChange, modelPrediction }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const imageLayerRef = useRef(new TileLayer({ visible: true }));
@@ -132,7 +132,7 @@ export const LakeMap = forwardRef<LakeMapHandle, LakeMapProps>(function LakeMap(
     hydroSourceRef.current.clear();
     if (lake.layers?.osm?.geometry) osmSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features: [{ type: "Feature", geometry: lake.layers.osm.geometry, properties: lake.layers.osm.properties || {} }] }));
     if (lake.layers?.hydrolakes?.geometry) hydroSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features: [{ type: "Feature", geometry: lake.layers.hydrolakes.geometry, properties: lake.layers.hydrolakes.properties || {} }] }));
-    const bounds = tileMeta?.lake_bounds || lake.bbox;
+    const bounds = tileMeta?.site_bounds || tileMeta?.lake_bounds || lake.bbox;
     mapRef.current?.getView().fit(transformExtent(bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 });
   }, [lake, tileMeta]);
 
@@ -178,12 +178,12 @@ export const LakeMap = forwardRef<LakeMapHandle, LakeMapProps>(function LakeMap(
         </FormControl>
         {modelPrediction && <FormControlLabel control={<Checkbox size="small" checked={visibility.prediction} onChange={(_, checked) => setVisibility((value) => ({ ...value, prediction: checked }))} />} label="模型预测" />}
         <Box sx={{ ml: "auto", display: "flex", alignItems: "center" }}>
-          <Tooltip title="定位水体"><span><IconButton size="small" disabled={!tileMeta?.lake_bounds} onClick={() => tileMeta?.lake_bounds && mapRef.current?.getView().fit(transformExtent(tileMeta.lake_bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 })} aria-label="定位水体"><Focus size={18} /></IconButton></span></Tooltip>
+          <Tooltip title="定位观测区域"><span><IconButton size="small" disabled={!(tileMeta?.site_bounds || tileMeta?.lake_bounds)} onClick={() => { const bounds = tileMeta?.site_bounds || tileMeta?.lake_bounds; if (bounds) mapRef.current?.getView().fit(transformExtent(bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 }); }} aria-label="定位观测区域"><Focus size={18} /></IconButton></span></Tooltip>
           <Tooltip title="定位 Tile"><span><IconButton size="small" disabled={!tileMeta?.tile_bounds} onClick={() => tileMeta?.tile_bounds && mapRef.current?.getView().fit(transformExtent(tileMeta.tile_bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 })} aria-label="定位 Tile"><Grid2X2 size={18} /></IconButton></span></Tooltip>
         </Box>
       </Box>
       <Box ref={targetRef} sx={{ position: "absolute", inset: 0 }} />
-      {!tileMeta && <Typography sx={{ position: "absolute", bottom: 12, left: 12, color: "white", bgcolor: "rgba(0,0,0,.65)", px: 1 }}>当前水体没有可用影像</Typography>}
+      {!tileMeta && <Typography sx={{ position: "absolute", bottom: 12, left: 12, color: "white", bgcolor: "rgba(0,0,0,.65)", px: 1 }}>当前观测区域没有可用影像</Typography>}
     </Box>
   );
 });

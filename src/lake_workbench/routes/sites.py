@@ -1,4 +1,4 @@
-"""Lake metadata, imagery, labels, and water-layer routes."""
+"""Observation-site metadata, imagery, labels, and water-layer routes."""
 
 import json
 import os
@@ -8,30 +8,30 @@ from http import HTTPStatus
 from urllib.parse import parse_qs
 
 from lake_workbench.imagery import blank_png
-from lake_workbench.routes.regions import lake_list_options
+from lake_workbench.routes.regions import site_list_options
 
 
 TILE_RENDER_SEMAPHORE = threading.BoundedSemaphore(max(1, int(os.environ.get("LAKES_TILE_RENDER_WORKERS", "1"))))
 
 
-def _lake(handler, lake_key: str):
-    lake = handler.catalog.get_lake(lake_key)
-    if lake is None:
-        handler._error(HTTPStatus.NOT_FOUND, "Lake not found")
-    return lake
+def _site(handler, site_key: str):
+    site = handler.catalog.get_site(site_key)
+    if site is None:
+        handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
+    return site
 
 
-def handle_lake_get(handler, path: str, query_string: str) -> bool:
+def handle_site_get(handler, path: str, query_string: str) -> bool:
     params = parse_qs(query_string)
-    if path == "/api/lakes":
-        query, limit, offset, filters = lake_list_options(query_string)
-        handler._json(handler.catalog.list_lakes(query=query, limit=limit, offset=offset, filters=filters))
-    elif re.fullmatch(r"/api/lakes/[^/]+", path):
-        lake = _lake(handler, path.rsplit("/", 1)[-1])
+    if path == "/api/sites":
+        query, limit, offset, filters = site_list_options(query_string)
+        handler._json(handler.catalog.list_sites(query=query, limit=limit, offset=offset, filters=filters))
+    elif re.fullmatch(r"/api/sites/[^/]+", path):
+        lake = _site(handler, path.rsplit("/", 1)[-1])
         if lake is not None:
-            handler._json(handler.catalog.get_lake_detail(lake))
-    elif re.fullmatch(r"/api/lakes/[^/]+/image\.png", path):
-        lake = _lake(handler, path.split("/")[-2])
+            handler._json(handler.catalog.get_site_detail(lake))
+    elif re.fullmatch(r"/api/sites/[^/]+/image\.png", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             size = int(params.get("size", ["900"])[0])
             padding = float(params.get("padding", ["0.6"])[0])
@@ -45,16 +45,16 @@ def handle_lake_get(handler, path: str, query_string: str) -> bool:
                     "image/png",
                     headers={"X-Image-Meta": json.dumps(meta, ensure_ascii=True)},
                 )
-    elif re.fullmatch(r"/api/lakes/[^/]+/tile-meta", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/tile-meta", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             try:
                 handler._json(handler.catalog.tile_meta_for_lake(lake, padding=float(params.get("padding", ["0.8"])[0])))
             except FileNotFoundError as exc:
                 handler._error(HTTPStatus.NOT_FOUND, str(exc))
-    elif re.fullmatch(r"/api/lakes/[^/]+/tiles/\d+/\d+/\d+\.png", path):
-        match = re.fullmatch(r"/api/lakes/([^/]+)/tiles/(\d+)/(\d+)/(\d+)\.png", path)
-        lake = _lake(handler, match.group(1))
+    elif re.fullmatch(r"/api/sites/[^/]+/tiles/\d+/\d+/\d+\.png", path):
+        match = re.fullmatch(r"/api/sites/([^/]+)/tiles/(\d+)/(\d+)/(\d+)\.png", path)
+        lake = _site(handler, match.group(1))
         if lake is not None:
             try:
                 with TILE_RENDER_SEMAPHORE:
@@ -68,17 +68,17 @@ def handle_lake_get(handler, path: str, query_string: str) -> bool:
             except FileNotFoundError:
                 payload = blank_png(256)
             handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")
-    elif re.fullmatch(r"/api/lakes/[^/]+/esa", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/esa", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             handler._json({"esa": handler.catalog._esa_smoothed_layer(lake)})
-    elif re.fullmatch(r"/api/lakes/[^/]+/jrc", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/jrc", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             threshold = int(params.get("threshold", ["75"])[0])
             handler._json({"jrc": handler.catalog._jrc_occurrence_layer(lake, threshold=threshold)})
-    elif re.fullmatch(r"/api/lakes/[^/]+/context-water", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/context-water", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             handler._json(
                 handler.catalog.context_water_for_lake(
@@ -88,24 +88,24 @@ def handle_lake_get(handler, path: str, query_string: str) -> bool:
                     limit=int(params.get("limit", ["500"])[0]),
                 )
             )
-    elif re.fullmatch(r"/api/lakes/[^/]+/local-labels", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/local-labels", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             handler._json(handler.catalog.local_label_items(lake))
-    elif re.fullmatch(r"/api/lakes/[^/]+/local-labels/[^/]+", path):
+    elif re.fullmatch(r"/api/sites/[^/]+/local-labels/[^/]+", path):
         parts = path.split("/")
-        lake = _lake(handler, parts[-3])
+        lake = _site(handler, parts[-3])
         if lake is not None:
             try:
                 handler._json(handler.catalog.local_label_geojson(lake, parts[-1]))
             except FileNotFoundError as exc:
                 handler._error(HTTPStatus.NOT_FOUND, str(exc))
-    elif re.fullmatch(r"/api/lakes/[^/]+/imagery", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/imagery", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             handler._json(handler.catalog.imagery_for_lake(lake))
-    elif re.fullmatch(r"/api/lakes/[^/]+/image-meta", path):
-        lake = _lake(handler, path.split("/")[-2])
+    elif re.fullmatch(r"/api/sites/[^/]+/image-meta", path):
+        lake = _site(handler, path.split("/")[-2])
         if lake is not None:
             try:
                 _, meta = handler.catalog.image_for_lake(lake)
@@ -117,10 +117,10 @@ def handle_lake_get(handler, path: str, query_string: str) -> bool:
     return True
 
 
-def handle_lake_post(handler, path: str) -> bool:
-    if not re.fullmatch(r"/api/lakes/[^/]+/imagery/active", path):
+def handle_site_post(handler, path: str) -> bool:
+    if not re.fullmatch(r"/api/sites/[^/]+/imagery/active", path):
         return False
-    lake = _lake(handler, path.split("/")[-3])
+    lake = _site(handler, path.split("/")[-3])
     if lake is None:
         return True
     payload = handler._read_json()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Local lake imagery, annotation, and model-training workbench.
+"""Local observation imagery, water annotation, and model-training workbench.
 
 This is intentionally dependency-light on the web side: the HTTP server uses
 Python's standard library, while GIS IO uses the project environment's
@@ -15,8 +15,8 @@ from pathlib import Path
 
 from lake_workbench.sentinel.download import disable_proxy_env
 from lake_workbench.jobs import DownloadManager, PatchExportManager, TrainingManager
-from lake_workbench.catalog import LakeCatalog
-from lake_workbench.http_handler import create_lake_handler
+from lake_workbench.catalog import SiteCatalog
+from lake_workbench.http_handler import create_site_handler
 from lake_workbench.models.metadata import persisted_training_job
 from lake_workbench.models.validation import ModelInferenceBusy
 from lake_workbench.regions.config import load_region_configs
@@ -41,7 +41,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     catalogs = {
-        key: LakeCatalog(region, DEFAULT_REGION_KEY) for key, region in REGIONS.items()
+        key: SiteCatalog(region, DEFAULT_REGION_KEY) for key, region in REGIONS.items()
     }
     downloads_by_region = {
         key: DownloadManager(catalog) for key, catalog in catalogs.items()
@@ -62,7 +62,7 @@ def main() -> None:
         **{key: TrainingManager(key, **training_manager_options) for key in catalogs},
         "all": TrainingManager("all", **training_manager_options),
     }
-    handler = create_lake_handler(
+    handler = create_site_handler(
         catalogs=catalogs,
         downloads_by_region=downloads_by_region,
         patch_exports_by_region=patch_exports_by_region,
@@ -77,7 +77,7 @@ def main() -> None:
         status = "ready" if catalog.load_error is None else catalog.load_error
         imagery_summary = catalog.imagery_inventory_summary()
         print(
-            f"Region {key}: {len(catalog.lakes)} lakes, "
+            f"Region {key}: {len(catalog.sites)} sites, "
             f"{imagery_summary['tci_tile_count']} imagery tiles, "
             f"{imagery_summary['active_imagery_count']} active imagery selections, {status}"
         )

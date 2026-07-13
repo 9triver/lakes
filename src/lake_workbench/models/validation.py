@@ -117,7 +117,7 @@ class ModelValidationMixin:
 
     def model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
         model = self._load_validation_model(model_key)
-        candidates = list(self.lakes)
+        candidates = list(self.sites)
         random.shuffle(candidates)
         skipped = []
         for lake in candidates:
@@ -133,6 +133,8 @@ class ModelValidationMixin:
                 continue
             return {
                 "region": self.region.key,
+                "site_id": lake.object_id,
+                "site": self._summary(lake),
                 "lake_id": lake.object_id,
                 "lake": self._summary(lake),
                 "model": prediction["model"],
@@ -142,7 +144,7 @@ class ModelValidationMixin:
                 "skipped_count": len(skipped),
             }
         raise FileNotFoundError(
-            f"No lake with active imagery matching model bands ({model.in_channels}) "
+            f"No observation site with active imagery matching model bands ({model.in_channels}) "
             f"for {self.region.key}: {display_path(model.path)}"
         )
 
@@ -177,6 +179,7 @@ class ModelValidationMixin:
             MODEL_INFERENCE_SEMAPHORE.release()
         payload = {
             "region": self.region.key,
+            "site_id": lake.object_id,
             "lake_id": lake.object_id,
             "cached": False,
             "model": {
@@ -274,7 +277,7 @@ class ModelValidationMixin:
         prediction_bounds: tuple[float, float, float, float],
     ) -> Path:
         payload = {
-            "lake_id": lake.object_id,
+            "site_id": lake.object_id,
             "threshold": round(float(threshold), 4),
             "bounds": [round(value, 8) for value in prediction_bounds],
             "model": display_path(model_path),
@@ -312,7 +315,7 @@ class ModelValidationMixin:
         active_lake_tiles = [
             tile
             for tile, rows in self.user_tci_rows.items()
-            if any(row.get("lake_id") == lake.object_id for row in rows)
+            if any((row.get("site_id") or row.get("lake_id")) == lake.object_id for row in rows)
         ]
         seen = set()
         result = []

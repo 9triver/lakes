@@ -1,4 +1,4 @@
-"""Training sample and patch persistence mixed into the lake catalog."""
+"""Training sample and patch persistence mixed into the site catalog."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from lake_workbench.utils import (
 
 
 class TrainingCatalogMixin:
-    """Persistence operations that require access to a lake catalog instance."""
+    """Persistence operations that require access to an observation-site catalog."""
 
     region: Any
 
@@ -79,13 +79,15 @@ class TrainingCatalogMixin:
         for existing in existing_rows:
             if exact_existing and existing.get("sample_id") == exact_existing.get("sample_id"):
                 continue
-            if existing.get("lake_id") != lake.object_id or existing.get("training_base_fingerprint") != base_fingerprint:
+            existing_site_id = existing.get("site_id") or existing.get("lake_id")
+            if existing_site_id != lake.object_id or existing.get("training_base_fingerprint") != base_fingerprint:
                 continue
             overlap = bbox_iou(view_extent, bbox_from_row(existing))
             if overlap >= 0.9:
                 similar_samples.append(
                     {
                         "sample_id": existing.get("sample_id", ""),
+                        "site_id": existing_site_id or "",
                         "lake_id": existing.get("lake_id", ""),
                         "overlap": overlap,
                         "created_at": existing.get("created_at", ""),
@@ -112,6 +114,9 @@ class TrainingCatalogMixin:
         missing_tiles = readiness.get("missing_tiles") or []
         row = {
             "sample_id": sample_id,
+            "site_id": lake.object_id,
+            "site_name": lake.name or "",
+            # Compatibility fields for existing patch/model tooling.
             "lake_id": lake.object_id,
             "lake_name": lake.name or "",
             "tile": ",".join(tile_names),
@@ -336,13 +341,17 @@ class TrainingCatalogMixin:
         npz_path = resolve_data_path(row.get("npz_path", ""), self.region) if row.get("npz_path") else None
         include_value = clean_optional(row.get("include") or row.get("included"))
         included = True if include_value is None else truthy_flag(include_value, default=True)
-        lake_id = row.get("lake_id", "")
-        lake = self.get_lake(lake_id) if lake_id else None
+        site_id = row.get("site_id") or row.get("lake_id", "")
+        site = self.get_site(site_id) if site_id else None
+        display_name = (site.properties.get("display_name") if site else None) or row.get("site_name") or row.get("lake_name") or site_id
         return {
             **row,
+            "site_id": site_id,
+            "site_display_name": display_name,
             "included": included,
             "include": "true" if included else "false",
-            "lake_display_name": (lake.properties.get("display_name") if lake else None) or row.get("lake_name") or lake_id,
+            "lake_id": row.get("lake_id") or site_id,
+            "lake_display_name": display_name,
             "manifest_path": display_path(manifest_path),
             "preview_exists": bool(preview_path and preview_path.exists()),
             "npz_exists": bool(npz_path and npz_path.exists()),
@@ -352,8 +361,9 @@ class TrainingCatalogMixin:
         }
 
     def _training_sample_summary(self, row: dict) -> dict:
-        lake_id = row.get("lake_id", "")
-        lake = self.get_lake(lake_id) if lake_id else None
+        site_id = row.get("site_id") or row.get("lake_id", "")
+        site = self.get_site(site_id) if site_id else None
+        display_name = (site.properties.get("display_name") if site else None) or row.get("site_name") or row.get("lake_name") or site_id
         tci_paths = split_semicolon(row.get("tci_path"))
         safe_paths = split_semicolon(row.get("safe_path"))
         label_path = resolve_data_path(row.get("label_path", ""), self.region) if row.get("label_path") else None
@@ -362,7 +372,10 @@ class TrainingCatalogMixin:
         label_exists = bool(label_path and label_path.exists())
         return {
             **row,
-            "lake_display_name": (lake.properties.get("display_name") if lake else None) or row.get("lake_name") or lake_id,
+            "site_id": site_id,
+            "site_display_name": display_name,
+            "lake_id": row.get("lake_id") or site_id,
+            "lake_display_name": display_name,
             "tile_count": len(split_commas(row.get("tiles") or row.get("tile"))),
             "product_count": len(split_commas(row.get("products") or row.get("product_name"))),
             "imagery_asset_labels": split_commas(row.get("imagery_asset_labels") or row.get("imagery_asset_label")),
@@ -397,6 +410,7 @@ class TrainingCatalogMixin:
                 }
             )
         return {
+            "site_id": lake.object_id,
             "lake_id": lake.object_id,
             "ready": bool(tiles) and not missing_tiles,
             "required_tiles": tiles,

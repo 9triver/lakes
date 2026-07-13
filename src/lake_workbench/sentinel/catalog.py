@@ -30,6 +30,7 @@ class SentinelCatalogMixin:
                 {
                     "tile": tile,
                     "downloaded": row is not None,
+                    "site_coverage_ratio": coverage,
                     "lake_coverage_ratio": coverage,
                     "aoi_coverage_ratio": coverage,
                     "geometry": mapping(tile_geom) if tile_geom is not None else None,
@@ -40,7 +41,7 @@ class SentinelCatalogMixin:
                 }
             )
         rows.sort(key=lambda item: (item.get("aoi_coverage_ratio") or 0, item["tile"]), reverse=True)
-        return {"lake_id": lake.object_id, "aoi_bounds": list(lake.bbox), "tiles": rows}
+        return {"site_id": lake.object_id, "lake_id": lake.object_id, "aoi_bounds": list(lake.bbox), "tiles": rows}
 
     def _required_sentinel_tiles_for_lake(self, lake) -> list[str]:
         tiles = self._sentinel_tiles_for_geometry(lake.geometry)

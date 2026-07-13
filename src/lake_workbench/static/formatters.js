@@ -22,8 +22,7 @@ export function formatProductList(value) {
       const fallback = item
         .replace(/^shaanxi_\d+_/, "")
         .replace(/^gansu_\d+_/, "")
-        .replace(/^yunnan_\d+_/, "")
-        .replace(/^hunan_\d+_/, "");
+        .replace(/^yunnan_\d+_/, "");
       return [tile, date || compactDate].filter(Boolean).join("/") || fallback || item;
     })
     .filter(Boolean)

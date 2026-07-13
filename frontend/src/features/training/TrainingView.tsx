@@ -14,7 +14,7 @@ function DatasetSummary({ dataset }: { dataset?: TrainingDataset }) {
     ["区域", (dataset.regions || []).join(", ") || "-"],
     ["可用 Patch", dataset.usable_patches ?? dataset.included_patches ?? 0],
     ["包含 / 排除", `${dataset.included_patches || 0} / ${dataset.excluded_patches || 0}`],
-    ["样本 / 水体", `${dataset.sample_count || 0} / ${dataset.lake_count || 0}`],
+    ["样本 / 区域", `${dataset.sample_count || 0} / ${dataset.site_count ?? dataset.lake_count ?? 0}`],
     ["输入", `${dataset.in_channels || 0} 波段 · ${(dataset.patch_size || []).join(" x ")}`],
     ["水体像元", percent(dataset.water_ratio)],
   ];

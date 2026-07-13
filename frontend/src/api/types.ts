@@ -2,7 +2,8 @@ export interface RegionSummary {
   key: string;
   name: string;
   ready: boolean;
-  lake_count: number;
+  site_count: number;
+  lake_count?: number;
 }
 
 export interface RegionsResponse {
@@ -10,13 +11,18 @@ export interface RegionsResponse {
   items: RegionSummary[];
 }
 
-export interface LakeSummary {
+export interface SiteSummary {
+  site_id: string;
   object_id: string;
   display_name?: string;
   name?: string;
   water_type?: string;
+  coverage_area_km2: number;
   area_km2: number;
   tiles?: string[];
+  image_count?: number;
+  label_asset_count?: number;
+  label_feature_count?: number;
   has_tci?: boolean;
   region?: string;
   region_name?: string;
@@ -25,19 +31,19 @@ export interface LakeSummary {
   best_tci_date?: string;
 }
 
-export interface LakesResponse {
+export interface SitesResponse {
   total: number;
-  items: LakeSummary[];
+  items: SiteSummary[];
   facets?: Record<string, Record<string, number>>;
 }
 
-export interface LakeFilters {
-  water_type: string;
+export interface SiteFilters {
   area_bucket: string;
   has_name: string;
   has_tci: string;
-  polygon_quality: string;
-  metadata_quality: string;
+  has_osm: string;
+  has_hydrolakes: string;
+  has_local_labels: string;
 }
 
 export interface GeoJsonLayer {
@@ -50,7 +56,8 @@ export interface FeatureCollection {
   features: Array<{ type: "Feature"; geometry: Record<string, unknown>; properties?: Record<string, unknown> }>;
 }
 
-export interface LakeDetail extends LakeSummary {
+export interface SiteDetail extends SiteSummary {
+  site_id: string;
   lake_id: string;
   bbox: [number, number, number, number];
   layers?: {
@@ -60,7 +67,8 @@ export interface LakeDetail extends LakeSummary {
 }
 
 export interface TileMeta {
-  lake_bounds: [number, number, number, number];
+  site_bounds?: [number, number, number, number];
+  lake_bounds?: [number, number, number, number];
   tile_bounds: [number, number, number, number];
   tile_url: string;
   tiles: string[];
@@ -90,6 +98,7 @@ export interface ImageryProduct {
 }
 
 export interface ImageryResponse {
+  site_id?: string;
   lake_id: string;
   tiles: Array<{ tile: string; products: ImageryProduct[] }>;
 }
@@ -116,6 +125,9 @@ export interface SentinelProduct {
 
 export interface TrainingSample {
   sample_id: string;
+  site_id?: string;
+  site_display_name?: string;
+  site_name?: string;
   lake_id: string;
   lake_display_name?: string;
   lake_name?: string;
@@ -133,6 +145,9 @@ export interface TrainingSample {
 export interface TrainingPatch {
   patch_id: string;
   sample_id: string;
+  site_id?: string;
+  site_display_name?: string;
+  site_name?: string;
   lake_id: string;
   lake_display_name?: string;
   lake_name?: string;

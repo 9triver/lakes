@@ -22,11 +22,11 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
             handler._error(HTTPStatus.NOT_FOUND, "Training job not found")
         else:
             handler._json(job)
-    elif re.fullmatch(r"/api/lakes/[^/]+/training-samples/readiness", path):
+    elif re.fullmatch(r"/api/sites/[^/]+/training-samples/readiness", path):
         lake_key = path.split("/")[-3]
-        lake = handler.catalog.get_lake(lake_key)
+        lake = handler.catalog.get_site(lake_key)
         if lake is None:
-            handler._error(HTTPStatus.NOT_FOUND, "Lake not found")
+            handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
         else:
             params = parse_qs(query_string)
             buffer_ratio = float(params.get("buffer_ratio", ["0.8"])[0])
@@ -57,11 +57,11 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
 
 
 def handle_training_post(handler, path: str) -> bool:
-    if re.fullmatch(r"/api/lakes/[^/]+/training-samples", path):
+    if re.fullmatch(r"/api/sites/[^/]+/training-samples", path):
         lake_key = path.split("/")[-2]
-        lake = handler.catalog.get_lake(lake_key)
+        lake = handler.catalog.get_site(lake_key)
         if lake is None:
-            handler._error(HTTPStatus.NOT_FOUND, "Lake not found")
+            handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
             return True
         payload = handler._read_json()
         try:

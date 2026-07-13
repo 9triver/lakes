@@ -28,6 +28,7 @@ class RegionConfig:
     data_dir: Path
     processed_dir: Path
     cache_dir: Path
+    shared_data_dir: Path
     bounds: tuple[float, float, float, float] | None = None
     metadata_source: str = "osm"
     uid_prefix: str = ""
@@ -44,25 +45,25 @@ class RegionConfig:
     @property
     def sentinel_tile_index_paths(self) -> list[Path]:
         return [
-            self.data_dir / "sentinel_2_tiles" / "sentinel_2_index.geojson",
-            self.data_dir / "sentinel_2_tiles" / "sentinel_2_index_shapefile.shp",
+            self.shared_data_dir / "sentinel_2_tiles" / "sentinel_2_index.geojson",
+            self.shared_data_dir / "sentinel_2_tiles" / "sentinel_2_index_shapefile.shp",
         ]
 
     @property
     def osm_water(self) -> Path:
-        return self.data_dir / "osm_water" / "water_raw.gpkg"
+        return self.data_dir / "external_water" / "osm" / "water_raw.gpkg"
 
     @property
-    def lake_metadata(self) -> Path:
-        return self.processed_dir / "lake_metadata.gpkg"
+    def site_metadata(self) -> Path:
+        return self.processed_dir / "site_metadata.gpkg"
 
     @property
-    def lake_metadata_csv(self) -> Path:
-        return self.processed_dir / "lake_metadata.csv"
+    def site_metadata_csv(self) -> Path:
+        return self.processed_dir / "site_metadata.csv"
 
     @property
     def hydrolakes(self) -> Path:
-        return self.data_dir / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
+        return self.shared_data_dir / "external_water" / "hydrolakes" / "HydroLAKES_polys_v10_shp" / "HydroLAKES_polys_v10.shp"
 
     @property
     def esa_water_mask(self) -> Path:
@@ -136,9 +137,10 @@ class RegionConfig:
 def load_region_configs(config_path: Path | None = None) -> tuple[dict[str, RegionConfig], str]:
     path = config_path or project_path(os.environ.get("LAKES_REGIONS_CONFIG", DEFAULT_CONFIG_PATH))
     payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    shared_data_dir = project_path(payload.get("shared_data_dir", "data/shared"))
     regions_payload: dict[str, Any] = payload.get("regions", {})
     regions = {
-        key: region_from_mapping(key, value)
+        key: region_from_mapping(key, value, shared_data_dir)
         for key, value in regions_payload.items()
     }
     default_key = os.environ.get("LAKES_DEFAULT_REGION") or payload.get("default") or next(iter(regions), "")
@@ -147,7 +149,7 @@ def load_region_configs(config_path: Path | None = None) -> tuple[dict[str, Regi
     return regions, default_key
 
 
-def region_from_mapping(key: str, value: dict[str, Any]) -> RegionConfig:
+def region_from_mapping(key: str, value: dict[str, Any], shared_data_dir: Path | None = None) -> RegionConfig:
     bounds = value.get("bounds")
     source_img_root = value.get("source_img_root")
     return RegionConfig(
@@ -156,6 +158,7 @@ def region_from_mapping(key: str, value: dict[str, Any]) -> RegionConfig:
         data_dir=project_path(value["data_dir"]),
         processed_dir=project_path(value["processed_dir"]),
         cache_dir=project_path(value.get("cache_dir", f"data/cache/{key}")),
+        shared_data_dir=shared_data_dir or project_path("data/shared"),
         bounds=tuple(float(item) for item in bounds) if bounds else None,
         metadata_source=str(value.get("metadata_source", "osm")),
         uid_prefix=str(value.get("uid_prefix", key)),

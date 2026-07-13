@@ -4,7 +4,7 @@ import { Box, Button, TextField, Typography } from "@mui/material";
 import { ScanLine } from "lucide-react";
 import { getJson, postJson } from "../../api/client";
 import type { LocalLabelItem } from "../../api/types";
-import type { LakeMapHandle } from "../map/LakeMap";
+import type { SiteMapHandle } from "../map/SiteMap";
 
 interface TrainingCaptureProps {
   region: string;
@@ -12,7 +12,7 @@ interface TrainingCaptureProps {
   jrcThreshold: number;
   localLabel?: LocalLabelItem;
   imagery: { tile: string; product: string };
-  mapHandle: React.RefObject<LakeMapHandle | null>;
+  mapHandle: React.RefObject<SiteMapHandle | null>;
   modelValidation?: Record<string, unknown> | null;
 }
 
@@ -31,6 +31,7 @@ export function TrainingCapture({ region, lakeId, jrcThreshold, localLabel, imag
       if (!captured) throw new Error("地图尚未准备好");
       const viewState = {
         region,
+        site_id: lakeId,
         lake_id: lakeId,
         ...captured,
         jrc_threshold: jrcThreshold,
@@ -40,7 +41,7 @@ export function TrainingCapture({ region, lakeId, jrcThreshold, localLabel, imag
         model_prediction_excluded: true,
         model_validation: modelValidation,
       };
-      const result = await postJson<SaveResponse>(`/api/regions/${encodeURIComponent(region)}/lakes/${encodeURIComponent(lakeId)}/training-samples`, {
+      const result = await postJson<SaveResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/training-samples`, {
         label_source: "current_view",
         label_threshold: String(jrcThreshold),
         label_scope: "current_view",

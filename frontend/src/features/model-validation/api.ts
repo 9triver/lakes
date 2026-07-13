@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
-import type { FeatureCollection, LakeSummary } from "../../api/types";
+import type { FeatureCollection, SiteSummary } from "../../api/types";
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
 
 export interface ModelOption {
@@ -25,8 +25,10 @@ export interface ModelOption {
 
 export interface ModelValidationResult {
   region: string;
+  site_id?: string;
+  site?: SiteSummary;
   lake_id: string;
-  lake?: LakeSummary;
+  lake?: SiteSummary;
   model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; threshold?: number };
   prediction: FeatureCollection;
   stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
@@ -70,7 +72,7 @@ export function useLakeModelPrediction(region: string, lakeId: string, model: st
     queryFn: () => {
       const localModel = model.startsWith(`${region}/`) ? model.slice(region.length + 1) : model;
       const params = new URLSearchParams({ model: localModel, threshold: String(threshold) });
-      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/lakes/${encodeURIComponent(lakeId)}/model-prediction?${params}`);
+      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/model-prediction?${params}`);
     },
     enabled: enabled && Boolean(region && lakeId && model),
     retry: false,

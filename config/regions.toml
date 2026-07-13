@@ -1,16 +1,5 @@
-default = "hunan"
-
-[regions.hunan]
-name = "湖南省"
-data_dir = "data/regions/hunan/raw"
-processed_dir = "data/regions/hunan/processed"
-cache_dir = "data/cache/hunan"
-bounds = [108.5, 24.5, 114.5, 30.3]
-metadata_source = "osm"
-uid_prefix = "hunan"
-geofabrik = "https://download.geofabrik.de/asia/china/hunan-latest-free.gpkg.zip"
-esa_tiles = ["N24E108", "N24E111", "N24E114", "N27E108", "N27E111", "N27E114", "N30E108", "N30E111", "N30E114"]
-jrc_tiles = ["100E_30N", "110E_30N"]
+default = "gansu"
+shared_data_dir = "data/shared"
 
 [regions.gansu]
 name = "甘肃省"
@@ -22,7 +11,7 @@ metadata_source = "img_bounds"
 uid_prefix = "gansu"
 geofabrik = "https://download.geofabrik.de/asia/china/gansu-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/gansu/raw/local_imagery/gansu20260605_mu"
+source_img_root = "data/regions/gansu/raw/local_imagery"
 esa_tiles = [
   "N30E090",
   "N30E093",
@@ -72,7 +61,7 @@ metadata_source = "img_bounds"
 uid_prefix = "shaanxi"
 geofabrik = "https://download.geofabrik.de/asia/china/shaanxi-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/shaanxi/raw/local_imagery/shanxi20260605_wuhaiman"
+source_img_root = "data/regions/shaanxi/raw/local_imagery"
 esa_tiles = [
   "N30E105",
   "N30E108",
@@ -99,7 +88,7 @@ metadata_source = "img_bounds"
 uid_prefix = "yunnan"
 geofabrik = "https://download.geofabrik.de/asia/china/yunnan-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/yunnan/raw/local_imagery/yunnan20260610_lishuaijie"
+source_img_root = "data/regions/yunnan/raw/local_imagery"
 esa_tiles = [
   "N21E096",
   "N21E099",

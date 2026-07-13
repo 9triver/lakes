@@ -1,20 +1,20 @@
 # Lakes
 
-Lakes 是一个面向多区域湖泊数据整理、水体标注和语义分割训练的本地 Web GIS。
+Lakes 是一个面向多区域遥感观测、水体标注和语义分割训练的本地 Web GIS。
 
-系统将区域元数据库、湖泊本体影像、按需下载的 Sentinel-2 产品、外部水体数据和 U-Net 训练流程组织在同一个工作台中。
+系统将观测区域元数据库、本地影像、按需下载的 Sentinel-2 产品、外部水体数据和 U-Net 训练流程组织在同一个工作台中。一个观测区域可以包含多个水体，也可以与其他观测区域覆盖同一个水体。
 
 ## 功能
 
-- 按区域浏览湖泊、水库和本地卫星影像。
+- 按省份浏览由本地影像目录定义的观测区域。
 - 独立显示 OSM、HydroLAKES、ESA WorldCover、JRC GSW 和本地 Shapefile 标注。
-- 查询并下载 Sentinel-2 SAFE/TCI 产品，指定湖泊当前使用的影像。
+- 查询并下载 Sentinel-2 SAFE/TCI 产品，指定观测区域当前使用的影像。
 - 捕获当前地图视图和可见标注，记录训练区域。
 - 检测重复或高度相似的训练视图。
 - 为新增训练样本增量生成 Patch，并审核 include/exclude 状态。
 - 按区域或全部区域训练 U-Net。
 - 浏览历史训练任务、指标和模型权重。
-- 随机选择湖泊进行模型验证，并将失败案例重新加入训练集。
+- 随机选择观测区域进行模型验证，并将失败案例重新加入训练集。
 
 模型预测只作为诊断图层记录，不会作为训练真值。
 
@@ -28,16 +28,16 @@ lakes/
     src/
       app/                       应用入口、主题和客户端状态
       api/                       类型化 API 客户端
-      features/                  按业务组织的区域、湖泊等功能
+      features/                  按业务组织的观测区域、影像和训练功能
   src/lake_workbench/
     server.py                    依赖组装和服务入口
     http_handler.py              HTTP 请求上下文、路由调度和响应处理
-    routes/                      按湖泊、训练、模型、Sentinel 等域组织的 API 路由
-    catalog.py                   湖泊元数据加载、筛选、详情和摘要
+    routes/                      按观测区域、训练、模型、Sentinel 等域组织的 API 路由
+    catalog.py                   观测区域元数据加载、筛选、详情和摘要
     imagery/
       inventory.py               本地/下载影像库存、active 选择和产品登记
       raster.py                  TCI 渲染、影像拼接和模型预测矢量化
-      rendering.py               湖泊 mosaic 和 XYZ 瓦片渲染编排
+      rendering.py               观测区域 mosaic 和 XYZ 瓦片渲染编排
     sentinel/
       catalog.py                 Sentinel MGRS tile 匹配和产品覆盖率
       download.py                Copernicus 查询和下载
@@ -85,7 +85,8 @@ lakes/
       styles.css
   scripts/
     prepare_data.py              下载公共基础数据
-    build_lake_metadata.py       构建区域湖泊元数据库
+    build_site_metadata.py       构建观测区域元数据库
+    site_metadata_sources.py     OSM、HydroLAKES 和 Sentinel 数据读取辅助
     export_training_patches.py   全量或增量生成 Patch
     train_unet.py                训练 U-Net
     download_sentinel.py         命令行 Sentinel 查询/下载
@@ -95,31 +96,42 @@ lakes/
 
 Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，用于迁移后的对照和回退。
 
-React 前端覆盖区域和湖泊筛选、hash 深链接、湖泊详情、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
+React 前端覆盖观测区域筛选、深链接、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
 
 ## 区域配置
 
 区域统一配置在 `config/regions.toml`。当前包括：
 
-- `hunan`：湖南省，主要从 OSM 水体构建元数据库。
 - `gansu`：甘肃省，从本地 IMG 范围匹配外部水体。
 - `shaanxi`：陕西省，从本地 IMG 范围匹配外部水体。
 - `yunnan`：云南省，从本地 IMG 范围匹配外部水体。
+
+`shared_data_dir` 配置与行政区域无关、只需保存一份的全球数据。目前包括 HydroLAKES 和 Sentinel-2 MGRS Tile Grid。
+
+全局共享数据由 `regions.toml` 的 `shared_data_dir` 指定：
+
+```text
+data/shared/
+  external_water/
+    hydrolakes/
+  sentinel_2_tiles/
+```
 
 每个区域使用统一的数据布局：
 
 ```text
 data/regions/<region>/
   raw/
-    local_imagery/
-    osm_water/
-    hydrolakes/
+    local_imagery/<directory-id>/
+    review/
     external_water/
-    sentinel_2_tiles/
+      osm/
+      esa_worldcover/
+      jrc_gsw/
     sentinel_products/
   processed/
-    lake_metadata.gpkg
-    lake_metadata.csv
+    site_metadata.gpkg
+    site_metadata.csv
     esa_polygons/
     jrc_polygons/
     sentinel_products.csv
@@ -189,26 +201,25 @@ journalctl --user -u lakes.service
 下载公共基础数据并构建元数据库：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan all
 PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu all
 ```
 
 单独执行：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan osm
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan hydrolakes
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan esa
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan jrc
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan sentinel-grid
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region hunan metadata
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu osm
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu hydrolakes
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu esa
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu jrc
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu sentinel-grid
+PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu metadata
 ```
 
 需要代理访问 JRC Google Storage 时显式传入：
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/prepare_data.py \
-  --region hunan \
+  --region gansu \
   --proxy 192.168.30.107:7897 \
   jrc
 ```
@@ -222,28 +233,46 @@ COPERNICUS_PASSWORD=...
 
 Sentinel SAFE/TCI 产品不会在 `prepare_data.py all` 中自动下载，由用户在界面或命令行按需选择。
 
+HydroLAKES 和 Sentinel Grid 命令虽然保留 `--region` 参数以兼容统一命令格式，但输出均写入 `shared_data_dir`；任意 region 成功执行一次即可。
+
 ## 元数据库
+
+观测区域身份由目录确定：`site_id = <region>_<directory-id>`。例如 `gansu_17407` 的显示名称为 `区域 17407`，当外部候选提供可信名称时显示为 `区域 17407（苏干湖附近）`；外部名称不参与身份判定。
 
 手工重建某个区域的元数据库：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/build_lake_metadata.py --region hunan
-PYTHONPATH=src .venv/bin/python scripts/build_lake_metadata.py --region gansu
+PYTHONPATH=src .venv/bin/python scripts/build_site_metadata.py --region gansu
 ```
 
-标准字段包括区域化 `lake_uid`、显示名称、面积、来源、Sentinel tiles、外部 polygon 可用性和 geometry。
+`site_metadata.gpkg` 包含五个图层：
+
+- `sites`：区域身份、显示名称、影像覆盖并集、日期、Tile 和候选统计。
+- `site_coverage_core`：至少 80% 本地影像共同覆盖的核心区域。
+- `imagery_assets`：每个 IMG 资产的有效覆盖、日期、分辨率、波段和路径。
+- `local_label_features`：本地 Shapefile 中的全部水体要素。
+- `external_water_features`：与区域相交的 OSM、HydroLAKES、ESA 和 JRC 水体候选。
+
+单独预生成某个观测区域的 ESA/JRC 多边形缓存：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/precompute_esa_polygons.py \
+  --region gansu --site gansu_17407
+PYTHONPATH=src .venv/bin/python scripts/precompute_jrc_polygons.py \
+  --region gansu --site gansu_17407 --thresholds 50,75,90
+```
 
 ## 训练工作流
 
-1. 在湖泊页面选择本体影像或已下载的 Sentinel 产品。
+1. 在观测区域页面选择本地影像或已下载的 Sentinel 产品。
 2. 打开可信的 OSM、HydroLAKES、ESA、JRC 或本地标注。
 3. 记录当前视图为训练区域。
 4. 系统检测严格重复和视图范围高度重叠的相似样本。
 5. 新样本自动按 `256 x 256`、stride `128` 增量生成 Patch。
 6. 在 Patch 页面审核并设置 include/exclude。
 7. 在训练页面按当前区域或全部区域启动 U-Net。
-8. 在模型验证页面选择权重并随机验证湖泊。
-9. 对预测较差的湖泊重新选择可信标注并补入训练集。
+8. 在模型验证页面选择权重并随机验证观测区域。
+9. 对预测较差的区域重新选择可信标注并补入训练集。
 
 手工生成 Patch：
 
@@ -281,8 +310,8 @@ PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
 
 ```text
 /api/regions
-/api/regions/<region>/lakes
-/api/regions/<region>/lakes/<lake_id>
+/api/regions/<region>/sites
+/api/regions/<region>/sites/<site_id>
 /api/regions/<region>/training-samples
 /api/regions/<region>/training-patches
 /api/regions/<region>/training-runs
@@ -291,6 +320,8 @@ PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
 ```
 
 `<region>` 可以是具体区域，也可以是 `all`。
+
+旧 `/lakes` API 和历史 CSV 中的 `lake_id` 字段暂时保留为兼容入口；新记录以 `site_id` 为规范字段。
 
 ## 数据与 Git
 

@@ -48,9 +48,9 @@ def region_key_from_patch_row(row: dict, fallback: str = "") -> str:
     region = clean_optional(row.get("source_region") or row.get("region"))
     if region:
         return region
-    lake_id = clean_optional(row.get("lake_id")) or ""
-    if "_" in lake_id:
-        prefix = lake_id.split("_", 1)[0]
+    site_id = clean_optional(row.get("site_id") or row.get("lake_id")) or ""
+    if "_" in site_id:
+        prefix = site_id.split("_", 1)[0]
         if prefix in REGIONS:
             return prefix
     return fallback
@@ -62,7 +62,7 @@ def summarize_training_manifest(manifest_path: Path, region_key: str = "") -> di
     excluded = 0
     usable = 0
     sample_ids = set()
-    lake_ids = set()
+    site_ids = set()
     regions = set()
     water_pixels = 0
     valid_pixels = 0
@@ -76,11 +76,11 @@ def summarize_training_manifest(manifest_path: Path, region_key: str = "") -> di
         else:
             excluded += 1
         sample_id = clean_optional(row.get("sample_id"))
-        lake_id = clean_optional(row.get("lake_id"))
+        site_id = clean_optional(row.get("site_id") or row.get("lake_id"))
         if sample_id:
             sample_ids.add(sample_id)
-        if lake_id:
-            lake_ids.add(lake_id)
+        if site_id:
+            site_ids.add(site_id)
         row_region = region_key_from_patch_row(row, region_key)
         if row_region:
             regions.add(row_region)
@@ -109,7 +109,8 @@ def summarize_training_manifest(manifest_path: Path, region_key: str = "") -> di
         "excluded_patches": excluded,
         "usable_patches": usable,
         "sample_count": len(sample_ids),
-        "lake_count": len(lake_ids),
+        "site_count": len(site_ids),
+        "lake_count": len(site_ids),
         "regions": sorted(regions),
         "water_pixels": water_pixels,
         "valid_pixels": valid_pixels,
@@ -129,7 +130,8 @@ def merge_training_dataset_summaries(scope: str, summaries: list[dict]) -> dict:
         "excluded_patches": sum(item.get("excluded_patches", 0) for item in summaries),
         "usable_patches": sum(item.get("usable_patches", 0) for item in summaries),
         "sample_count": sum(item.get("sample_count", 0) for item in summaries),
-        "lake_count": sum(item.get("lake_count", 0) for item in summaries),
+        "site_count": sum(item.get("site_count", item.get("lake_count", 0)) for item in summaries),
+        "lake_count": sum(item.get("site_count", item.get("lake_count", 0)) for item in summaries),
         "water_pixels": sum(item.get("water_pixels", 0) for item in summaries),
         "valid_pixels": sum(item.get("valid_pixels", 0) for item in summaries),
     }

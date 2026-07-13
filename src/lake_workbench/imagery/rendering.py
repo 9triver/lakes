@@ -42,11 +42,12 @@ class ImageryRenderingMixin:
         return {
             **mosaic_source_meta(rows),
             "bounds": list(lake_bounds),
+            "site_bounds": list(lake_bounds),
             "lake_bounds": list(lake_bounds),
             "tile_bounds": list(rows_bounds(rows)),
             "center": list(lake.center),
             "padding": padding,
-            "tile_url": f"/api{tile_url_prefix}/lakes/{lake.object_id}/tiles/{{z}}/{{x}}/{{y}}.png",
+            "tile_url": f"/api{tile_url_prefix}/sites/{lake.object_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
 
     def tile_png_for_lake(self, lake, z: int, x: int, y: int, padding: float = 0.8, tile_size: int = 256) -> tuple[bytes, dict]:
@@ -74,12 +75,13 @@ class ImageryRenderingMixin:
             return rows
         candidate_tiles = [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
         if not candidate_tiles:
-            raise FileNotFoundError(f"No downloaded TCI for lake {lake.object_id}")
+            raise FileNotFoundError(f"No active imagery for site {lake.object_id}")
         return [self.tci_by_tile[tile] for tile in candidate_tiles]
 
     def imagery_for_lake(self, lake) -> dict:
         tiles = self.sentinel_tiles_for_lake(lake)["tiles"]
         return {
+            "site_id": lake.object_id,
             "lake_id": lake.object_id,
             "tiles": [{**tile, "products": self.imagery_products_for_tile(tile["tile"], lake)} for tile in tiles],
         }

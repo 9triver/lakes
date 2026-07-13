@@ -11,7 +11,7 @@ function SampleRow({ sample, scope, onLocate }: { sample: TrainingSample; scope:
   const remove = useDeleteTrainingSample(scope);
   useEffect(() => { setSplit(sample.split || ""); setNotes(sample.notes || ""); }, [sample.notes, sample.split]);
   return <TableRow hover>
-    <TableCell><Typography variant="body2">{sample.lake_display_name || sample.lake_name || sample.lake_id}</Typography><Typography variant="caption" color="text.secondary">{sample.sample_id}</Typography></TableCell>
+    <TableCell><Typography variant="body2">{sample.site_display_name || sample.site_name || sample.lake_display_name || sample.lake_name || sample.site_id || sample.lake_id}</Typography><Typography variant="caption" color="text.secondary">{sample.sample_id}</Typography></TableCell>
     <TableCell>{sample.region_name || sample.region || scope}</TableCell>
     <TableCell><Chip size="small" color={sample.status === "ok" ? "success" : "warning"} label={sample.status === "ok" ? "完整" : "缺文件"} /></TableCell>
     <TableCell>{sample.label_source || "current_view"}</TableCell>
@@ -28,6 +28,6 @@ export function TrainingSamplesView({ scope, onLocate }: { scope: string; onLoca
   if (query.isError) return <Typography color="error" sx={{ p: 2 }}>{query.error.message}</Typography>;
   return <Box sx={{ height: "100%", overflow: "auto" }}>
     <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}><Typography variant="subtitle1">训练样本</Typography><Typography variant="caption" color="text.secondary">{query.data?.total || 0} 个样本</Typography></Box>
-    {(query.data?.items || []).length ? <Box sx={{ overflowX: "auto" }}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>水体</TableCell><TableCell>区域</TableCell><TableCell>状态</TableCell><TableCell>标注</TableCell><TableCell>影像</TableCell><TableCell>Split</TableCell><TableCell>备注</TableCell><TableCell>操作</TableCell></TableRow></TableHead><TableBody>{(query.data?.items || []).map((sample) => <SampleRow key={`${sample.region || scope}:${sample.sample_id}`} sample={sample} scope={scope} onLocate={onLocate} />)}</TableBody></Table></Box> : <Box sx={{ p: 4, textAlign: "center" }}><Typography>当前区域还没有训练样本</Typography><Typography variant="caption" color="text.secondary">从湖泊页面记录当前视图后会显示在这里</Typography></Box>}
+    {(query.data?.items || []).length ? <Box sx={{ overflowX: "auto" }}><Table size="small" stickyHeader><TableHead><TableRow><TableCell>观测区域</TableCell><TableCell>省份/区域</TableCell><TableCell>状态</TableCell><TableCell>标注</TableCell><TableCell>影像</TableCell><TableCell>Split</TableCell><TableCell>备注</TableCell><TableCell>操作</TableCell></TableRow></TableHead><TableBody>{(query.data?.items || []).map((sample) => <SampleRow key={`${sample.region || scope}:${sample.sample_id}`} sample={sample} scope={scope} onLocate={onLocate} />)}</TableBody></Table></Box> : <Box sx={{ p: 4, textAlign: "center" }}><Typography>当前区域还没有训练样本</Typography><Typography variant="caption" color="text.secondary">从观测区域页面记录当前视图后会显示在这里</Typography></Box>}
   </Box>;
 }

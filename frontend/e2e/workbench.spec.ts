@@ -42,11 +42,11 @@ test("legacy frontend remains available", async ({ page }) => {
   await expect(page.locator("#lake-list")).toBeVisible();
 });
 
-test("lake browser restores filters and renders all map layers", async ({ page }) => {
+test("site browser restores filters and renders all map layers", async ({ page }) => {
   const errors = await observePageErrors(page);
-  await page.goto("#/regions/gansu/lakes/gansu_17407?water_type=lake&has_tci=true");
-  await expect(page.getByText("苏干湖", { exact: true }).last()).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "类型" })).toHaveText(/湖泊/);
+  await page.goto("#/regions/gansu/sites/gansu_17407?has_osm=true&has_tci=true");
+  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "OSM 标注" })).toHaveText(/有候选/);
   await expect(page.getByRole("combobox", { name: "影像" })).toHaveText(/有影像/);
   for (const label of ["影像", "Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).toBeVisible();
@@ -60,7 +60,7 @@ test("training sample, patch review, and training history views load", async ({ 
   const errors = await observePageErrors(page);
   await page.goto("#/regions/all/training/samples");
   await expect(page.getByText(/\d+ 个样本/)).toBeVisible();
-  await expect(page.getByText("苏干湖", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).first()).toBeVisible();
 
   await page.getByRole("tab", { name: "Patch 审核" }).click();
   await expect(page.getByText(/Patch 审核 · [1-9]\d*/)).toBeVisible();
@@ -82,18 +82,18 @@ test("training sample, patch review, and training history views load", async ({ 
 test("cached model validation deep link restores prediction", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.goto("#/regions/shaanxi/model/shaanxi_23294?model=unet_current_v1%2Flast.pt");
-  await expect(page.getByText(/喜河水库 · 模型 unet_current_v1/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_current_v1/)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByLabel("模型预测", { exact: true })).toBeVisible();
   await expectUsableMap(page);
   await page.screenshot({ path: `${screenshotDir}/model-validation-desktop.png`, fullPage: true });
   expect(errors).toEqual([]);
 });
 
-test("mobile lake and training pages do not overflow", async ({ page }) => {
+test("mobile site and training pages do not overflow", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("#/regions/gansu/lakes/gansu_17407");
-  await expect(page.getByText("苏干湖", { exact: true }).last()).toBeVisible();
+  await page.goto("#/regions/gansu/sites/gansu_17407");
+  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
   await expectUsableMap(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/lake-mobile.png`, fullPage: true });
@@ -119,7 +119,7 @@ test("remaining mobile workspaces stay usable", async ({ page }) => {
   await page.screenshot({ path: `${screenshotDir}/training-mobile.png`, fullPage: true });
 
   await page.goto("#/regions/shaanxi/model/shaanxi_23294?model=unet_current_v1%2Flast.pt");
-  await expect(page.getByText(/喜河水库 · 模型 unet_current_v1/)).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_current_v1/)).toBeVisible({ timeout: 30_000 });
   await expectUsableMap(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/model-validation-mobile.png`, fullPage: true });

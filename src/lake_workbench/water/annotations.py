@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pandas as pd
@@ -26,6 +27,9 @@ class WaterAnnotationsMixin:
     region: Any
 
     def _osm_layer(self, lake: Any) -> dict | None:
+        if hasattr(self, "suggested_water_candidate"):
+            candidate = self.suggested_water_candidate(lake, "osm")
+            return self._candidate_layer(candidate, "OSM")
         if clean_optional(lake.properties.get("source_primary")) != "osm":
             return None
         if not truthy_flag(lake.properties.get("has_osm_polygon"), default=True):
@@ -45,6 +49,7 @@ class WaterAnnotationsMixin:
     ) -> dict:
         aoi = lake_aoi_geometry(lake, padding=padding)
         return {
+            "site_id": lake.object_id,
             "lake_id": lake.object_id,
             "aoi_bounds": list(aoi.bounds),
             "min_area_km2": min_area_km2,
@@ -56,6 +61,8 @@ class WaterAnnotationsMixin:
         }
 
     def _context_osm_water(self, lake: Any, aoi: Any, min_area_km2: float, limit: int) -> dict:
+        if hasattr(self, "water_candidates_for_site"):
+            return self._candidate_collection(lake, "osm", "OSM", min_area_km2, limit)
         if not self.region.osm_water.exists():
             return {"type": "FeatureCollection", "features": []}
         xmin, ymin, xmax, ymax = aoi.bounds
@@ -121,6 +128,8 @@ class WaterAnnotationsMixin:
         return {"type": "FeatureCollection", "features": [item["feature"] for item in items[:limit]]}
 
     def _context_hydrolakes_water(self, lake: Any, aoi: Any, min_area_km2: float, limit: int) -> dict:
+        if hasattr(self, "water_candidates_for_site"):
+            return self._candidate_collection(lake, "hydrolakes", "HydroLAKES", min_area_km2, limit)
         xmin, ymin, xmax, ymax = aoi.bounds
         try:
             candidates = pyogrio.read_dataframe(
@@ -165,6 +174,9 @@ class WaterAnnotationsMixin:
         return {"type": "FeatureCollection", "features": [item["feature"] for item in items[:limit]]}
 
     def _match_hydrolakes(self, lake: Any) -> dict | None:
+        if hasattr(self, "suggested_water_candidate"):
+            candidate = self.suggested_water_candidate(lake, "hydrolakes")
+            return self._candidate_layer(candidate, "HydroLAKES")
         xmin, ymin, xmax, ymax = lake.bbox
         pad_x = max((xmax - xmin) * 0.2, 0.01)
         pad_y = max((ymax - ymin) * 0.2, 0.01)
@@ -202,6 +214,75 @@ class WaterAnnotationsMixin:
                 "overlap_m2": best_area,
             },
         }
+
+    def _candidate_layer(self, candidate, source_label: str) -> dict | None:
+        if candidate is None:
+            return None
+        properties = self._candidate_properties(candidate)
+        properties.update(
+            {
+                "candidate_id": jsonable(candidate.get("candidate_id")),
+                "site_id": jsonable(candidate.get("site_id")),
+                "source": source_label,
+                "intersection_area_km2": jsonable(candidate.get("intersection_area_km2")),
+                "site_coverage_ratio": jsonable(candidate.get("site_coverage_ratio")),
+            }
+        )
+        return {
+            "source": source_label,
+            "geometry": mapping(candidate.geometry),
+            "properties": properties,
+        }
+
+    def _candidate_collection(
+        self,
+        site: Any,
+        source: str,
+        source_label: str,
+        min_area_km2: float,
+        limit: int,
+    ) -> dict:
+        candidates = self.water_candidates_for_site(site, source)
+        if candidates is None or candidates.empty:
+            return {"type": "FeatureCollection", "features": []}
+        primary = self.suggested_water_candidate(site, source)
+        primary_id = clean_optional(primary.get("candidate_id")) if primary is not None else None
+        candidates = candidates[
+            candidates["area_km2"].fillna(0).astype(float) >= float(min_area_km2)
+        ].sort_values("intersection_area_km2", ascending=False)
+        features = []
+        for _, candidate in candidates.head(max(1, int(limit))).iterrows():
+            if primary_id and clean_optional(candidate.get("candidate_id")) == primary_id:
+                continue
+            properties = self._candidate_properties(candidate)
+            properties.update(
+                {
+                    "candidate_id": jsonable(candidate.get("candidate_id")),
+                    "site_id": jsonable(candidate.get("site_id")),
+                    "source": source_label,
+                    "area_km2": jsonable(candidate.get("area_km2")),
+                    "intersection_area_km2": jsonable(candidate.get("intersection_area_km2")),
+                }
+            )
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": mapping(candidate.geometry),
+                    "properties": properties,
+                }
+            )
+        return {"type": "FeatureCollection", "features": features}
+
+    @staticmethod
+    def _candidate_properties(candidate) -> dict:
+        value = candidate.get("properties_json")
+        if not value:
+            return {}
+        try:
+            payload = json.loads(str(value))
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _esa_smoothed_layer(self, lake: Any) -> dict | None:
         cached = read_esa_polygon_cache(self.region, lake.object_id)

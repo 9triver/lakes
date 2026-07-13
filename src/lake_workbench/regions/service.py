@@ -55,21 +55,22 @@ class RegionService:
                     "bounds": list(region.bounds) if region.bounds else None,
                     "ready": catalog.load_error is None,
                     "load_error": catalog.load_error,
-                    "lake_count": len(catalog.lakes),
+                    "site_count": len(catalog.sites),
+                    "lake_count": len(catalog.sites),
                     **catalog.imagery_inventory_summary(),
-                    "has_metadata": region.lake_metadata.exists(),
+                    "has_metadata": region.site_metadata.exists(),
                     "has_osm_water": region.osm_water.exists(),
-                    "metadata_path": display_path(region.lake_metadata),
+                    "metadata_path": display_path(region.site_metadata),
                     "osm_water_path": display_path(region.osm_water),
                 }
             )
         return {"default": self.default_region_key, "items": items}
 
-    def all_lakes_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
+    def all_sites_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
         merged = []
         total = 0
         for key, catalog in self.catalogs.items():
-            payload = catalog.list_lakes(query=query, limit=10**9, offset=0, filters=filters)
+            payload = catalog.list_sites(query=query, limit=10**9, offset=0, filters=filters)
             total += payload["total"]
             merged.extend(
                 {**item, "region": key, "region_name": catalog.region.name}
@@ -83,6 +84,9 @@ class RegionService:
             "items": merged[offset : offset + limit],
             "all_regions": True,
         }
+
+    def all_lakes_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
+        return self.all_sites_payload(query, limit, offset, filters)
 
     def all_training_samples_payload(self) -> dict:
         items = []
@@ -215,7 +219,7 @@ class RegionService:
         random.shuffle(catalogs)
         skipped = []
         for region_key, catalog in catalogs:
-            candidates = list(catalog.lakes)
+            candidates = list(catalog.sites)
             random.shuffle(candidates)
             for lake in candidates:
                 rows = catalog._model_validation_rows(lake, model.in_channels)
@@ -233,6 +237,8 @@ class RegionService:
                 prediction["model"]["region_name"] = "全部区域"
                 return {
                     "region": region_key,
+                    "site_id": lake.object_id,
+                    "site": {**catalog._summary(lake), "region": region_key, "region_name": catalog.region.name},
                     "lake_id": lake.object_id,
                     "lake": {**catalog._summary(lake), "region": region_key, "region_name": catalog.region.name},
                     "model": prediction["model"],
@@ -242,5 +248,5 @@ class RegionService:
                     "skipped_count": len(skipped),
                 }
         raise FileNotFoundError(
-            f"No lake with active imagery matching global model bands ({model.in_channels}): {display_path(model_path)}"
+            f"No observation site with active imagery matching global model bands ({model.in_channels}): {display_path(model_path)}"
         )

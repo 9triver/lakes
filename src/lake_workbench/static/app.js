@@ -29,7 +29,7 @@ import { createSentinelDownloadController } from "./sentinel-download-controller
 import { buildRouteUrl, parseRoute } from "./routing.js";
 
 const state = {
-  region: "hunan",
+  region: "gansu",
   activeRegion: "",
   regions: [],
   lakes: [],

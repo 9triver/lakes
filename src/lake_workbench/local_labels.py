@@ -23,7 +23,7 @@ class LocalLabelCatalogMixin:
                 seen.add(key)
                 labels.append(self._local_label_item(path))
         labels.sort(key=lambda item: (item.get("date") or "", item["name"]), reverse=True)
-        return {"lake_id": lake.object_id, "items": labels}
+        return {"site_id": lake.object_id, "lake_id": lake.object_id, "items": labels}
 
     def local_label_geojson(self, lake, label_id: str) -> dict:
         labels = {item["id"]: item for item in self.local_label_items(lake)["items"]}
@@ -36,6 +36,7 @@ class LocalLabelCatalogMixin:
         data = pyogrio.read_dataframe(path)
         if data.empty:
             return {
+                "site_id": lake.object_id,
                 "lake_id": lake.object_id,
                 "label": item,
                 "geojson": {"type": "FeatureCollection", "features": []},
@@ -51,6 +52,7 @@ class LocalLabelCatalogMixin:
             props.update({"label_id": item["id"], "label_name": item["name"], "source": "local_label"})
             features.append({"type": "Feature", "geometry": mapping(make_valid(geom)), "properties": props})
         return {
+            "site_id": lake.object_id,
             "lake_id": lake.object_id,
             "label": {**item, "feature_count": len(features)},
             "geojson": {"type": "FeatureCollection", "features": features},

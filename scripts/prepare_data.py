@@ -2,8 +2,8 @@
 """Download and prepare large local datasets for the Lakes Workbench.
 
 The generated layout matches the paths used by ``lake_workbench.server`` and
-``scripts/build_lake_metadata.py``. Large data stays under each configured
-region's ``raw`` directory and is ignored by Git.
+``scripts/build_site_metadata.py``. Region-specific data stays under each
+configured ``raw`` directory; global source data stays under ``data/shared``.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ def main() -> None:
     sub.add_parser("jrc", help="download JRC GSW tiles and build regional clips")
     sub.add_parser("sentinel-grid", help="download Sentinel-2 MGRS tile grid, not SAFE imagery")
     sub.add_parser("sentinel-tiles", help="alias for sentinel-grid; downloads the tile grid only")
-    sub.add_parser("metadata", help="generate processed lake metadata for the selected region")
+    sub.add_parser("metadata", help="generate processed observation-site metadata for the selected region")
     sub.add_parser("all", help="run public base-data prep and metadata; does not download Sentinel SAFE imagery")
 
     args = parser.parse_args()
@@ -119,8 +119,8 @@ def prepare_osm(region: RegionConfig, force: bool, proxy: str = "") -> None:
 
 
 def prepare_hydrolakes(region: RegionConfig, force: bool, proxy: str = "") -> None:
-    out_dir = region.data_dir / "hydrolakes"
     shp_path = region.hydrolakes
+    out_dir = shp_path.parent.parent
     if shp_path.exists() and not force:
         print(f"exists {display(shp_path)}")
         return
@@ -186,8 +186,8 @@ def prepare_jrc(region: RegionConfig, force: bool, proxy: str = "") -> None:
 
 
 def prepare_sentinel_tiles(region: RegionConfig, force: bool) -> None:
-    out_dir = region.data_dir / "sentinel_2_tiles"
     geojson_path, shp_path = region.sentinel_tile_index_paths
+    out_dir = geojson_path.parent
     if geojson_path.exists() and shp_path.exists() and not force:
         print(f"exists {display(geojson_path)}")
         print(f"exists {display(shp_path)}")
@@ -206,7 +206,7 @@ def prepare_metadata(region: RegionConfig) -> None:
     )
     cmd = [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "build_lake_metadata.py"),
+        str(PROJECT_ROOT / "scripts" / "build_site_metadata.py"),
         "--region",
         region.key,
     ]

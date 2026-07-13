@@ -50,7 +50,7 @@ class HandlerFactoryTests(unittest.TestCase):
         )
         handler = handler_type.__new__(handler_type)
 
-        self.assertEqual(handler._bind_request_context("/api/lakes"), "/api/lakes")
+        self.assertEqual(handler._bind_request_context("/api/lakes"), "/api/sites")
         self.assertIs(handler.catalog, catalog)
         self.assertEqual(handler.downloads, "download-1")
         self.assertEqual(handler.patch_exports, "patch-1")
@@ -70,7 +70,8 @@ class HandlerFactoryTests(unittest.TestCase):
         )
         handler = handler_type.__new__(handler_type)
 
-        self.assertEqual(handler._bind_request_context("/api/regions/second/lakes"), "/api/lakes")
+        self.assertEqual(handler._bind_request_context("/api/regions/second/lakes"), "/api/sites")
+        self.assertEqual(handler._bind_request_context("/api/regions/second/sites"), "/api/sites")
         self.assertIs(handler.catalog, second)
         self.assertEqual(handler.downloads, "download-2")
         self.assertEqual(handler.training_runs, "train-2")
