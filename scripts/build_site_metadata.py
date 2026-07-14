@@ -478,7 +478,6 @@ def candidate_name(values: dict) -> str:
 def site_object(site_id: str, geometry) -> Any:
     bounds = geometry.bounds
     return SimpleNamespace(
-        object_id=site_id,
         site_id=site_id,
         geometry=geometry,
         bbox=bounds,
@@ -521,7 +520,6 @@ def raster_candidate(site_id: str, site_geometry, source: str, layer: dict, thre
 def asset_product_row(site_id: str, site_dir: Path, asset: dict) -> dict:
     return {
         "site_id": site_id,
-        "lake_id": site_id,
         "product_id": asset["asset_id"],
         "product_name": asset["asset_id"],
         "tile": asset["mgrs_tile"] or "",
@@ -562,8 +560,6 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
         existing = pd.read_csv(products_path)
         preserved = existing[existing.get("source", "").fillna("") != "local_img"].copy()
         if not preserved.empty:
-            if "site_id" not in preserved.columns:
-                preserved["site_id"] = preserved.get("lake_id", "")
             generated = pd.concat([generated, preserved], ignore_index=True, sort=False)
     generated.to_csv(products_path, index=False)
 
@@ -585,7 +581,7 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
         write_esa_polygon_cache(region, site_id, layer)
     for site_id, threshold, layer in result.jrc_cache:
         write_jrc_polygon_cache(region, site_id, threshold, layer)
-    migrate_site_identity_files(output_dir, result.sites)
+    normalize_site_identity_files(output_dir, result.sites)
 
     print(f"wrote {gpkg_path}")
     for layer_name, frame in layers:
@@ -595,7 +591,7 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
     print(f"wrote {active_path}")
 
 
-def migrate_site_identity_files(output_dir: Path, sites: gpd.GeoDataFrame) -> None:
+def normalize_site_identity_files(output_dir: Path, sites: gpd.GeoDataFrame) -> None:
     names = dict(zip(sites["site_id"], sites["display_name"]))
     paths = [output_dir / "training_samples.csv"]
     paths.extend((output_dir / "training_patches").glob("*/manifest.csv"))
@@ -604,11 +600,9 @@ def migrate_site_identity_files(output_dir: Path, sites: gpd.GeoDataFrame) -> No
             continue
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)
         if "site_id" not in frame:
-            frame["site_id"] = frame.get("lake_id", "")
-        elif "lake_id" in frame:
-            frame["site_id"] = frame["site_id"].where(frame["site_id"] != "", frame["lake_id"])
+            raise ValueError(f"missing site_id in {path}")
         if "site_name" not in frame:
-            frame["site_name"] = frame["site_id"].map(names).fillna(frame.get("lake_name", ""))
+            frame["site_name"] = frame["site_id"].map(names).fillna("")
         else:
             generated_names = frame["site_id"].map(names).fillna("")
             frame["site_name"] = frame["site_name"].where(frame["site_name"] != "", generated_names)

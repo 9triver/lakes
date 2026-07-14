@@ -1,4 +1,4 @@
-"""Model discovery, inference, and validation behavior for lake catalogs."""
+"""Model discovery, inference, and validation behavior for site catalogs."""
 
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ class ModelInferenceBusy(RuntimeError):
 
 
 class ModelValidationMixin:
-    """Model validation operations that require a lake catalog instance."""
+    """Model validation operations that require a site catalog instance."""
 
     region: Any
-    lakes: list[Any]
+    sites: list[Any]
 
     def model_validation_models(self) -> dict:
         items = []
@@ -120,23 +120,21 @@ class ModelValidationMixin:
         candidates = list(self.sites)
         random.shuffle(candidates)
         skipped = []
-        for lake in candidates:
-            rows = self._model_validation_rows(lake, model.in_channels)
+        for site in candidates:
+            rows = self._model_validation_rows(site, model.in_channels)
             if not rows:
                 continue
             try:
-                prediction = self.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+                prediction = self.model_prediction_for_site(site, threshold=threshold, rows=rows, model=model)
             except ModelInferenceBusy:
                 raise
             except Exception as exc:  # noqa: BLE001 - keep looking for a usable validation target.
-                skipped.append(f"{lake.object_id}: {type(exc).__name__}: {exc}")
+                skipped.append(f"{site.site_id}: {type(exc).__name__}: {exc}")
                 continue
             return {
                 "region": self.region.key,
-                "site_id": lake.object_id,
-                "site": self._summary(lake),
-                "lake_id": lake.object_id,
-                "lake": self._summary(lake),
+                "site_id": site.site_id,
+                "site": self._summary(site),
                 "model": prediction["model"],
                 "prediction": prediction["prediction"],
                 "stats": prediction["stats"],
@@ -148,21 +146,21 @@ class ModelValidationMixin:
             f"for {self.region.key}: {display_path(model.path)}"
         )
 
-    def model_prediction_for_lake(
+    def model_prediction_for_site(
         self,
-        lake: Any,
+        site: Any,
         threshold: float = 0.5,
         rows: list[dict] | None = None,
         model: Any = None,
         model_key: str = "",
     ) -> dict:
         model = model or self._load_validation_model(model_key)
-        rows = rows or self._model_validation_rows(lake, model.in_channels)
+        rows = rows or self._model_validation_rows(site, model.in_channels)
         if not rows:
-            raise FileNotFoundError(f"No active imagery matching model bands for lake {lake.object_id}")
+            raise FileNotFoundError(f"No active imagery matching model bands for site {site.site_id}")
         rows = sorted(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
-        prediction_bounds = padded_bounds(lake.bbox, 0.8)
-        cache_path = self._model_prediction_cache_path(lake, model.path, rows, threshold, prediction_bounds)
+        prediction_bounds = padded_bounds(site.bbox, 0.8)
+        cache_path = self._model_prediction_cache_path(site, model.path, rows, threshold, prediction_bounds)
         if cache_path.exists():
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
             payload["cached"] = True
@@ -179,8 +177,7 @@ class ModelValidationMixin:
             MODEL_INFERENCE_SEMAPHORE.release()
         payload = {
             "region": self.region.key,
-            "site_id": lake.object_id,
-            "lake_id": lake.object_id,
+            "site_id": site.site_id,
             "cached": False,
             "model": {
                 "key": self._model_key(model.path),
@@ -195,7 +192,7 @@ class ModelValidationMixin:
             "imagery": {
                 **mosaic_source_meta([row]),
                 "source": row.get("source") or "",
-                "asset": self._imagery_asset_meta(row, lake_id=lake.object_id),
+                "asset": self._imagery_asset_meta(row, site_id=site.site_id),
             },
             "stats": stats,
             "prediction": prediction,
@@ -270,14 +267,14 @@ class ModelValidationMixin:
 
     def _model_prediction_cache_path(
         self,
-        lake: Any,
+        site: Any,
         model_path: Path,
         rows: list[dict],
         threshold: float,
         prediction_bounds: tuple[float, float, float, float],
     ) -> Path:
         payload = {
-            "site_id": lake.object_id,
+            "site_id": site.site_id,
             "threshold": round(float(threshold), 4),
             "bounds": [round(value, 8) for value in prediction_bounds],
             "model": display_path(model_path),
@@ -293,12 +290,12 @@ class ModelValidationMixin:
             ],
         }
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
-        return self._model_validation_cache_dir(model_path) / f"{safe_filename(lake.object_id)}_{digest}.geojson"
+        return self._model_validation_cache_dir(model_path) / f"{safe_filename(site.site_id)}_{digest}.geojson"
 
-    def _model_validation_rows(self, lake: Any, in_channels: int) -> list[dict]:
+    def _model_validation_rows(self, site: Any, in_channels: int) -> list[dict]:
         rows = []
-        for tile in self._model_validation_tiles(lake):
-            row = self._active_imagery_row(tile, lake)
+        for tile in self._model_validation_tiles_for_site(site):
+            row = self._active_imagery_row(tile, site)
             if row is None or row.get("tci_path") is None or not row["tci_path"].exists():
                 continue
             try:
@@ -310,16 +307,16 @@ class ModelValidationMixin:
             rows.append(row)
         return rows
 
-    def _model_validation_tiles(self, lake: Any) -> list[str]:
-        tiles = [item["tile"] for item in self.sentinel_tiles_for_lake(lake)["tiles"]]
-        active_lake_tiles = [
+    def _model_validation_tiles_for_site(self, site: Any) -> list[str]:
+        tiles = [item["tile"] for item in self.sentinel_tiles_for_site(site)["tiles"]]
+        active_site_tiles = [
             tile
             for tile, rows in self.user_tci_rows.items()
-            if any((row.get("site_id") or row.get("lake_id")) == lake.object_id for row in rows)
+            if any(row.get("site_id") == site.site_id for row in rows)
         ]
         seen = set()
         result = []
-        for tile in active_lake_tiles + tiles:
+        for tile in active_site_tiles + tiles:
             tile = str(tile).upper().removeprefix("T")
             if tile and tile not in seen:
                 seen.add(tile)

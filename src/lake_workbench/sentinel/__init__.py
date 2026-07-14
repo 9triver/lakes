@@ -1,1 +1,1 @@
-"""Sentinel product discovery, download, and lake coverage operations."""
+"""Sentinel product discovery, download, and site coverage operations."""

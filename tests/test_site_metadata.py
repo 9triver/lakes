@@ -2,10 +2,43 @@ from __future__ import annotations
 
 import unittest
 
+from shapely.geometry import box
+
 from scripts.build_site_metadata import site_display_name, suggested_site_name
+from lake_workbench.catalog import SiteCatalog, SiteRecord
 
 
 class SiteDisplayNameTests(unittest.TestCase):
+    @staticmethod
+    def site_record() -> SiteRecord:
+        return SiteRecord(
+            site_id="gansu_20307",
+            local_directory_id="20307",
+            display_name="区域 20307",
+            suggested_name=None,
+            area_km2=1.0,
+            bbox=(100.0, 20.0, 101.0, 21.0),
+            center=(100.5, 20.5),
+            properties={},
+            geometry=box(100.0, 20.0, 101.0, 21.0),
+        )
+
+    def test_site_record_has_no_legacy_identity_aliases(self) -> None:
+        site = self.site_record()
+        self.assertFalse(hasattr(site, "object_id"))
+        self.assertFalse(hasattr(site, "lake_id"))
+
+    def test_site_detail_contains_site_geometry_without_annotations(self) -> None:
+        site = self.site_record()
+        catalog = SiteCatalog.__new__(SiteCatalog)
+        catalog._summary_cache = {site.site_id: {"site_id": site.site_id}}
+        catalog._detail_cache = {}
+
+        detail = catalog.get_site_detail(site)
+
+        self.assertEqual(detail["geometry"]["type"], "Polygon")
+        self.assertNotIn("layers", detail)
+
     def test_display_name_keeps_directory_identity_first(self) -> None:
         self.assertEqual(site_display_name("20307"), "区域 20307")
         self.assertEqual(site_display_name("17407", "苏干湖"), "区域 17407（苏干湖附近）")

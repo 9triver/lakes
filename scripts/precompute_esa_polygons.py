@@ -17,7 +17,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
     parser.add_argument("--site", action="append", default=None, help="Observation site id/key to precompute.")
-    parser.add_argument("--lake", action="append", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--all", action="store_true", help="Precompute every site in the selected region.")
     return parser.parse_args()
 
@@ -25,7 +24,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     catalog = SiteCatalog(REGIONS[args.region], DEFAULT_REGION_KEY)
-    requested = args.site or args.lake
+    requested = args.site
     site_ids = [site.site_id for site in catalog.sites] if args.all else requested or ([catalog.sites[0].site_id] if catalog.sites else [])
     for site_id in site_ids:
         site = catalog.get_site(site_id)

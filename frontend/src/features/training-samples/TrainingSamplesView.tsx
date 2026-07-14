@@ -11,7 +11,7 @@ function SampleRow({ sample, scope, onLocate }: { sample: TrainingSample; scope:
   const remove = useDeleteTrainingSample(scope);
   useEffect(() => { setSplit(sample.split || ""); setNotes(sample.notes || ""); }, [sample.notes, sample.split]);
   return <TableRow hover>
-    <TableCell><Typography variant="body2">{sample.site_display_name || sample.site_name || sample.lake_display_name || sample.lake_name || sample.site_id || sample.lake_id}</Typography><Typography variant="caption" color="text.secondary">{sample.sample_id}</Typography></TableCell>
+    <TableCell><Typography variant="body2">{sample.site_display_name || sample.site_name || sample.site_id}</Typography><Typography variant="caption" color="text.secondary">{sample.sample_id}</Typography></TableCell>
     <TableCell>{sample.region_name || sample.region || scope}</TableCell>
     <TableCell><Chip size="small" color={sample.status === "ok" ? "success" : "warning"} label={sample.status === "ok" ? "完整" : "缺文件"} /></TableCell>
     <TableCell>{sample.label_source || "current_view"}</TableCell>

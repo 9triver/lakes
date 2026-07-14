@@ -56,7 +56,6 @@ class RegionService:
                     "ready": catalog.load_error is None,
                     "load_error": catalog.load_error,
                     "site_count": len(catalog.sites),
-                    "lake_count": len(catalog.sites),
                     **catalog.imagery_inventory_summary(),
                     "has_metadata": region.site_metadata.exists(),
                     "has_osm_water": region.osm_water.exists(),
@@ -76,7 +75,7 @@ class RegionService:
                 {**item, "region": key, "region_name": catalog.region.name}
                 for item in payload["items"]
             )
-        merged.sort(key=lambda item: (-(item.get("area_km2") or 0), item.get("region", ""), item.get("object_id", "")))
+        merged.sort(key=lambda item: (-(item.get("coverage_area_km2") or 0), item.get("region", ""), item.get("site_id", "")))
         return {
             "total": total,
             "offset": offset,
@@ -84,9 +83,6 @@ class RegionService:
             "items": merged[offset : offset + limit],
             "all_regions": True,
         }
-
-    def all_lakes_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
-        return self.all_sites_payload(query, limit, offset, filters)
 
     def all_training_samples_payload(self) -> dict:
         items = []
@@ -206,8 +202,8 @@ class RegionService:
         result["model"]["key"] = f"{region_key}/{result['model']['key']}"
         result["model"]["scope"] = region_key
         result["model"]["region_name"] = catalog.region.name
-        result["lake"]["region"] = region_key
-        result["lake"]["region_name"] = catalog.region.name
+        result["site"]["region"] = region_key
+        result["site"]["region_name"] = catalog.region.name
         return result
 
     def _all_model_validation_random_global(self, threshold: float, model_key: str) -> dict:
@@ -221,26 +217,24 @@ class RegionService:
         for region_key, catalog in catalogs:
             candidates = list(catalog.sites)
             random.shuffle(candidates)
-            for lake in candidates:
-                rows = catalog._model_validation_rows(lake, model.in_channels)
+            for site in candidates:
+                rows = catalog._model_validation_rows(site, model.in_channels)
                 if not rows:
                     continue
                 try:
-                    prediction = catalog.model_prediction_for_lake(lake, threshold=threshold, rows=rows, model=model)
+                    prediction = catalog.model_prediction_for_site(site, threshold=threshold, rows=rows, model=model)
                 except self.busy_error:
                     raise
                 except Exception as exc:  # noqa: BLE001 - continue looking for a usable validation target.
-                    skipped.append(f"{region_key}/{lake.object_id}: {type(exc).__name__}: {exc}")
+                    skipped.append(f"{region_key}/{site.site_id}: {type(exc).__name__}: {exc}")
                     continue
                 prediction["model"]["key"] = global_model_key(model_path)
                 prediction["model"]["scope"] = "all"
                 prediction["model"]["region_name"] = "全部区域"
                 return {
                     "region": region_key,
-                    "site_id": lake.object_id,
-                    "site": {**catalog._summary(lake), "region": region_key, "region_name": catalog.region.name},
-                    "lake_id": lake.object_id,
-                    "lake": {**catalog._summary(lake), "region": region_key, "region_name": catalog.region.name},
+                    "site_id": site.site_id,
+                    "site": {**catalog._summary(site), "region": region_key, "region_name": catalog.region.name},
                     "model": prediction["model"],
                     "prediction": prediction["prediction"],
                     "stats": prediction["stats"],

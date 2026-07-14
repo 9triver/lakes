@@ -23,14 +23,14 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
         else:
             handler._json(job)
     elif re.fullmatch(r"/api/sites/[^/]+/training-samples/readiness", path):
-        lake_key = path.split("/")[-3]
-        lake = handler.catalog.get_site(lake_key)
-        if lake is None:
+        site_key = path.split("/")[-3]
+        site = handler.catalog.get_site(site_key)
+        if site is None:
             handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
         else:
             params = parse_qs(query_string)
             buffer_ratio = float(params.get("buffer_ratio", ["0.8"])[0])
-            handler._json(handler.catalog.training_sample_readiness(lake, buffer_ratio=buffer_ratio))
+            handler._json(handler.catalog.training_sample_readiness(site, buffer_ratio=buffer_ratio))
     elif path == "/api/training-samples":
         handler._json(handler.catalog.list_training_samples())
     elif path == "/api/training-patches":
@@ -58,14 +58,14 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
 
 def handle_training_post(handler, path: str) -> bool:
     if re.fullmatch(r"/api/sites/[^/]+/training-samples", path):
-        lake_key = path.split("/")[-2]
-        lake = handler.catalog.get_site(lake_key)
-        if lake is None:
+        site_key = path.split("/")[-2]
+        site = handler.catalog.get_site(site_key)
+        if site is None:
             handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
             return True
         payload = handler._read_json()
         try:
-            result = handler.catalog.create_training_sample(lake, payload)
+            result = handler.catalog.create_training_sample(site, payload)
         except ValueError as exc:
             handler._error(HTTPStatus.BAD_REQUEST, str(exc))
             return True

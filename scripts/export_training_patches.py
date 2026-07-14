@@ -223,10 +223,8 @@ def export_sample_image(
                 {
                     "patch_id": patch_id,
                     "sample_id": sample_id,
-                    "site_id": row.get("site_id") or row.get("lake_id", ""),
-                    "site_name": row.get("site_name") or row.get("lake_name", ""),
-                    "lake_id": row.get("lake_id") or row.get("site_id", ""),
-                    "lake_name": row.get("lake_name") or row.get("site_name", ""),
+                    "site_id": row.get("site_id", ""),
+                    "site_name": row.get("site_name", ""),
                     "region": args.region,
                     "image_index": image_index,
                     "image_path": display_path(image_path),

@@ -6,7 +6,7 @@ const sitePageSize = 200;
 
 export function useSites(region: string, query: string, filters: SiteFilters) {
   return useInfiniteQuery({
-    queryKey: ["lakes", region, query, filters],
+    queryKey: ["sites", region, query, filters],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ q: query, limit: String(sitePageSize), offset: String(pageParam) });
       Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
@@ -29,31 +29,52 @@ export function useSite(region: string, siteId: string) {
   });
 }
 
-export function useTileMeta(region: string, lakeId: string) {
+export function useTileMeta(region: string, siteId: string) {
   return useQuery({
-    queryKey: ["tile-meta", region, lakeId],
-    queryFn: () => getJson<TileMeta>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/tile-meta?padding=0.8`),
-    enabled: Boolean(region && lakeId),
+    queryKey: ["tile-meta", region, siteId],
+    queryFn: () => getJson<TileMeta>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/tile-meta?padding=0.8`),
+    enabled: Boolean(region && siteId),
     retry: false,
   });
 }
 
-export function useContextWater(region: string, lakeId: string) {
-  return useQuery({ queryKey: ["context-water", region, lakeId], queryFn: () => getJson<ContextWaterResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/context-water?padding=0.8&min_area_km2=10&limit=500`), enabled: Boolean(region && lakeId) });
+export function useContextWater(region: string, siteId: string) {
+  return useQuery({ queryKey: ["context-water", region, siteId], queryFn: () => getJson<ContextWaterResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/context-water?padding=0.8&min_area_km2=10&limit=500`), enabled: Boolean(region && siteId) });
 }
 
-export function useEsaLayer(region: string, lakeId: string) {
-  return useQuery({ queryKey: ["esa", region, lakeId], queryFn: async () => (await getJson<{ esa: GeoJsonLayer | null }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/esa`)).esa, enabled: Boolean(region && lakeId), retry: false });
+function useAnnotation<T extends GeoJsonLayer | FeatureCollection>(region: string, siteId: string, source: string, query = "") {
+  return useQuery({
+    queryKey: ["annotation", region, siteId, source, query],
+    queryFn: async () => (
+      await getJson<{ annotation: T | null }>(
+        `/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/annotations/${source}${query}`,
+      )
+    ).annotation,
+    enabled: Boolean(region && siteId),
+    retry: false,
+  });
 }
 
-export function useJrcLayer(region: string, lakeId: string, threshold: number) {
-  return useQuery({ queryKey: ["jrc", region, lakeId, threshold], queryFn: async () => (await getJson<{ jrc: GeoJsonLayer | null }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/jrc?threshold=${threshold}`)).jrc, enabled: Boolean(region && lakeId), retry: false });
+export function useOsmLayer(region: string, siteId: string) {
+  return useAnnotation<GeoJsonLayer>(region, siteId, "osm");
 }
 
-export function useLocalLabels(region: string, lakeId: string) {
-  return useQuery({ queryKey: ["local-labels", region, lakeId], queryFn: async () => (await getJson<{ items: LocalLabelItem[] }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/local-labels`)).items, enabled: Boolean(region && lakeId) });
+export function useHydrolakesLayer(region: string, siteId: string) {
+  return useAnnotation<GeoJsonLayer>(region, siteId, "hydrolakes");
 }
 
-export function useLocalLabel(region: string, lakeId: string, labelId: string) {
-  return useQuery({ queryKey: ["local-label", region, lakeId, labelId], queryFn: async () => (await getJson<{ geojson: FeatureCollection }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/local-labels/${encodeURIComponent(labelId)}`)).geojson, enabled: Boolean(region && lakeId && labelId) });
+export function useEsaLayer(region: string, siteId: string) {
+  return useAnnotation<GeoJsonLayer>(region, siteId, "esa");
+}
+
+export function useJrcLayer(region: string, siteId: string, threshold: number) {
+  return useAnnotation<GeoJsonLayer>(region, siteId, "jrc", `?threshold=${threshold}`);
+}
+
+export function useLocalLabels(region: string, siteId: string) {
+  return useQuery({ queryKey: ["local-labels", region, siteId], queryFn: async () => (await getJson<{ items: LocalLabelItem[] }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/local-labels`)).items, enabled: Boolean(region && siteId) });
+}
+
+export function useLocalLabel(region: string, siteId: string, labelId: string) {
+  return useAnnotation<FeatureCollection>(region, siteId, "local", `?label_id=${encodeURIComponent(labelId)}`);
 }

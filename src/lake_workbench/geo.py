@@ -15,8 +15,8 @@ def transform_geom(geom, src_crs: str, dst_crs: str):
     return shapely_transform(lambda x, y, z=None: transformer.transform(x, y), geom)
 
 
-def lake_aoi_geometry(lake: Any, padding: float = 0.8):
-    metric = transform_geom(lake.geometry, "EPSG:4326", "EPSG:3857")
+def site_aoi_geometry(site: Any, padding: float = 0.8):
+    metric = transform_geom(site.geometry, "EPSG:4326", "EPSG:3857")
     minx, miny, maxx, maxy = metric.bounds
     base = max(maxx - minx, maxy - miny)
     buffer_m = max(base * float(padding), 500)

@@ -8,7 +8,7 @@ import type { SiteMapHandle } from "../map/SiteMap";
 
 interface TrainingCaptureProps {
   region: string;
-  lakeId: string;
+  siteId: string;
   jrcThreshold: number;
   localLabel?: LocalLabelItem;
   imagery: { tile: string; product: string };
@@ -21,7 +21,7 @@ interface SaveResponse {
   patch_job?: { job_id?: string };
 }
 
-export function TrainingCapture({ region, lakeId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null }: TrainingCaptureProps) {
+export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null }: TrainingCaptureProps) {
   const [notes, setNotes] = useState("");
   const [message, setMessage] = useState("");
   const queryClient = useQueryClient();
@@ -31,8 +31,7 @@ export function TrainingCapture({ region, lakeId, jrcThreshold, localLabel, imag
       if (!captured) throw new Error("地图尚未准备好");
       const viewState = {
         region,
-        site_id: lakeId,
-        lake_id: lakeId,
+        site_id: siteId,
         ...captured,
         jrc_threshold: jrcThreshold,
         selected_local_label: localLabel ? { id: localLabel.id, name: localLabel.name, path: localLabel.path, date: localLabel.date || "" } : null,
@@ -41,7 +40,7 @@ export function TrainingCapture({ region, lakeId, jrcThreshold, localLabel, imag
         model_prediction_excluded: true,
         model_validation: modelValidation,
       };
-      const result = await postJson<SaveResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/training-samples`, {
+      const result = await postJson<SaveResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/training-samples`, {
         label_source: "current_view",
         label_threshold: String(jrcThreshold),
         label_scope: "current_view",

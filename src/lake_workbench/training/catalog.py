@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lake_workbench.geo import lake_aoi_geometry
+from lake_workbench.geo import site_aoi_geometry
 from lake_workbench.sentinel.download import upsert_csv_row
 from lake_workbench.training.identity import bbox_from_row, bbox_iou, training_view_signature
 from lake_workbench.utils import (
@@ -32,8 +32,8 @@ class TrainingCatalogMixin:
 
     region: Any
 
-    def create_training_sample(self, lake: Any, payload: dict) -> dict:
-        readiness = self.training_sample_readiness(lake)
+    def create_training_sample(self, site: Any, payload: dict) -> dict:
+        readiness = self.training_sample_readiness(site)
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
         view_state = payload.get("view_state") if isinstance(payload.get("view_state"), dict) else {}
@@ -45,14 +45,14 @@ class TrainingCatalogMixin:
         context_sources = clean_optional(payload.get("context_sources")) or ("" if is_current_view else "osm,hydrolakes")
         ignore_sources = clean_optional(payload.get("ignore_sources")) or ("" if is_current_view else "osm,hydrolakes,esa,jrc")
         buffer_ratio = parse_float_or_default(payload.get("buffer_ratio"), 0.8)
-        aoi = lake_aoi_geometry(lake, padding=buffer_ratio)
+        aoi = site_aoi_geometry(site, padding=buffer_ratio)
         if is_current_view:
             label_source = "current_view"
-            label_layer = self.current_view_training_label_layer(lake, view_state, buffer_ratio=buffer_ratio)
+            label_layer = self.current_view_training_label_layer(site, view_state, buffer_ratio=buffer_ratio)
             label_threshold = clean_optional(label_layer.get("properties", {}).get("jrc_threshold")) or label_threshold
             context_sources = clean_optional(label_layer.get("properties", {}).get("visible_sources")) or context_sources
         else:
-            label_layer = self.training_label_layer(lake, label_source, label_threshold)
+            label_layer = self.training_label_layer(site, label_source, label_threshold)
         has_label_geometry = bool(
             label_layer
             and (label_layer.get("geometry") or (label_layer.get("type") == "FeatureCollection" and label_layer.get("features")))
@@ -65,7 +65,7 @@ class TrainingCatalogMixin:
         tile_names = [item["tile"] for item in products]
         product_key = ",".join(product_names)
         fingerprint, base_fingerprint, view_extent = training_view_signature(
-            lake.object_id,
+            site.site_id,
             product_key,
             label_source,
             label_threshold,
@@ -79,8 +79,8 @@ class TrainingCatalogMixin:
         for existing in existing_rows:
             if exact_existing and existing.get("sample_id") == exact_existing.get("sample_id"):
                 continue
-            existing_site_id = existing.get("site_id") or existing.get("lake_id")
-            if existing_site_id != lake.object_id or existing.get("training_base_fingerprint") != base_fingerprint:
+            existing_site_id = existing.get("site_id")
+            if existing_site_id != site.site_id or existing.get("training_base_fingerprint") != base_fingerprint:
                 continue
             overlap = bbox_iou(view_extent, bbox_from_row(existing))
             if overlap >= 0.9:
@@ -88,13 +88,12 @@ class TrainingCatalogMixin:
                     {
                         "sample_id": existing.get("sample_id", ""),
                         "site_id": existing_site_id or "",
-                        "lake_id": existing.get("lake_id", ""),
                         "overlap": overlap,
                         "created_at": existing.get("created_at", ""),
                         "notes": existing.get("notes", ""),
                     }
                 )
-        sample_id = (exact_existing or {}).get("sample_id") or f"{lake.object_id}_{fingerprint[:12]}"
+        sample_id = (exact_existing or {}).get("sample_id") or f"{site.site_id}_{fingerprint[:12]}"
         label_path = write_training_label(
             self.region,
             sample_id,
@@ -114,11 +113,8 @@ class TrainingCatalogMixin:
         missing_tiles = readiness.get("missing_tiles") or []
         row = {
             "sample_id": sample_id,
-            "site_id": lake.object_id,
-            "site_name": lake.name or "",
-            # Compatibility fields for existing patch/model tooling.
-            "lake_id": lake.object_id,
-            "lake_name": lake.name or "",
+            "site_id": site.site_id,
+            "site_name": site.display_name or "",
             "tile": ",".join(tile_names),
             "tiles": ",".join(tile_names),
             "required_tiles": ",".join(required_tiles),
@@ -180,7 +176,7 @@ class TrainingCatalogMixin:
             "similar_samples": similar_samples[:5],
         }
 
-    def current_view_training_label_layer(self, lake: Any, view_state: dict, buffer_ratio: float = 0.8) -> dict:
+    def current_view_training_label_layer(self, site: Any, view_state: dict, buffer_ratio: float = 0.8) -> dict:
         visible = dict(view_state.get("visible_layers")) if isinstance(view_state.get("visible_layers"), dict) else {}
         model_prediction_visible = truthy_flag(visible.pop("model_prediction", False), default=False)
         features = []
@@ -207,20 +203,20 @@ class TrainingCatalogMixin:
             if added:
                 sources.append(key)
 
-        add_layer("osm", "OSM", self._osm_layer(lake))
-        add_layer("hydrolakes", "HydroLAKES", self._match_hydrolakes(lake))
-        add_layer("esa", "ESA", self._esa_smoothed_layer(lake))
+        add_layer("osm", "OSM", self._annotation_layer(site, "osm"))
+        add_layer("hydrolakes", "HydroLAKES", self._annotation_layer(site, "hydrolakes"))
+        add_layer("esa", "ESA", self._annotation_layer(site, "esa"))
         threshold = parse_int_or_default(view_state.get("jrc_threshold"), 75)
         if visible.get("jrc"):
-            add_layer("jrc", "JRC", self._jrc_occurrence_layer(lake, threshold=threshold))
+            add_layer("jrc", "JRC", self._annotation_layer(site, "jrc", {"threshold": threshold}))
         if visible.get("context_osm") or visible.get("context_hydrolakes"):
-            context = self.context_water_for_lake(lake, padding=buffer_ratio, min_area_km2=10, limit=500)
+            context = self.context_water_for_site(site, padding=buffer_ratio, min_area_km2=10, limit=500)
             add_collection("context_osm", context.get("sources", {}).get("osm"))
             add_collection("context_hydrolakes", context.get("sources", {}).get("hydrolakes"))
         local_label = view_state.get("selected_local_label") if isinstance(view_state.get("selected_local_label"), dict) else {}
         local_label_id = clean_optional(local_label.get("id"))
         if visible.get("local_label") and local_label_id:
-            add_collection("local_label", self.local_label_geojson(lake, local_label_id).get("geojson"))
+            add_collection("local_label", self._annotation_layer(site, "local", {"label_id": local_label_id}))
         if not features:
             raise ValueError("current view has no visible label geometry")
         return {
@@ -341,17 +337,15 @@ class TrainingCatalogMixin:
         npz_path = resolve_data_path(row.get("npz_path", ""), self.region) if row.get("npz_path") else None
         include_value = clean_optional(row.get("include") or row.get("included"))
         included = True if include_value is None else truthy_flag(include_value, default=True)
-        site_id = row.get("site_id") or row.get("lake_id", "")
+        site_id = row.get("site_id", "")
         site = self.get_site(site_id) if site_id else None
-        display_name = (site.properties.get("display_name") if site else None) or row.get("site_name") or row.get("lake_name") or site_id
+        display_name = site.display_name if site else row.get("site_name") or site_id
         return {
             **row,
             "site_id": site_id,
             "site_display_name": display_name,
             "included": included,
             "include": "true" if included else "false",
-            "lake_id": row.get("lake_id") or site_id,
-            "lake_display_name": display_name,
             "manifest_path": display_path(manifest_path),
             "preview_exists": bool(preview_path and preview_path.exists()),
             "npz_exists": bool(npz_path and npz_path.exists()),
@@ -361,9 +355,9 @@ class TrainingCatalogMixin:
         }
 
     def _training_sample_summary(self, row: dict) -> dict:
-        site_id = row.get("site_id") or row.get("lake_id", "")
+        site_id = row.get("site_id", "")
         site = self.get_site(site_id) if site_id else None
-        display_name = (site.properties.get("display_name") if site else None) or row.get("site_name") or row.get("lake_name") or site_id
+        display_name = site.display_name if site else row.get("site_name") or site_id
         tci_paths = split_semicolon(row.get("tci_path"))
         safe_paths = split_semicolon(row.get("safe_path"))
         label_path = resolve_data_path(row.get("label_path", ""), self.region) if row.get("label_path") else None
@@ -374,8 +368,6 @@ class TrainingCatalogMixin:
             **row,
             "site_id": site_id,
             "site_display_name": display_name,
-            "lake_id": row.get("lake_id") or site_id,
-            "lake_display_name": display_name,
             "tile_count": len(split_commas(row.get("tiles") or row.get("tile"))),
             "product_count": len(split_commas(row.get("products") or row.get("product_name"))),
             "imagery_asset_labels": split_commas(row.get("imagery_asset_labels") or row.get("imagery_asset_label")),
@@ -386,13 +378,13 @@ class TrainingCatalogMixin:
             "status": "missing_files" if missing_tci or not label_exists else "ok",
         }
 
-    def training_sample_readiness(self, lake: Any, buffer_ratio: float = 0.8) -> dict:
-        aoi = lake_aoi_geometry(lake, padding=buffer_ratio)
-        tiles = self._required_sentinel_tiles_for_lake(lake)
+    def training_sample_readiness(self, site: Any, buffer_ratio: float = 0.8) -> dict:
+        aoi = site_aoi_geometry(site, padding=buffer_ratio)
+        tiles = self._required_sentinel_tiles_for_site(site)
         products = []
         missing_tiles = []
         for tile in tiles:
-            row = self._active_imagery_row(tile, lake)
+            row = self._active_imagery_row(tile, site)
             if row is None:
                 missing_tiles.append(tile)
                 continue
@@ -403,15 +395,14 @@ class TrainingCatalogMixin:
                     "product_id": row.get("product_id", ""),
                     "date": row.get("date", ""),
                     "source": row.get("source", ""),
-                    **self._imagery_asset_meta(row, lake_id=lake.object_id),
+                    **self._imagery_asset_meta(row, site_id=site.site_id),
                     "valid_ratio": row.get("valid_ratio"),
                     "safe_path": display_path(row["safe_path"]) if row.get("safe_path") else "",
                     "tci_path": display_path(row["tci_path"]) if row.get("tci_path") else "",
                 }
             )
         return {
-            "site_id": lake.object_id,
-            "lake_id": lake.object_id,
+            "site_id": site.site_id,
             "ready": bool(tiles) and not missing_tiles,
             "required_tiles": tiles,
             "missing_tiles": missing_tiles,
@@ -425,14 +416,13 @@ class TrainingCatalogMixin:
             "message": "ready" if tiles and not missing_tiles else "active imagery selection is incomplete",
         }
 
-    def training_label_layer(self, lake: Any, label_source: str, label_threshold: str = "") -> dict | None:
+    def training_label_layer(self, site: Any, label_source: str, label_threshold: str = "") -> dict | None:
         source = str(label_source).lower()
-        if source == "osm":
-            return self._osm_layer(lake)
-        if source == "hydrolakes":
-            return self._match_hydrolakes(lake)
-        if source == "esa":
-            return self._esa_smoothed_layer(lake)
-        if source == "jrc":
-            return self._jrc_occurrence_layer(lake, threshold=int(label_threshold or 75))
-        raise ValueError(f"unknown label_source: {label_source}")
+        options = {"threshold": label_threshold or 75} if source == "jrc" else None
+        try:
+            return self._annotation_layer(site, source, options)
+        except ValueError as exc:
+            raise ValueError(f"unknown label_source: {label_source}") from exc
+
+    def _annotation_layer(self, site: Any, source: str, options: dict | None = None) -> dict | None:
+        return self.annotation_for_site(site, source, options).get("annotation")

@@ -25,7 +25,7 @@ from lake_workbench.utils import (
 
 
 def _site_id(value) -> str:
-    return clean_optional(getattr(value, "site_id", getattr(value, "object_id", value))) or ""
+    return clean_optional(getattr(value, "site_id", value)) or ""
 
 
 class ImageryInventoryMixin:
@@ -60,11 +60,10 @@ class ImageryInventoryMixin:
             tile = str(row.get("tile", "")).upper().removeprefix("T")
             if not tile:
                 continue
-            site_id = clean_optional(row.get("site_id") or row.get("lake_id")) or ""
+            site_id = clean_optional(row.get("site_id")) or ""
             item = {
                 "tile": tile,
                 "site_id": site_id,
-                "lake_id": site_id,
                 "date": clean_optional(row.get("date")) or product_date(row.get("product_name", "")),
                 "source": clean_optional(row.get("source")) or "user_download",
                 "valid_ratio": parse_float_or_default(row.get("valid_ratio"), 1.0),
@@ -93,8 +92,8 @@ class ImageryInventoryMixin:
         for key, value in payload.items():
             text = str(key)
             if ":" in text:
-                lake_id, tile = text.split(":", 1)
-                active[f"{lake_id}:{tile.upper().removeprefix('T')}"] = str(value)
+                site_id, tile = text.split(":", 1)
+                active[f"{site_id}:{tile.upper().removeprefix('T')}"] = str(value)
             else:
                 active[text.upper().removeprefix("T")] = str(value)
         return active
@@ -118,36 +117,36 @@ class ImageryInventoryMixin:
                 effective[tile] = selected
         self.tci_by_tile = effective
 
-    def _active_imagery_key(self, tile: str, lake=None) -> str:
+    def _active_imagery_key(self, tile: str, site=None) -> str:
         tile = str(tile).upper().removeprefix("T")
-        lake_id = _site_id(lake)
-        if lake_id and any(row.get("lake_id") == lake_id for row in self.user_tci_rows.get(tile, [])):
-            return f"{lake_id}:{tile}"
+        site_id = _site_id(site)
+        if site_id and any(row.get("site_id") == site_id for row in self.user_tci_rows.get(tile, [])):
+            return f"{site_id}:{tile}"
         return tile
 
-    def _active_imagery_row(self, tile: str, lake=None) -> dict | None:
+    def _active_imagery_row(self, tile: str, site=None) -> dict | None:
         tile = str(tile).upper().removeprefix("T")
-        active_key = self._active_imagery_key(tile, lake)
+        active_key = self._active_imagery_key(tile, site)
         active_product = self.active_imagery.get(active_key)
         if not active_product:
             return None
         base = self.base_tci_by_tile.get(tile)
         if active_key == tile and base and base.get("product") == active_product:
             return base
-        lake_id = active_key.split(":", 1)[0] if ":" in active_key else ""
+        site_id = active_key.split(":", 1)[0] if ":" in active_key else ""
         return next(
             (
                 row
                 for row in self.user_tci_rows.get(tile, [])
                 if row.get("product") == active_product
-                and (not lake_id or not row.get("lake_id") or row.get("lake_id") == lake_id)
+                and (not site_id or not row.get("site_id") or row.get("site_id") == site_id)
             ),
             None,
         )
 
-    def _imagery_asset_meta(self, row: dict, lake_id: str = "") -> dict:
+    def _imagery_asset_meta(self, row: dict, site_id: str = "") -> dict:
         source = clean_optional(row.get("source")) or "preloaded"
-        row_lake_id = clean_optional(row.get("lake_id")) or ""
+        row_site_id = clean_optional(row.get("site_id")) or ""
         if source == "local_img":
             asset_type, asset_scope, asset_label = "site_native", "site", "区域影像"
         elif source == "preloaded":
@@ -159,16 +158,14 @@ class ImageryInventoryMixin:
             "asset_scope": asset_scope,
             "asset_label": asset_label,
             "is_site_native": asset_type == "site_native",
-            "is_lake_native": asset_type == "site_native",
             "is_tile_product": asset_scope == "tile",
-            "applies_to_lake": not row_lake_id or not lake_id or row_lake_id == lake_id,
+            "applies_to_site": not row_site_id or not site_id or row_site_id == site_id,
         }
 
-    def _imagery_product_payload(self, row: dict, tile: str, active_key: str, lake_id: str = "", preloaded: bool = False) -> dict:
+    def _imagery_product_payload(self, row: dict, tile: str, active_key: str, site_id: str = "", preloaded: bool = False) -> dict:
         payload = {
             "tile": tile,
-            "site_id": row.get("site_id") or row.get("lake_id", ""),
-            "lake_id": row.get("lake_id", ""),
+            "site_id": row.get("site_id", ""),
             "product": row.get("product", ""),
             "product_id": row.get("product_id", ""),
             "date": row.get("date", ""),
@@ -182,7 +179,7 @@ class ImageryInventoryMixin:
             "downloaded": True,
             "preloaded": preloaded,
         }
-        payload.update(self._imagery_asset_meta(row, lake_id=lake_id))
+        payload.update(self._imagery_asset_meta(row, site_id=site_id))
         return payload
 
     def _load_tci_footprints(self) -> list[dict]:
@@ -209,19 +206,19 @@ class ImageryInventoryMixin:
             "product_count": sum(len(rows) for rows in self.user_tci_rows.values()) + len(self.base_tci_by_tile),
         }
 
-    def imagery_products_for_tile(self, tile: str, lake=None) -> list[dict]:
+    def imagery_products_for_tile(self, tile: str, site=None) -> list[dict]:
         tile = str(tile).upper().removeprefix("T")
-        active_key = self._active_imagery_key(tile, lake)
-        lake_id = _site_id(lake)
-        has_lake_products = bool(lake_id and any(row.get("lake_id") == lake_id for row in self.user_tci_rows.get(tile, [])))
+        active_key = self._active_imagery_key(tile, site)
+        site_id = _site_id(site)
+        has_site_products = bool(site_id and any(row.get("site_id") == site_id for row in self.user_tci_rows.get(tile, [])))
         products = []
         base = self.base_tci_by_tile.get(tile)
-        if base and not has_lake_products:
-            products.append(self._imagery_product_payload(base, tile, active_key, lake_id=lake_id, preloaded=True))
+        if base and not has_site_products:
+            products.append(self._imagery_product_payload(base, tile, active_key, site_id=site_id, preloaded=True))
         for row in self.user_tci_rows.get(tile, []):
-            if lake_id and row.get("lake_id") and row.get("lake_id") != lake_id:
+            if site_id and row.get("site_id") and row.get("site_id") != site_id:
                 continue
-            products.append(self._imagery_product_payload(row, tile, active_key, lake_id=lake_id))
+            products.append(self._imagery_product_payload(row, tile, active_key, site_id=site_id))
         return products
 
     def local_product_status(self, product_id: str | None, product_name: str | None) -> dict:
@@ -256,18 +253,18 @@ class ImageryInventoryMixin:
             self._valid_ratio_cache[key] = calculate_valid_ratio_for_tci(tci_path)
         return self._valid_ratio_cache[key]
 
-    def set_active_imagery(self, tile: str, product_name: str, lake=None) -> dict:
+    def set_active_imagery(self, tile: str, product_name: str, site=None) -> dict:
         tile = str(tile).upper().removeprefix("T")
         product_name = str(product_name)
-        active_key = self._active_imagery_key(tile, lake)
-        lake_id = _site_id(lake)
+        active_key = self._active_imagery_key(tile, site)
+        site_id = _site_id(site)
         with self._lock:
             candidates = []
             base = self.base_tci_by_tile.get(tile)
             if base and ":" not in active_key:
                 candidates.append(base)
             candidates.extend(
-                row for row in self.user_tci_rows.get(tile, []) if not lake_id or not row.get("lake_id") or row.get("lake_id") == lake_id
+                row for row in self.user_tci_rows.get(tile, []) if not site_id or not row.get("site_id") or row.get("site_id") == site_id
             )
             selected = next((row for row in candidates if row.get("product") == product_name), None)
             if selected is None:
@@ -278,11 +275,10 @@ class ImageryInventoryMixin:
             self.tci_footprints = self._load_tci_footprints()
         return {
             "tile": tile,
-            "site_id": lake_id,
-            "lake_id": lake_id,
+            "site_id": site_id,
             "product": product_name,
             "active": True,
-            "imagery": self.imagery_products_for_tile(tile, lake),
+            "imagery": self.imagery_products_for_tile(tile, site),
         }
 
     def register_downloaded_product(self, product: dict, safe_dir: Path, tci_path: Path) -> dict:

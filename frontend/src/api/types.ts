@@ -3,7 +3,6 @@ export interface RegionSummary {
   name: string;
   ready: boolean;
   site_count: number;
-  lake_count?: number;
 }
 
 export interface RegionsResponse {
@@ -13,12 +12,9 @@ export interface RegionsResponse {
 
 export interface SiteSummary {
   site_id: string;
-  object_id: string;
   display_name?: string;
-  name?: string;
   water_type?: string;
   coverage_area_km2: number;
-  area_km2: number;
   tiles?: string[];
   image_count?: number;
   label_asset_count?: number;
@@ -58,17 +54,12 @@ export interface FeatureCollection {
 
 export interface SiteDetail extends SiteSummary {
   site_id: string;
-  lake_id: string;
   bbox: [number, number, number, number];
-  layers?: {
-    osm?: GeoJsonLayer | null;
-    hydrolakes?: GeoJsonLayer | null;
-  };
+  geometry: Record<string, unknown>;
 }
 
 export interface TileMeta {
   site_bounds?: [number, number, number, number];
-  lake_bounds?: [number, number, number, number];
   tile_bounds: [number, number, number, number];
   tile_url: string;
   tiles: string[];
@@ -98,8 +89,7 @@ export interface ImageryProduct {
 }
 
 export interface ImageryResponse {
-  site_id?: string;
-  lake_id: string;
+  site_id: string;
   tiles: Array<{ tile: string; products: ImageryProduct[] }>;
 }
 
@@ -118,19 +108,16 @@ export interface SentinelProduct {
   tile: string;
   date?: string;
   cloud_cover?: number;
-  lake_coverage_ratio?: number;
+  site_coverage_ratio?: number;
   aoi_coverage_ratio?: number;
   downloaded?: boolean;
 }
 
 export interface TrainingSample {
   sample_id: string;
-  site_id?: string;
+  site_id: string;
   site_display_name?: string;
   site_name?: string;
-  lake_id: string;
-  lake_display_name?: string;
-  lake_name?: string;
   region?: string;
   region_name?: string;
   status?: string;
@@ -145,12 +132,9 @@ export interface TrainingSample {
 export interface TrainingPatch {
   patch_id: string;
   sample_id: string;
-  site_id?: string;
+  site_id: string;
   site_display_name?: string;
   site_name?: string;
-  lake_id: string;
-  lake_display_name?: string;
-  lake_name?: string;
   region?: string;
   included: boolean;
   preview_exists?: boolean;

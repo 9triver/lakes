@@ -48,7 +48,7 @@ def region_key_from_patch_row(row: dict, fallback: str = "") -> str:
     region = clean_optional(row.get("source_region") or row.get("region"))
     if region:
         return region
-    site_id = clean_optional(row.get("site_id") or row.get("lake_id")) or ""
+    site_id = clean_optional(row.get("site_id")) or ""
     if "_" in site_id:
         prefix = site_id.split("_", 1)[0]
         if prefix in REGIONS:
@@ -76,7 +76,7 @@ def summarize_training_manifest(manifest_path: Path, region_key: str = "") -> di
         else:
             excluded += 1
         sample_id = clean_optional(row.get("sample_id"))
-        site_id = clean_optional(row.get("site_id") or row.get("lake_id"))
+        site_id = clean_optional(row.get("site_id"))
         if sample_id:
             sample_ids.add(sample_id)
         if site_id:

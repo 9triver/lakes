@@ -1,4 +1,4 @@
-"""Lake-local Shapefile label discovery and GeoJSON conversion."""
+"""Site-local Shapefile label discovery and GeoJSON conversion."""
 
 import hashlib
 import re
@@ -12,10 +12,10 @@ from lake_workbench.utils import display_path, jsonable, resolve_data_path
 
 
 class LocalLabelCatalogMixin:
-    def local_label_items(self, lake) -> dict:
+    def local_label_items(self, site) -> dict:
         labels = []
         seen = set()
-        for directory in self._local_imagery_dirs_for_lake(lake):
+        for directory in self._local_imagery_dirs_for_site(site):
             for path in sorted(directory.glob("*.shp")):
                 key = str(path.resolve())
                 if key in seen:
@@ -23,10 +23,10 @@ class LocalLabelCatalogMixin:
                 seen.add(key)
                 labels.append(self._local_label_item(path))
         labels.sort(key=lambda item: (item.get("date") or "", item["name"]), reverse=True)
-        return {"site_id": lake.object_id, "lake_id": lake.object_id, "items": labels}
+        return {"site_id": site.site_id, "items": labels}
 
-    def local_label_geojson(self, lake, label_id: str) -> dict:
-        labels = {item["id"]: item for item in self.local_label_items(lake)["items"]}
+    def local_label_geojson(self, site, label_id: str) -> dict:
+        labels = {item["id"]: item for item in self.local_label_items(site)["items"]}
         item = labels.get(label_id)
         if item is None:
             raise FileNotFoundError(f"Local label not found: {label_id}")
@@ -36,8 +36,7 @@ class LocalLabelCatalogMixin:
         data = pyogrio.read_dataframe(path)
         if data.empty:
             return {
-                "site_id": lake.object_id,
-                "lake_id": lake.object_id,
+                "site_id": site.site_id,
                 "label": item,
                 "geojson": {"type": "FeatureCollection", "features": []},
             }
@@ -52,18 +51,17 @@ class LocalLabelCatalogMixin:
             props.update({"label_id": item["id"], "label_name": item["name"], "source": "local_label"})
             features.append({"type": "Feature", "geometry": mapping(make_valid(geom)), "properties": props})
         return {
-            "site_id": lake.object_id,
-            "lake_id": lake.object_id,
+            "site_id": site.site_id,
             "label": {**item, "feature_count": len(features)},
             "geojson": {"type": "FeatureCollection", "features": features},
         }
 
-    def _local_imagery_dirs_for_lake(self, lake) -> list[Path]:
+    def _local_imagery_dirs_for_site(self, site) -> list[Path]:
         directories = []
         seen = set()
         for rows in self.user_tci_rows.values():
             for row in rows:
-                if row.get("source") != "local_img" or row.get("lake_id") != lake.object_id:
+                if row.get("source") != "local_img" or row.get("site_id") != site.site_id:
                     continue
                 directory = row.get("safe_path")
                 if not directory:

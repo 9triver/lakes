@@ -7,12 +7,12 @@ import { buildRouteUrl, parseRoute } from "../src/lake_workbench/static/routing.
 
 const route = parseRoute({
   pathname: "/regions/yunnan/training/patches",
-  search: "?q=lake&has_tci=true",
+  search: "?q=reservoir&has_tci=true",
 });
 assert.equal(route.region, "yunnan");
 assert.equal(route.mode, "training");
 assert.equal(route.trainingView, "patches");
-assert.equal(route.query, "lake");
+assert.equal(route.query, "reservoir");
 assert.equal(route.filters.has_tci, "true");
 
 assert.equal(buildRouteUrl({

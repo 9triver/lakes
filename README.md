@@ -54,14 +54,15 @@ lakes/
       datasets.py                Patch manifest 和训练数据集摘要
       runner.py                  Patch 导出和 U-Net 训练任务适配
     water/
-      annotations.py             OSM/HydroLAKES/ESA/JRC 水体标注编排
+      annotations.py             site 水体标注的统一编排与结果契约
+      providers.py               OSM/HydroLAKES/ESA/JRC/Local Label provider registry
+      local_labels.py            本地 Shapefile 标注发现和 GeoJSON 转换
       layers.py                  ESA/JRC 栅格读取、多边形生成和缓存
-    local_labels.py              本地 Shapefile 标注发现和 GeoJSON 转换
     geo.py                       坐标转换、覆盖率和几何处理
     jobs.py                      下载、Patch 导出和训练后台任务
     paths.py                     项目根路径
     utils.py                     路径、CSV、参数解析和序列化工具
-    static/                       React 构建产物和 `/legacy/` 旧版回退
+    static/                       React 构建产物和 `/legacy/` 迁移对照代码
       dist/                       React 构建产物，不纳入 Git
       app.js                     页面状态、地图编排和事件绑定
       api.js                     JSON HTTP 客户端
@@ -91,10 +92,11 @@ lakes/
     train_unet.py                训练 U-Net
     download_sentinel.py         命令行 Sentinel 查询/下载
     precompute_*.py              预生成 ESA/JRC polygon
+    migrate_site_data.py         将历史持久化数据迁移为 site 规范字段
   data/                          大型数据和模型，不纳入 Git
 ```
 
-Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，用于迁移后的对照和回退。
+Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，仅用于迁移对照；它依赖的旧 `/lakes` API 已移除，不再作为可用回退前端维护。
 
 React 前端覆盖观测区域筛选、深链接、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
 
@@ -312,6 +314,9 @@ PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
 /api/regions
 /api/regions/<region>/sites
 /api/regions/<region>/sites/<site_id>
+/api/regions/<region>/sites/<site_id>/annotations/<source>
+/api/regions/<region>/sites/<site_id>/local-labels
+/api/regions/<region>/sites/<site_id>/imagery
 /api/regions/<region>/training-samples
 /api/regions/<region>/training-patches
 /api/regions/<region>/training-runs
@@ -319,9 +324,27 @@ PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
 /api/regions/<region>/model-validation/random
 ```
 
-`<region>` 可以是具体区域，也可以是 `all`。
+单个观测区域的详情、影像、标注和 Sentinel 操作必须使用实际 region。`all` 用于跨区域观测区域列表、训练样本、Patch、训练任务和模型验证等聚合场景。
 
-旧 `/lakes` API 和历史 CSV 中的 `lake_id` 字段暂时保留为兼容入口；新记录以 `site_id` 为规范字段。
+OSM、HydroLAKES、ESA、JRC 和 Local Label 通过统一 annotation provider 读取。标注接口返回：
+
+```json
+{
+  "site_id": "gansu_17407",
+  "source": "jrc",
+  "status": "available",
+  "parameters": {"threshold": 75},
+  "annotation": {}
+}
+```
+
+`status` 为 `available`、`missing`、`empty` 或 `skipped`。JRC 使用 `?threshold=75` 指定阈值；本地标注先通过 `/local-labels` 列举，再使用 `/annotations/local?label_id=<id>` 读取。OSM、HydroLAKES、ESA 和 JRC 分别使用 `osm`、`hydrolakes`、`esa` 和 `jrc` 作为 `<source>`。
+
+观测区域在 API、CSV 和后端领域模型中统一使用 `site` 与 `site_id`。旧 `/lakes` API 和 `lake_id` 字段不再受支持；已有持久化数据可执行以下命令完成迁移：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/migrate_site_data.py
+```
 
 ## 数据与 Git
 
@@ -330,9 +353,11 @@ PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
 ## 检查
 
 ```bash
-.venv/bin/python -m compileall -q src scripts
+PYTHONPATH=src .venv/bin/python -m compileall -q src scripts
+PYTHONPATH=src .venv/bin/python -m pyflakes src scripts tests
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
-node tests/test_frontend_modules.mjs
+node --test tests/test_frontend_modules.mjs
 for file in src/lake_workbench/static/*.js; do node --check "$file"; done
+(cd frontend && npm run typecheck && npm run build)
 git diff --check
 ```

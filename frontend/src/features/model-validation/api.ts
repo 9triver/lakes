@@ -25,10 +25,8 @@ export interface ModelOption {
 
 export interface ModelValidationResult {
   region: string;
-  site_id?: string;
+  site_id: string;
   site?: SiteSummary;
-  lake_id: string;
-  lake?: SiteSummary;
   model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; threshold?: number };
   prediction: FeatureCollection;
   stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
@@ -66,15 +64,15 @@ export function useRandomModelValidation(scope: string) {
   } });
 }
 
-export function useLakeModelPrediction(region: string, lakeId: string, model: string, threshold: number, enabled: boolean) {
+export function useSiteModelPrediction(region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
   return useQuery({
-    queryKey: ["model-prediction", region, lakeId, model, threshold],
+    queryKey: ["model-prediction", region, siteId, model, threshold],
     queryFn: () => {
       const localModel = model.startsWith(`${region}/`) ? model.slice(region.length + 1) : model;
       const params = new URLSearchParams({ model: localModel, threshold: String(threshold) });
-      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(lakeId)}/model-prediction?${params}`);
+      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`);
     },
-    enabled: enabled && Boolean(region && lakeId && model),
+    enabled: enabled && Boolean(region && siteId && model),
     retry: false,
   });
 }

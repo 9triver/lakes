@@ -6,11 +6,11 @@ import { searchSentinelProducts, useDownloadSentinel, useSentinelTiles } from ".
 
 function isoDate(date: Date) { return date.toISOString().slice(0, 10); }
 
-export function SentinelSearch({ region, lakeId }: { region: string; lakeId: string }) {
+export function SentinelSearch({ region, siteId }: { region: string; siteId: string }) {
   const now = useMemo(() => new Date(), []);
   const initialStart = useMemo(() => { const date = new Date(now); date.setMonth(date.getMonth() - 2); return isoDate(date); }, [now]);
-  const tiles = useSentinelTiles(region, lakeId);
-  const download = useDownloadSentinel(region, lakeId);
+  const tiles = useSentinelTiles(region, siteId);
+  const download = useDownloadSentinel(region, siteId);
   const [tile, setTile] = useState("");
   const [start, setStart] = useState(initialStart);
   const [end, setEnd] = useState(isoDate(now));
@@ -22,7 +22,7 @@ export function SentinelSearch({ region, lakeId }: { region: string; lakeId: str
   async function search() {
     if (!selectedTile) return;
     setSearching(true);
-    try { setProducts(await searchSentinelProducts(region, lakeId, { tile: selectedTile, start, end, cloud })); }
+    try { setProducts(await searchSentinelProducts(region, siteId, { tile: selectedTile, start, end, cloud })); }
     finally { setSearching(false); }
   }
 
@@ -37,7 +37,7 @@ export function SentinelSearch({ region, lakeId }: { region: string; lakeId: str
       </Box>
       {products.length > 0 && <Box sx={{ maxHeight: 180, overflow: "auto", borderTop: 1, borderColor: "divider" }}>
         {products.map((product) => <Box key={product.product_id || product.name} sx={{ minHeight: 42, display: "grid", gridTemplateColumns: "90px 80px 100px minmax(160px,1fr) auto", alignItems: "center", gap: 1, borderBottom: 1, borderColor: "divider", fontSize: 13 }}>
-          <span>{product.date || ""}</span><span>云量 {Number(product.cloud_cover || 0).toFixed(1)}%</span><span>覆盖 {(Number(product.lake_coverage_ratio || 0) * 100).toFixed(0)}%</span><Typography variant="caption" noWrap title={product.name}>{product.name}</Typography>
+          <span>{product.date || ""}</span><span>云量 {Number(product.cloud_cover || 0).toFixed(1)}%</span><span>覆盖 {(Number(product.site_coverage_ratio || 0) * 100).toFixed(0)}%</span><Typography variant="caption" noWrap title={product.name}>{product.name}</Typography>
           <Button startIcon={<CloudDownload size={15} />} disabled={product.downloaded || download.isPending} onClick={() => download.mutate(product)}>{product.downloaded ? "已下载" : download.isPending ? "下载中" : "下载"}</Button>
         </Box>)}
       </Box>}

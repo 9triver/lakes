@@ -6,21 +6,32 @@ from lake_workbench.training.catalog import TrainingCatalogMixin
 
 
 class TrainingCatalogStub(TrainingCatalogMixin):
-    def _osm_layer(self, lake):
+    def annotation_for_site(self, site, source, options=None):
+        annotation = None
+        if source == "osm":
+            annotation = {
+                "source": "OSM",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
+                "properties": {},
+            }
+        elif source == "local":
+            annotation = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
+                        "properties": {"label_id": (options or {}).get("label_id")},
+                    }
+                ],
+            }
         return {
-            "source": "OSM",
-            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]},
-            "properties": {},
+            "site_id": "site_1",
+            "source": source,
+            "status": "available" if annotation else "missing",
+            "parameters": options or {},
+            "annotation": annotation,
         }
-
-    def _match_hydrolakes(self, lake):
-        return None
-
-    def _esa_smoothed_layer(self, lake):
-        return None
-
-    def _jrc_occurrence_layer(self, lake, threshold=75):
-        return None
 
 
 class CurrentViewLabelTests(unittest.TestCase):
@@ -42,6 +53,20 @@ class CurrentViewLabelTests(unittest.TestCase):
         catalog = TrainingCatalogStub()
         with self.assertRaises(ValueError):
             catalog.current_view_training_label_layer(object(), {"visible_layers": {}})
+
+    def test_local_label_is_loaded_through_annotation_provider(self) -> None:
+        catalog = TrainingCatalogStub()
+        layer = catalog.current_view_training_label_layer(
+            object(),
+            {
+                "visible_layers": {"local_label": True},
+                "selected_local_label": {"id": "label_1"},
+            },
+        )
+
+        self.assertEqual(len(layer["features"]), 1)
+        self.assertEqual(layer["features"][0]["properties"]["label_id"], "label_1")
+        self.assertEqual(layer["features"][0]["properties"]["training_layer"], "local_label")
 
 
 if __name__ == "__main__":

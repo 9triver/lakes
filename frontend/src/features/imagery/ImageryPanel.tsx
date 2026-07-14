@@ -4,9 +4,9 @@ import { Image } from "lucide-react";
 import { useImagery, useSetActiveImagery } from "./api";
 import { SentinelSearch } from "./SentinelSearch";
 
-export function ImageryPanel({ region, lakeId, onSelectionChange }: { region: string; lakeId: string; onSelectionChange?: (selection: { tile: string; product: string }) => void }) {
-  const imagery = useImagery(region, lakeId);
-  const setActive = useSetActiveImagery(region, lakeId);
+export function ImageryPanel({ region, siteId, onSelectionChange }: { region: string; siteId: string; onSelectionChange?: (selection: { tile: string; product: string }) => void }) {
+  const imagery = useImagery(region, siteId);
+  const setActive = useSetActiveImagery(region, siteId);
   const [tile, setTile] = useState("");
   const [product, setProduct] = useState("");
   const tiles = imagery.data?.tiles || [];
@@ -26,7 +26,7 @@ export function ImageryPanel({ region, lakeId, onSelectionChange }: { region: st
       <FormControl sx={{ minWidth: 280, flex: 1 }}><InputLabel>影像产品</InputLabel><Select label="影像产品" value={product} onChange={(event) => setProduct(event.target.value)}>{products.map((item) => <MenuItem key={item.product} value={item.product}>{item.active ? "当前 · " : ""}{item.asset_label || item.source || "影像"} · {item.date || item.product}</MenuItem>)}</Select></FormControl>
       <Button variant="contained" startIcon={<Image size={16} />} disabled={!tile || !product || setActive.isPending} onClick={() => setActive.mutate({ tile, product })}>设为影像</Button>
       <Typography variant="caption" color={setActive.isError ? "error" : "text.secondary"}>{setActive.isPending ? "切换中" : setActive.isSuccess ? "影像已更新" : `${products.length} 个候选`}</Typography>
-      <SentinelSearch region={region} lakeId={lakeId} />
+      <SentinelSearch region={region} siteId={siteId} />
     </Box>
   );
 }

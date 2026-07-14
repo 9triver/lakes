@@ -26,13 +26,13 @@ def display_path(path: Path) -> str:
         return str(path)
 
 
-def esa_polygon_cache_path(region: RegionConfig, lake_id: str) -> Path:
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", lake_id)
+def esa_polygon_cache_path(region: RegionConfig, site_id: str) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", site_id)
     return region.esa_polygon_dir / safe_id / "esa_water.geojson"
 
 
-def read_esa_polygon_cache(region: RegionConfig, lake_id: str) -> dict | None:
-    path = esa_polygon_cache_path(region, lake_id)
+def read_esa_polygon_cache(region: RegionConfig, site_id: str) -> dict | None:
+    path = esa_polygon_cache_path(region, site_id)
     if not path.exists():
         return None
     try:
@@ -45,21 +45,21 @@ def read_esa_polygon_cache(region: RegionConfig, lake_id: str) -> dict | None:
     return payload
 
 
-def write_esa_polygon_cache(region: RegionConfig, lake_id: str, layer: dict) -> Path:
-    path = esa_polygon_cache_path(region, lake_id)
+def write_esa_polygon_cache(region: RegionConfig, site_id: str, layer: dict) -> Path:
+    path = esa_polygon_cache_path(region, site_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(layer, ensure_ascii=False), encoding="utf-8")
     return path
 
 
 
-def build_esa_smoothed_layer(region: RegionConfig, lake: Any) -> dict | None:
+def build_esa_smoothed_layer(region: RegionConfig, site: Any) -> dict | None:
     try:
-        geom = lake.geometry.buffer(max(lake.bbox[2] - lake.bbox[0], lake.bbox[3] - lake.bbox[1]) * 0.15)
+        geom = site.geometry.buffer(max(site.bbox[2] - site.bbox[0], site.bbox[3] - site.bbox[1]) * 0.15)
         paths = [region.esa_water_mask] if region.esa_water_mask.exists() else esa_worldcover_tile_paths(region, geom)
         geoms = []
         for path in paths:
-            geoms.extend(water_polygons_from_raster(path, geom, lake.geometry, lambda arr: arr == 80 if path != region.esa_water_mask else arr == 1))
+            geoms.extend(water_polygons_from_raster(path, geom, site.geometry, lambda arr: arr == 80 if path != region.esa_water_mask else arr == 1))
     except Exception:
         return None
     if not geoms:
@@ -67,30 +67,30 @@ def build_esa_smoothed_layer(region: RegionConfig, lake: Any) -> dict | None:
             "source": "ESA WorldCover 2021 water mask, smoothed",
             "geometry": None,
             "properties": {
-                "water_id": f"ESA_{lake.object_id}",
+                "water_id": f"ESA_{site.site_id}",
                 "empty": True,
                 "pre_generated": False,
             },
         }
     source = geoms[0] if len(geoms) == 1 else MultiPolygon(geoms)
-    smoothed = smooth_esa_geometry(source, lake.area_km2)
+    smoothed = smooth_esa_geometry(source, site.area_km2)
     return {
         "source": "ESA WorldCover 2021 water mask, smoothed",
         "geometry": mapping(smoothed),
         "properties": {
-            "water_id": f"ESA_{lake.object_id}",
+            "water_id": f"ESA_{site.site_id}",
             "pre_generated": False,
         },
     }
 
 
-def jrc_polygon_cache_path(region: RegionConfig, lake_id: str, threshold: int) -> Path:
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", lake_id)
+def jrc_polygon_cache_path(region: RegionConfig, site_id: str, threshold: int) -> Path:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", site_id)
     return region.jrc_polygon_dir / safe_id / f"jrc_occurrence_ge{threshold}.geojson"
 
 
-def read_jrc_polygon_cache(region: RegionConfig, lake_id: str, threshold: int) -> dict | None:
-    path = jrc_polygon_cache_path(region, lake_id, threshold)
+def read_jrc_polygon_cache(region: RegionConfig, site_id: str, threshold: int) -> dict | None:
+    path = jrc_polygon_cache_path(region, site_id, threshold)
     if not path.exists():
         return None
     try:
@@ -103,15 +103,15 @@ def read_jrc_polygon_cache(region: RegionConfig, lake_id: str, threshold: int) -
     return payload
 
 
-def write_jrc_polygon_cache(region: RegionConfig, lake_id: str, threshold: int, layer: dict) -> Path:
-    path = jrc_polygon_cache_path(region, lake_id, threshold)
+def write_jrc_polygon_cache(region: RegionConfig, site_id: str, threshold: int, layer: dict) -> Path:
+    path = jrc_polygon_cache_path(region, site_id, threshold)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(layer, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def available_jrc_thresholds(region: RegionConfig, lake_id: str) -> list[int]:
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", lake_id)
+def available_jrc_thresholds(region: RegionConfig, site_id: str) -> list[int]:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", site_id)
     folder = region.jrc_polygon_dir / safe_id
     if not folder.exists():
         return []
@@ -123,14 +123,14 @@ def available_jrc_thresholds(region: RegionConfig, lake_id: str) -> list[int]:
     return sorted(thresholds)
 
 
-def build_jrc_occurrence_layer(region: RegionConfig, lake: Any, threshold: int) -> dict | None:
+def build_jrc_occurrence_layer(region: RegionConfig, site: Any, threshold: int) -> dict | None:
     threshold = max(1, min(100, int(threshold)))
     try:
-        geom = lake.geometry.buffer(max(lake.bbox[2] - lake.bbox[0], lake.bbox[3] - lake.bbox[1]) * 0.2)
+        geom = site.geometry.buffer(max(site.bbox[2] - site.bbox[0], site.bbox[3] - site.bbox[1]) * 0.2)
         paths = [region.jrc_occurrence] if region.jrc_occurrence.exists() else jrc_occurrence_tile_paths(region, geom)
         geoms = []
         for path in paths:
-            geoms.extend(water_polygons_from_raster(path, geom, lake.geometry, lambda arr: (arr >= threshold) & (arr <= 100)))
+            geoms.extend(water_polygons_from_raster(path, geom, site.geometry, lambda arr: (arr >= threshold) & (arr <= 100)))
     except Exception:
         return None
     if not geoms:
@@ -138,18 +138,18 @@ def build_jrc_occurrence_layer(region: RegionConfig, lake: Any, threshold: int) 
             "source": "JRC GSW occurrence 2021",
             "geometry": None,
             "properties": {
-                "water_id": f"JRC_{lake.object_id}_{threshold}",
+                "water_id": f"JRC_{site.site_id}_{threshold}",
                 "threshold": threshold,
                 "empty": True,
             },
         }
     source = geoms[0] if len(geoms) == 1 else MultiPolygon(geoms)
-    smoothed = smooth_jrc_geometry(source, lake.area_km2)
+    smoothed = smooth_jrc_geometry(source, site.area_km2)
     return {
         "source": "JRC GSW occurrence 2021",
         "geometry": mapping(smoothed),
         "properties": {
-            "water_id": f"JRC_{lake.object_id}_{threshold}",
+            "water_id": f"JRC_{site.site_id}_{threshold}",
             "threshold": threshold,
             "pre_generated": False,
         },

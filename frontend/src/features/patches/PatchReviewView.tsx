@@ -6,7 +6,7 @@ import { useTrainingPatches, useUpdateTrainingPatch } from "./api";
 import { PatchGenerationControls } from "./PatchGenerationControls";
 
 function patchSiteName(patch?: TrainingPatch | null) {
-  return patch?.site_display_name || patch?.site_name || patch?.lake_display_name || patch?.lake_name || patch?.site_id || patch?.lake_id || "Patch 预览";
+  return patch?.site_display_name || patch?.site_name || patch?.site_id || "Patch 预览";
 }
 
 export function PatchReviewView({ scope, onLocate }: { scope: string; onLocate: (patch: TrainingPatch) => void }) {

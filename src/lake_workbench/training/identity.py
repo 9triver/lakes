@@ -45,7 +45,7 @@ def bbox_from_row(row: dict) -> list[float]:
 
 
 def training_view_signature(
-    lake_id: str,
+    site_id: str,
     product_key: str,
     label_source: str,
     label_threshold: str,
@@ -61,7 +61,7 @@ def training_view_signature(
     local_label = view_state.get("selected_local_label") if isinstance(view_state.get("selected_local_label"), dict) else {}
     extent = normalized_view_extent(view_state)
     base_payload = {
-        "lake_id": lake_id,
+        "site_id": site_id,
         "product_key": product_key,
         "label_source": label_source,
         "label_threshold": str(label_threshold or ""),

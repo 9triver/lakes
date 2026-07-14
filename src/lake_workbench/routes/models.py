@@ -51,15 +51,15 @@ def handle_model_get(handler, path: str, query_string: str) -> bool:
             ),
         )
     elif re.fullmatch(r"/api/sites/[^/]+/model-prediction", path):
-        lake_key = path.split("/")[-2]
-        lake = handler.catalog.get_site(lake_key)
-        if lake is None:
+        site_key = path.split("/")[-2]
+        site = handler.catalog.get_site(site_key)
+        if site is None:
             handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
         else:
             _run_inference(
                 handler,
-                lambda: handler.catalog.model_prediction_for_lake(
-                    lake,
+                lambda: handler.catalog.model_prediction_for_site(
+                    site,
                     threshold=threshold,
                     model_key=model_key,
                 ),

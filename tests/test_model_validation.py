@@ -16,7 +16,7 @@ class CatalogStub(ModelValidationMixin):
             legacy_model_dir=root / "legacy_models",
             processed_dir=root / "processed",
         )
-        self.lakes = []
+        self.sites = []
 
 
 class ModelPathTests(unittest.TestCase):

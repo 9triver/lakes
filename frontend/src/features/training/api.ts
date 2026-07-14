@@ -9,7 +9,6 @@ export interface TrainingDataset {
   excluded_patches?: number;
   sample_count?: number;
   site_count?: number;
-  lake_count?: number;
   train_count?: number;
   val_count?: number;
   in_channels?: number;

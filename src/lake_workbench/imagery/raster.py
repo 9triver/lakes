@@ -171,10 +171,10 @@ def predict_water_geojson(
     return {"type": "FeatureCollection", "features": features}, stats
 
 
-def image_cache_key(lake: Any, size: int, padding: float, tci_rows: list[dict]) -> str:
+def image_cache_key(site: Any, size: int, padding: float, tci_rows: list[dict]) -> str:
     payload = {
-        "object_id": lake.object_id,
-        "bbox": [round(value, 8) for value in lake.bbox],
+        "site_id": site.site_id,
+        "bbox": [round(value, 8) for value in site.bbox],
         "size": size,
         "padding": round(padding, 4),
         "products": [
@@ -192,9 +192,9 @@ def image_cache_key(lake: Any, size: int, padding: float, tci_rows: list[dict]) 
     return hashlib.sha256(data).hexdigest()[:24]
 
 
-def tile_cache_key(lake: Any, z: int, x: int, y: int, padding: float, tci_rows: list[dict]) -> str:
+def tile_cache_key(site: Any, z: int, x: int, y: int, padding: float, tci_rows: list[dict]) -> str:
     payload = {
-        "object_id": lake.object_id,
+        "site_id": site.site_id,
         "z": int(z),
         "x": int(x),
         "y": int(y),
@@ -438,7 +438,7 @@ def render_tci_png(
         bottom = max(bottom, src.bounds.bottom)
         top = min(top, src.bounds.top)
         if right <= left or top <= bottom:
-            raise ValueError(f"Lake bbox does not overlap raster {tci_path}")
+            raise ValueError(f"Site bbox does not overlap raster {tci_path}")
         window = from_bounds(left, bottom, right, top, transform=src.transform)
         aspect = (right - left) / max(top - bottom, 1)
         out_width = size

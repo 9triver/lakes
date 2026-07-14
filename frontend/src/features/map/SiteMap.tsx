@@ -13,14 +13,16 @@ import { toLonLat, transformExtent } from "ol/proj";
 import type { FeatureCollection, GeoJsonLayer, SiteDetail, LocalLabelItem, SentinelTile, TileMeta } from "../../api/types";
 
 interface SiteMapProps {
-  lake: SiteDetail;
+  site: SiteDetail;
   tileMeta?: TileMeta;
   sentinelTiles?: SentinelTile[];
+  osm?: GeoJsonLayer | null;
+  hydrolakes?: GeoJsonLayer | null;
   contextOsm?: FeatureCollection;
   contextHydro?: FeatureCollection;
   esa?: GeoJsonLayer | null;
   jrc?: GeoJsonLayer | null;
-  localLabel?: FeatureCollection;
+  localLabel?: FeatureCollection | null;
   localLabels: LocalLabelItem[];
   selectedLocalLabel: string;
   onLocalLabelChange: (labelId: string) => void;
@@ -41,7 +43,7 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ lake, tileMeta, sentinelTiles, contextOsm, contextHydro, esa, jrc, localLabel, localLabels, selectedLocalLabel, onLocalLabelChange, jrcThreshold, onJrcThresholdChange, modelPrediction }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, localLabels, selectedLocalLabel, onLocalLabelChange, jrcThreshold, onJrcThresholdChange, modelPrediction }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const imageLayerRef = useRef(new TileLayer({ visible: true }));
@@ -127,18 +129,13 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   }, [sentinelTiles]);
 
   useEffect(() => {
-    const format = new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" });
-    osmSourceRef.current.clear();
-    hydroSourceRef.current.clear();
-    if (lake.layers?.osm?.geometry) osmSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features: [{ type: "Feature", geometry: lake.layers.osm.geometry, properties: lake.layers.osm.properties || {} }] }));
-    if (lake.layers?.hydrolakes?.geometry) hydroSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features: [{ type: "Feature", geometry: lake.layers.hydrolakes.geometry, properties: lake.layers.hydrolakes.properties || {} }] }));
-    const bounds = tileMeta?.site_bounds || tileMeta?.lake_bounds || lake.bbox;
+    const bounds = tileMeta?.site_bounds || site.bbox;
     mapRef.current?.getView().fit(transformExtent(bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 });
-  }, [lake, tileMeta]);
+  }, [site, tileMeta]);
 
   useEffect(() => {
     const format = new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" });
-    const setCollection = (source: VectorSource, collection?: FeatureCollection) => {
+    const setCollection = (source: VectorSource, collection?: FeatureCollection | null) => {
       source.clear();
       if (collection?.features?.length) source.addFeatures(format.readFeatures(collection));
     };
@@ -146,13 +143,15 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
       source.clear();
       if (layer?.geometry) source.addFeatures(format.readFeatures({ type: "FeatureCollection", features: [{ type: "Feature", geometry: layer.geometry, properties: layer.properties || {} }] }));
     };
+    setLayer(osmSourceRef.current, osm);
+    setLayer(hydroSourceRef.current, hydrolakes);
     setCollection(contextOsmSourceRef.current, contextOsm);
     setCollection(contextHydroSourceRef.current, contextHydro);
     setLayer(esaSourceRef.current, esa);
     setLayer(jrcSourceRef.current, jrc);
     setCollection(localSourceRef.current, localLabel);
     setCollection(predictionSourceRef.current, modelPrediction);
-  }, [contextOsm, contextHydro, esa, jrc, localLabel, modelPrediction]);
+  }, [osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, modelPrediction]);
 
   useEffect(() => {
     imageLayerRef.current.setSource(tileMeta ? new XYZ({ url: `${tileMeta.tile_url}?v=${Date.now()}`, tileSize: 256, minZoom: 5, maxZoom: 16 }) : null);
@@ -178,7 +177,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
         </FormControl>
         {modelPrediction && <FormControlLabel control={<Checkbox size="small" checked={visibility.prediction} onChange={(_, checked) => setVisibility((value) => ({ ...value, prediction: checked }))} />} label="模型预测" />}
         <Box sx={{ ml: "auto", display: "flex", alignItems: "center" }}>
-          <Tooltip title="定位观测区域"><span><IconButton size="small" disabled={!(tileMeta?.site_bounds || tileMeta?.lake_bounds)} onClick={() => { const bounds = tileMeta?.site_bounds || tileMeta?.lake_bounds; if (bounds) mapRef.current?.getView().fit(transformExtent(bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 }); }} aria-label="定位观测区域"><Focus size={18} /></IconButton></span></Tooltip>
+          <Tooltip title="定位观测区域"><span><IconButton size="small" disabled={!tileMeta?.site_bounds} onClick={() => { const bounds = tileMeta?.site_bounds; if (bounds) mapRef.current?.getView().fit(transformExtent(bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 }); }} aria-label="定位观测区域"><Focus size={18} /></IconButton></span></Tooltip>
           <Tooltip title="定位 Tile"><span><IconButton size="small" disabled={!tileMeta?.tile_bounds} onClick={() => tileMeta?.tile_bounds && mapRef.current?.getView().fit(transformExtent(tileMeta.tile_bounds, "EPSG:4326", "EPSG:3857"), { padding: [40, 40, 40, 40], maxZoom: 14 })} aria-label="定位 Tile"><Grid2X2 size={18} /></IconButton></span></Tooltip>
         </Box>
       </Box>

@@ -144,10 +144,6 @@ class SiteHandler(BaseHTTPRequestHandler):
             self.downloads = self.__class__.downloads_by_region[region_key]
             self.patch_exports = self.__class__.patch_exports_by_region[region_key]
         self.training_runs = self.__class__.training_runs_by_scope[region_key]
-        if normalized_path == "/api/lakes" or normalized_path.startswith("/api/lakes/"):
-            normalized_path = "/api/sites" + normalized_path.removeprefix("/api/lakes")
-        elif normalized_path == "/api/all/lakes" or normalized_path.startswith("/api/all/lakes/"):
-            normalized_path = "/api/all/sites" + normalized_path.removeprefix("/api/all/lakes")
         return normalized_path
 
 
@@ -232,8 +228,3 @@ def create_site_handler(
     ConfiguredSiteHandler.training_runs = training_runs_by_scope[default_region_key]
     ConfiguredSiteHandler.region_service = region_service
     return ConfiguredSiteHandler
-
-
-# Compatibility names for integrations that import the original server API.
-LakeHandler = SiteHandler
-create_lake_handler = create_site_handler

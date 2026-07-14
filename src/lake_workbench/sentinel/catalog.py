@@ -3,7 +3,7 @@
 import pyogrio
 from shapely.geometry import box, mapping
 
-from lake_workbench.geo import geometry_coverage_ratio, lake_aoi_geometry, product_geometry
+from lake_workbench.geo import geometry_coverage_ratio, product_geometry, site_aoi_geometry
 from lake_workbench.utils import display_path, metadata_tiles, parse_float_or_default
 
 
@@ -19,11 +19,11 @@ class SentinelCatalogMixin:
         tiles["Name"] = tiles["Name"].astype(str).str.upper().str.removeprefix("T")
         return tiles
 
-    def sentinel_tiles_for_lake(self, lake) -> dict:
-        target = lake.geometry
+    def sentinel_tiles_for_site(self, site) -> dict:
+        target = site.geometry
         rows = []
-        for tile in self._required_sentinel_tiles_for_lake(lake):
-            row = self._active_imagery_row(tile, lake)
+        for tile in self._required_sentinel_tiles_for_site(site):
+            row = self._active_imagery_row(tile, site)
             tile_geom = self._sentinel_tile_geometry(tile)
             coverage = geometry_coverage_ratio(target, tile_geom)
             rows.append(
@@ -31,7 +31,7 @@ class SentinelCatalogMixin:
                     "tile": tile,
                     "downloaded": row is not None,
                     "site_coverage_ratio": coverage,
-                    "lake_coverage_ratio": coverage,
+                    "site_coverage_ratio": coverage,
                     "aoi_coverage_ratio": coverage,
                     "geometry": mapping(tile_geom) if tile_geom is not None else None,
                     "date": row.get("date") if row else None,
@@ -41,16 +41,16 @@ class SentinelCatalogMixin:
                 }
             )
         rows.sort(key=lambda item: (item.get("aoi_coverage_ratio") or 0, item["tile"]), reverse=True)
-        return {"site_id": lake.object_id, "lake_id": lake.object_id, "aoi_bounds": list(lake.bbox), "tiles": rows}
+        return {"site_id": site.site_id, "aoi_bounds": list(site.bbox), "tiles": rows}
 
-    def _required_sentinel_tiles_for_lake(self, lake) -> list[str]:
-        tiles = self._sentinel_tiles_for_geometry(lake.geometry)
+    def _required_sentinel_tiles_for_site(self, site) -> list[str]:
+        tiles = self._sentinel_tiles_for_geometry(site.geometry)
         if tiles:
             return tiles
-        fallback_tiles = metadata_tiles(lake.properties.get("sentinel_tiles"))
+        fallback_tiles = metadata_tiles(site.properties.get("sentinel_tiles"))
         if fallback_tiles:
             return fallback_tiles
-        return [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*lake.bbox))]
+        return [item["tile"] for item in self.tci_footprints if item["geometry"].intersects(box(*site.bbox))]
 
     def _sentinel_tiles_for_geometry(self, geom) -> list[str]:
         if self.sentinel_tile_index is None or self.sentinel_tile_index.empty:
@@ -71,24 +71,24 @@ class SentinelCatalogMixin:
             return None
         return rows.geometry.iloc[0]
 
-    def enrich_products_for_lake(self, lake, products: list[dict]) -> list[dict]:
-        if lake is None:
+    def enrich_products_for_site(self, site, products: list[dict]) -> list[dict]:
+        if site is None:
             return products
-        lake_geom = lake.geometry
-        aoi_geom = lake_aoi_geometry(lake, padding=0.8)
+        site_geom = site.geometry
+        aoi_geom = site_aoi_geometry(site, padding=0.8)
         enriched = []
         for product in products:
             footprint = product_geometry(product)
             enriched.append(
                 {
                     **product,
-                    "lake_coverage_ratio": geometry_coverage_ratio(lake_geom, footprint),
+                    "site_coverage_ratio": geometry_coverage_ratio(site_geom, footprint),
                     "aoi_coverage_ratio": geometry_coverage_ratio(aoi_geom, footprint),
                 }
             )
         enriched.sort(
             key=lambda item: (
-                -(item.get("lake_coverage_ratio") or 0),
+                -(item.get("site_coverage_ratio") or 0),
                 -(item.get("aoi_coverage_ratio") or 0),
                 parse_float_or_default(item.get("cloud_cover"), 101.0),
                 str(item.get("date") or ""),

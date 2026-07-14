@@ -1,4 +1,4 @@
-"""Imagery inventory, raster rendering, and lake mosaic operations."""
+"""Imagery inventory, raster rendering, and site mosaic operations."""
 
 from lake_workbench.imagery.raster import blank_png, mosaic_source_meta, predict_water_geojson
 

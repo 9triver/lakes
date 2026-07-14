@@ -1,4 +1,4 @@
-"""Regional observation-site catalog and compatibility APIs."""
+"""Regional observation-site catalog and domain facade."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from shapely.geometry import box, mapping
 
 from lake_workbench.imagery.inventory import ImageryInventoryMixin
 from lake_workbench.imagery.rendering import ImageryRenderingMixin
-from lake_workbench.local_labels import LocalLabelCatalogMixin
 from lake_workbench.models.validation import ModelValidationMixin
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.sentinel.catalog import SentinelCatalogMixin
@@ -25,6 +24,7 @@ from lake_workbench.utils import (
     parse_float,
 )
 from lake_workbench.water.annotations import WaterAnnotationsMixin
+from lake_workbench.water.local_labels import LocalLabelCatalogMixin
 
 
 @dataclass
@@ -38,24 +38,6 @@ class SiteRecord:
     center: tuple[float, float]
     properties: dict
     geometry: object
-
-    @property
-    def object_id(self) -> str:
-        """Compatibility alias for code written before sites became explicit."""
-        return self.site_id
-
-    @property
-    def lake_id(self) -> str:
-        return self.site_id
-
-    @property
-    def name(self) -> str:
-        return self.display_name
-
-    @property
-    def source(self) -> str:
-        return "local_imagery"
-
 
 class SiteCatalog(
     ImageryInventoryMixin,
@@ -80,9 +62,7 @@ class SiteCatalog(
         self.sentinel_tile_index = self._load_sentinel_tile_index()
         self._valid_ratio_cache: dict[str, float] = {}
         self.sites = self._load_sites()
-        self.lakes = self.sites
         self._site_lookup = self._build_site_lookup()
-        self._lake_lookup = self._site_lookup
         self.external_water_features = self._load_external_water_features()
         self._summary_cache = {site.site_id: self._build_summary(site) for site in self.sites}
         self._detail_cache: dict[str, dict] = {}
@@ -170,9 +150,6 @@ class SiteCatalog(
             "items": [self._summary(site) for site in page],
         }
 
-    def list_lakes(self, *args, **kwargs) -> dict:
-        return self.list_sites(*args, **kwargs)
-
     def _apply_filters(self, sites: list[SiteRecord], filters: dict) -> list[SiteRecord]:
         result = sites
         flag_fields = {
@@ -220,28 +197,16 @@ class SiteCatalog(
     def get_site(self, site_key: str) -> SiteRecord | None:
         return self._site_lookup.get(site_key)
 
-    def get_lake(self, lake_key: str) -> SiteRecord | None:
-        return self.get_site(lake_key)
-
     def get_site_detail(self, site: SiteRecord) -> dict:
         if site.site_id in self._detail_cache:
             return self._detail_cache[site.site_id]
         detail = {
             **self._summary(site),
             "properties": dict(site.properties),
-            "layers": {
-                "osm": self._osm_layer(site),
-                "hydrolakes": self._match_hydrolakes(site),
-                "esa": None,
-                "jrc": None,
-            },
             "geometry": mapping(site.geometry),
         }
         self._detail_cache[site.site_id] = detail
         return detail
-
-    def get_lake_detail(self, lake: SiteRecord) -> dict:
-        return self.get_site_detail(lake)
 
     def water_candidates_for_site(self, site: SiteRecord, source: str = ""):
         frame = self.external_water_features
@@ -282,20 +247,9 @@ class SiteCatalog(
             "external_feature_count": int(site.properties.get("external_feature_count") or 0),
             "has_imagery": int(site.properties.get("image_count") or 0) > 0,
             "has_tci": self._has_tci(site),
-            # Compatibility fields for persisted training data and legacy clients.
-            "lake_id": site.site_id,
-            "object_id": site.site_id,
-            "name": site.display_name,
-            "area_km2": site.area_km2,
-            "source": "local_imagery",
         }
 
     def _has_tci(self, site: SiteRecord) -> bool:
         if int(site.properties.get("image_count") or 0) > 0:
             return True
         return any(item["geometry"].intersects(box(*site.bbox)) for item in self.tci_footprints)
-
-
-# Compatibility names while scripts and legacy clients migrate to site terminology.
-LakeRecord = SiteRecord
-LakeCatalog = SiteCatalog
