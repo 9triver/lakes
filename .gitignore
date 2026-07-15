@@ -19,4 +19,4 @@ attic/
 # Frontend dependencies and generated production assets.
 frontend/node_modules/
 *.tsbuildinfo
-src/lake_workbench/static/dist/
+src/lake_workbench/static/

@@ -62,28 +62,7 @@ lakes/
     jobs.py                      下载、Patch 导出和训练后台任务
     paths.py                     项目根路径
     utils.py                     路径、CSV、参数解析和序列化工具
-    static/                       React 构建产物和 `/legacy/` 迁移对照代码
-      dist/                       React 构建产物，不纳入 Git
-      app.js                     页面状态、地图编排和事件绑定
-      api.js                     JSON HTTP 客户端
-      routing.js                 前端 URL 状态
-      formatters.js              纯格式化函数
-      model-ui.js                模型排序和详情渲染
-      map-ui.js                  OpenLayers 初始化、图层写入和地图视图控制
-      model-validation-controller.js
-                                模型列表、随机验证和预测结果控制
-      patch-review-controller.js
-                                Patch 筛选、分页、卡片和预览模态框
-      training-run-controller.js
-                                训练提交、轮询、指标、数据集和历史任务
-      training-samples-controller.js
-                                训练样本加载、编辑、定位和删除
-      patch-export-controller.js
-                                Patch 生成参数、任务提交和轮询
-      sentinel-download-controller.js
-                                Sentinel 产品查询、下载和任务轮询
-      index.html
-      styles.css
+    static/                       React 构建产物，不纳入 Git
   scripts/
     prepare_data.py              下载公共基础数据
     build_site_metadata.py       构建观测区域元数据库
@@ -96,7 +75,7 @@ lakes/
   data/                          大型数据和模型，不纳入 Git
 ```
 
-Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，仅用于迁移对照；它依赖的旧 `/lakes` API 已移除，不再作为可用回退前端维护。
+Python 服务默认在根地址提供构建后的 React 前端。
 
 React 前端覆盖观测区域筛选、深链接、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
 
@@ -176,7 +155,7 @@ npm install
 npm run dev
 ```
 
-Vite 默认运行于 `http://127.0.0.1:5173/static/dist/`，并将 `/api` 代理到 `18765`。也可以通过 Python 服务查看构建结果：`http://127.0.0.1:18765/static/dist/index.html`。生产构建执行：
+Vite 默认运行于 `http://127.0.0.1:5173/`，并将 `/api` 代理到 `18765`。生产构建会将 `index.html` 和 `assets/` 写入 `src/lake_workbench/static/`，随后由 Python 服务在 `http://127.0.0.1:18765/` 提供。生产构建执行：
 
 ```bash
 cd frontend
@@ -356,8 +335,6 @@ PYTHONPATH=src .venv/bin/python scripts/migrate_site_data.py
 PYTHONPATH=src .venv/bin/python -m compileall -q src scripts
 PYTHONPATH=src .venv/bin/python -m pyflakes src scripts tests
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_frontend_modules.mjs
-for file in src/lake_workbench/static/*.js; do node --check "$file"; done
 (cd frontend && npm run typecheck && npm run build)
 git diff --check
 ```

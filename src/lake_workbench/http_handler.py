@@ -66,10 +66,7 @@ class SiteHandler(BaseHTTPRequestHandler):
                 return
             if handle_site_get(self, path, parsed.query):
                 return
-            if path.startswith("/api/"):
-                self._error(HTTPStatus.NOT_FOUND, "Not found")
-            else:
-                self._serve_file(STATIC_DIR / "dist" / "index.html")
+            self._error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 

@@ -42,7 +42,7 @@ export function useContextWater(region: string, siteId: string) {
   return useQuery({ queryKey: ["context-water", region, siteId], queryFn: () => getJson<ContextWaterResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/context-water?padding=0.8&min_area_km2=10&limit=500`), enabled: Boolean(region && siteId) });
 }
 
-function useAnnotation<T extends GeoJsonLayer | FeatureCollection>(region: string, siteId: string, source: string, query = "") {
+function useAnnotation<T extends GeoJsonLayer | FeatureCollection>(region: string, siteId: string, source: string, query = "", enabled = true) {
   return useQuery({
     queryKey: ["annotation", region, siteId, source, query],
     queryFn: async () => (
@@ -50,7 +50,7 @@ function useAnnotation<T extends GeoJsonLayer | FeatureCollection>(region: strin
         `/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/annotations/${source}${query}`,
       )
     ).annotation,
-    enabled: Boolean(region && siteId),
+    enabled: Boolean(region && siteId && enabled),
     retry: false,
   });
 }
@@ -76,5 +76,5 @@ export function useLocalLabels(region: string, siteId: string) {
 }
 
 export function useLocalLabel(region: string, siteId: string, labelId: string) {
-  return useAnnotation<FeatureCollection>(region, siteId, "local", `?label_id=${encodeURIComponent(labelId)}`);
+  return useAnnotation<FeatureCollection>(region, siteId, "local", `?label_id=${encodeURIComponent(labelId)}`, Boolean(labelId));
 }

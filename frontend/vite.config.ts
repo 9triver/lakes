@@ -3,9 +3,9 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/static/dist/",
+  base: "/",
   build: {
-    outDir: "../src/lake_workbench/static/dist",
+    outDir: "../src/lake_workbench/static",
     emptyOutDir: true,
     rollupOptions: {
       output: {
