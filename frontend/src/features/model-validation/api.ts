@@ -14,6 +14,9 @@ export interface ModelOption {
   epoch?: number;
   in_channels?: number;
   base_channels?: number;
+  model_type?: "unet" | "pixel_mlp";
+  model_options?: Record<string, unknown>;
+  architecture_label?: string;
   best_iou?: number;
   best_epoch?: number;
   updated_at?: string;
@@ -27,7 +30,7 @@ export interface ModelValidationResult {
   region: string;
   site_id: string;
   site?: SiteSummary;
-  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; threshold?: number };
+  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number };
   prediction: FeatureCollection;
   stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
   imagery?: { tile?: string; product?: string; product_name?: string; date?: string; products?: string[]; tiles?: string[] };

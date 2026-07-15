@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train a baseline U-Net water segmentation model from exported patch npz files."""
+"""Train a registered water-segmentation model from exported patch npz files."""
 
 from __future__ import annotations
 
@@ -20,27 +20,32 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
+from lake_workbench.models.runtime import (  # noqa: E402
+    SUPPORTED_MODEL_TYPES,
+    architecture_label,
+    build_model,
+    model_options,
+    normalize_model_type,
+)
+from lake_workbench.training.datasets import split_rows_by_site  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs(DEFAULT_CONFIG_PATH)
 MODEL_ROOT = PROJECT_ROOT / "data" / "models"
 IGNORE_INDEX = 255
 torch = None
-nn = None
 F = None
 DataLoader = None
 Dataset = object
-UNet = None
 PatchDataset = None
 
 
 def init_torch() -> None:
-    global torch, nn, F, DataLoader, Dataset, UNet, PatchDataset
+    global torch, F, DataLoader, Dataset, PatchDataset
     if torch is not None:
         return
     try:
         import torch
-        import torch.nn as nn
         import torch.nn.functional as F
         from torch.utils.data import DataLoader, Dataset
     except ImportError as exc:
@@ -50,53 +55,6 @@ def init_torch() -> None:
             "  .venv/bin/python -m pip install torch\n"
             "Then rerun this script."
         ) from exc
-
-    class DoubleConv(nn.Module):
-        def __init__(self, in_channels: int, out_channels: int) -> None:
-            super().__init__()
-            self.block = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(out_channels),
-                nn.ReLU(inplace=True),
-            )
-
-        def forward(self, x):
-            return self.block(x)
-
-    class _UNet(nn.Module):
-        def __init__(self, in_channels: int, base_channels: int = 32) -> None:
-            super().__init__()
-            c = base_channels
-            self.down1 = DoubleConv(in_channels, c)
-            self.down2 = DoubleConv(c, c * 2)
-            self.down3 = DoubleConv(c * 2, c * 4)
-            self.down4 = DoubleConv(c * 4, c * 8)
-            self.pool = nn.MaxPool2d(2)
-            self.bottleneck = DoubleConv(c * 8, c * 16)
-            self.up4 = nn.ConvTranspose2d(c * 16, c * 8, kernel_size=2, stride=2)
-            self.conv4 = DoubleConv(c * 16, c * 8)
-            self.up3 = nn.ConvTranspose2d(c * 8, c * 4, kernel_size=2, stride=2)
-            self.conv3 = DoubleConv(c * 8, c * 4)
-            self.up2 = nn.ConvTranspose2d(c * 4, c * 2, kernel_size=2, stride=2)
-            self.conv2 = DoubleConv(c * 4, c * 2)
-            self.up1 = nn.ConvTranspose2d(c * 2, c, kernel_size=2, stride=2)
-            self.conv1 = DoubleConv(c * 2, c)
-            self.head = nn.Conv2d(c, 1, kernel_size=1)
-
-        def forward(self, x):
-            d1 = self.down1(x)
-            d2 = self.down2(self.pool(d1))
-            d3 = self.down3(self.pool(d2))
-            d4 = self.down4(self.pool(d3))
-            x = self.bottleneck(self.pool(d4))
-            x = self.conv4(torch.cat([self.up4(x), d4], dim=1))
-            x = self.conv3(torch.cat([self.up3(x), d3], dim=1))
-            x = self.conv2(torch.cat([self.up2(x), d2], dim=1))
-            x = self.conv1(torch.cat([self.up1(x), d1], dim=1))
-            return self.head(x)
 
     class _PatchDataset(Dataset):
         def __init__(self, rows: list[dict], normalization: Normalization, augment: bool = False) -> None:
@@ -123,7 +81,6 @@ def init_torch() -> None:
                 "patch_id": row.get("patch_id", ""),
             }
 
-    UNet = _UNet
     PatchDataset = _PatchDataset
 
 
@@ -139,6 +96,7 @@ class Normalization:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=sorted(REGIONS) + ["all"], default=DEFAULT_REGION_KEY)
+    parser.add_argument("--model-type", choices=SUPPORTED_MODEL_TYPES, default="unet")
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--patch-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -161,28 +119,37 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = train_unet(args)
+    result = train_model(args)
     if result:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
-def train_unet(args: argparse.Namespace, progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
+def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
     init_torch()
     seed_everything(args.seed)
+    selected_model_type = normalize_model_type(getattr(args, "model_type", "unet"))
     region = REGIONS[args.region] if args.region != "all" else None
     manifest = args.manifest or latest_manifest(region, args.patch_dir)
-    output_dir = args.output_dir or MODEL_ROOT / args.region / f"unet_{time.strftime('%Y%m%d_%H%M%S')}"
+    output_dir = args.output_dir or MODEL_ROOT / args.region / f"{selected_model_type}_{time.strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = load_manifest_rows(manifest)
     if not rows:
         raise SystemExit(f"no included training patches found: {manifest}")
     in_channels = patch_channels(rows[0])
-    train_rows, val_rows = split_rows_by_sample(rows, args.val_ratio, args.seed)
+    train_rows, val_rows = split_rows_by_site(rows, args.val_ratio, args.seed)
     normalization = compute_normalization(train_rows, max_patches=args.max_norm_patches)
     pos_weight = compute_pos_weight(train_rows) if args.pos_weight == "auto" else float(args.pos_weight)
+    selected_model_options = model_options(
+        selected_model_type,
+        {"base_channels": args.base_channels},
+    )
 
     config = {
+        "format_version": 2,
+        "model_type": selected_model_type,
+        "model_options": selected_model_options,
+        "architecture_label": architecture_label(selected_model_type, in_channels, selected_model_options),
         "scope": args.region,
         "region": args.region if args.region != "all" else "",
         "regions": sorted(REGIONS) if args.region == "all" else [args.region],
@@ -192,19 +159,24 @@ def train_unet(args: argparse.Namespace, progress_callback=None, cancel_event: t
         "batch_size": args.batch_size,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
-        "base_channels": args.base_channels,
         "val_ratio": args.val_ratio,
+        "split_group": "site_id",
         "seed": args.seed,
         "threshold": args.threshold,
-        "no_augment": bool(args.no_augment),
+        "no_augment": selected_model_type == "pixel_mlp" or bool(args.no_augment),
+        "augmentation_enabled": selected_model_type == "unet" and not args.no_augment,
         "device_requested": args.device,
         "max_norm_patches": args.max_norm_patches,
         "in_channels": in_channels,
         "train_count": len(train_rows),
         "val_count": len(val_rows),
+        "train_site_count": len({row.get("site_id") for row in train_rows if row.get("site_id")}),
+        "val_site_count": len({row.get("site_id") for row in val_rows if row.get("site_id")}),
         "normalization": normalization.to_json(),
         "pos_weight": pos_weight,
     }
+    if selected_model_type == "unet":
+        config["base_channels"] = args.base_channels
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     emit_progress(progress_callback, "configured", message="训练配置已生成", progress=5, config=config)
     if args.dry_run:
@@ -218,13 +190,13 @@ def train_unet(args: argparse.Namespace, progress_callback=None, cancel_event: t
     device = choose_device(args.device)
     config["device"] = str(device)
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    model = UNet(in_channels=in_channels, base_channels=args.base_channels).to(device)
+    model = build_model(selected_model_type, in_channels, selected_model_options).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=4)
     pos_weight_tensor = torch.tensor([pos_weight], dtype=torch.float32, device=device)
 
     train_loader = DataLoader(
-        PatchDataset(train_rows, normalization, augment=not args.no_augment),
+        PatchDataset(train_rows, normalization, augment=selected_model_type == "unet" and not args.no_augment),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -396,21 +368,6 @@ def latest_manifest(region, patch_dir: Path | None) -> Path:
     return manifests[0]
 
 
-def split_rows_by_sample(rows: list[dict], val_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
-    groups: dict[str, list[dict]] = {}
-    for row in rows:
-        groups.setdefault(row.get("sample_id") or row.get("patch_id") or "", []).append(row)
-    keys = list(groups)
-    random.Random(seed).shuffle(keys)
-    val_group_count = 0 if len(keys) <= 1 else max(1, round(len(keys) * val_ratio))
-    val_keys = set(keys[:val_group_count])
-    train = [row for key in keys if key not in val_keys for row in groups[key]]
-    val = [row for key in keys if key in val_keys for row in groups[key]]
-    if not train and val:
-        train, val = val, []
-    return train, val
-
-
 def compute_normalization(rows: list[dict], max_patches: int = 0) -> Normalization:
     selected = rows if max_patches <= 0 else rows[:max_patches]
     sums = None
@@ -531,6 +488,10 @@ def display_path(path: Path) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+
+# Compatibility for callers that imported the old training function directly.
+train_unet = train_model
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 Lakes 是一个面向多区域遥感观测、水体标注和语义分割训练的本地 Web GIS。
 
-系统将观测区域元数据库、本地影像、按需下载的 Sentinel-2 产品、外部水体数据和 U-Net 训练流程组织在同一个工作台中。一个观测区域可以包含多个水体，也可以与其他观测区域覆盖同一个水体。
+系统将观测区域元数据库、本地影像、按需下载的 Sentinel-2 产品、外部水体数据和多模型训练流程组织在同一个工作台中。一个观测区域可以包含多个水体，也可以与其他观测区域覆盖同一个水体。
 
 ## 功能
 
@@ -12,7 +12,7 @@ Lakes 是一个面向多区域遥感观测、水体标注和语义分割训练�
 - 捕获当前地图视图和可见标注，记录训练区域。
 - 检测重复或高度相似的训练视图。
 - 为新增训练样本增量生成 Patch，并审核 include/exclude 状态。
-- 按区域或全部区域训练 U-Net。
+- 按区域或全部区域训练 U-Net 或逐像元 Pixel MLP。
 - 浏览历史训练任务、指标和模型权重。
 - 随机选择观测区域进行模型验证，并将失败案例重新加入训练集。
 
@@ -44,7 +44,8 @@ lakes/
     models/
       metadata.py                模型权重发现、训练指标和持久化任务元数据
       validation.py              模型发现、推理缓存和随机验证
-      unet.py                    U-Net checkpoint 加载和推理
+      runtime.py                 模型注册、checkpoint 加载和通用推理
+      unet.py                    U-Net 兼容导出
     regions/
       config.py                  区域配置和标准数据路径
       service.py                 跨区域列表、训练数据和模型验证聚合
@@ -52,7 +53,7 @@ lakes/
       catalog.py                 训练样本和 Patch 的区域级持久化操作
       identity.py                训练视图签名和范围相似度
       datasets.py                Patch manifest 和训练数据集摘要
-      runner.py                  Patch 导出和 U-Net 训练任务适配
+      runner.py                  Patch 导出和多模型训练任务适配
     water/
       annotations.py             site 水体标注的统一编排与结果契约
       providers.py               OSM/HydroLAKES/ESA/JRC/Local Label provider registry
@@ -89,7 +90,8 @@ lakes/
     build_site_metadata.py       构建观测区域元数据库
     site_metadata_sources.py     OSM、HydroLAKES 和 Sentinel 数据读取辅助
     export_training_patches.py   全量或增量生成 Patch
-    train_unet.py                训练 U-Net
+    train_model.py               训练已注册的分割模型
+    train_unet.py                训练引擎和 U-Net 兼容入口
     download_sentinel.py         命令行 Sentinel 查询/下载
     precompute_*.py              预生成 ESA/JRC polygon
     migrate_site_data.py         将历史持久化数据迁移为 site 规范字段
@@ -272,7 +274,7 @@ PYTHONPATH=src .venv/bin/python scripts/precompute_jrc_polygons.py \
 4. 系统检测严格重复和视图范围高度重叠的相似样本。
 5. 新样本自动按 `256 x 256`、stride `128` 增量生成 Patch。
 6. 在 Patch 页面审核并设置 include/exclude。
-7. 在训练页面按当前区域或全部区域启动 U-Net。
+7. 在训练页面按当前区域或全部区域启动 U-Net 或 Pixel MLP。
 8. 在模型验证页面选择权重并随机验证观测区域。
 9. 对预测较差的区域重新选择可信标注并补入训练集。
 
@@ -296,15 +298,18 @@ PYTHONPATH=src .venv/bin/python scripts/export_training_patches.py \
 
 命令会保留其他样本的 manifest 行以及已有 Patch 的 include/exclude 状态。
 
-手工训练：
+手工训练 Pixel MLP：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/train_unet.py \
-  --region all \
+PYTHONPATH=src .venv/bin/python scripts/train_model.py \
+  --region gansu \
+  --model-type pixel_mlp \
   --epochs 30 \
   --batch-size 8 \
   --device cuda
 ```
+
+使用 `--model-type unet` 训练 U-Net；原 `scripts/train_unet.py` 仍作为默认选择 U-Net 的兼容入口。两种模型使用相同的 Patch、BCE、IoU/Dice 和 checkpoint 格式。Pixel MLP 固定为逐像元 `5 -> 32 -> 16 -> 1`，不使用空间邻域；训练和验证按完整 `site_id` 切分，避免同一观测地点同时出现在两侧。
 
 ## API 约定
 
@@ -356,8 +361,6 @@ PYTHONPATH=src .venv/bin/python scripts/migrate_site_data.py
 PYTHONPATH=src .venv/bin/python -m compileall -q src scripts
 PYTHONPATH=src .venv/bin/python -m pyflakes src scripts tests
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test_frontend_modules.mjs
-for file in src/lake_workbench/static/*.js; do node --check "$file"; done
 (cd frontend && npm run typecheck && npm run build)
 git diff --check
 ```

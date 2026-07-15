@@ -9,6 +9,7 @@ import { TrainingCapture } from "../training-samples/TrainingCapture";
 import { type ModelOption, useSiteModelPrediction, useRandomModelValidation, useValidationModels } from "./api";
 
 function metric(value?: number, digits = 4) { return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-"; }
+function modelLabel(value?: string) { return value === "pixel_mlp" ? "Pixel MLP" : "U-Net"; }
 
 function ModelDetail({ model }: { model?: ModelOption }) {
   if (!model) return null;
@@ -17,7 +18,8 @@ function ModelDetail({ model }: { model?: ModelOption }) {
     ["范围", model.scope === "all" ? "全部区域" : model.scope || model.region || "-"],
     ["Best IoU", metric(model.best_iou)], ["Best epoch", model.best_epoch || "-"],
     ["最新 val IoU", metric(model.latest?.val?.iou)], ["最新 train IoU", metric(model.latest?.train?.iou)],
-    ["输入", `${model.in_channels || "-"} 波段 · 宽度 ${model.base_channels || "-"}`],
+    ["模型", modelLabel(model.model_type)],
+    ["输入", `${model.in_channels || "-"} 波段 · ${model.architecture_label || `U-Net (base ${model.base_channels || "-"})`}`],
     ["训练 / 验证", config.train_count != null ? `${config.train_count} / ${config.val_count || 0}` : "-"],
     ["权重", model.weight || "-"], ["路径", model.path || "-"],
   ];

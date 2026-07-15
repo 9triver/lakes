@@ -1,6 +1,7 @@
 """Training patch manifests and dataset summaries."""
 
 import json
+import random
 import time
 from pathlib import Path
 
@@ -18,6 +19,23 @@ from lake_workbench.utils import (
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
+
+
+def split_rows_by_site(rows: list[dict], val_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
+    """Split complete observation sites so related patches cannot cross the boundary."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        group_key = row.get("site_id") or row.get("sample_id") or row.get("patch_id") or ""
+        groups.setdefault(group_key, []).append(row)
+    keys = list(groups)
+    random.Random(seed).shuffle(keys)
+    val_group_count = 0 if len(keys) <= 1 else max(1, round(len(keys) * val_ratio))
+    val_keys = set(keys[:val_group_count])
+    train = [row for key in keys if key not in val_keys for row in groups[key]]
+    val = [row for key in keys if key in val_keys for row in groups[key]]
+    if not train and val:
+        train, val = val, []
+    return train, val
 
 
 def latest_patch_manifest_for_region(region: RegionConfig) -> Path:

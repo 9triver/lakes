@@ -25,7 +25,7 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from lake_workbench.geo import boxes_intersect, transform_geom
-from lake_workbench.models.unet import predict_array
+from lake_workbench.models.runtime import predict_array
 from lake_workbench.paths import PROJECT_ROOT
 
 

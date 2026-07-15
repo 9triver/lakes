@@ -20,7 +20,7 @@ from lake_workbench.models.metadata import (
     model_sort_key,
     model_training_metadata,
 )
-from lake_workbench.models.unet import load_unet_checkpoint
+from lake_workbench.models.runtime import load_model_checkpoint
 from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.utils import clean_optional, display_path, safe_filename
 
@@ -47,7 +47,7 @@ class ModelValidationMixin:
             key = self._model_key(path)
             label = f"{path.parent.name}/{path.name}" if not legacy else f"旧目录 / {path.parent.name}/{path.name}"
             try:
-                model = load_unet_checkpoint(path)
+                model = load_model_checkpoint(path)
                 item = {
                     "key": key,
                     "label": label,
@@ -57,6 +57,9 @@ class ModelValidationMixin:
                     "epoch": model.epoch,
                     "in_channels": model.in_channels,
                     "base_channels": model.base_channels,
+                    "model_type": model.model_type,
+                    "model_options": model.model_options,
+                    "architecture_label": model.architecture_label,
                     "scope": self.region.key,
                     "legacy": legacy,
                     "default": path.resolve() == default_path.resolve(),
@@ -82,7 +85,7 @@ class ModelValidationMixin:
             key = global_model_key(path)
             label = f"全部区域 / {path.parent.name}/{path.name}"
             try:
-                model = load_unet_checkpoint(path)
+                model = load_model_checkpoint(path)
                 item = {
                     "key": key,
                     "label": label,
@@ -92,6 +95,9 @@ class ModelValidationMixin:
                     "epoch": model.epoch,
                     "in_channels": model.in_channels,
                     "base_channels": model.base_channels,
+                    "model_type": model.model_type,
+                    "model_options": model.model_options,
+                    "architecture_label": model.architecture_label,
                     "scope": "all",
                     "legacy": False,
                     "default": False,
@@ -187,6 +193,9 @@ class ModelValidationMixin:
                 "epoch": model.epoch,
                 "in_channels": model.in_channels,
                 "base_channels": model.base_channels,
+                "model_type": model.model_type,
+                "model_options": model.model_options,
+                "architecture_label": model.architecture_label,
                 "threshold": threshold,
             },
             "imagery": {
@@ -205,7 +214,7 @@ class ModelValidationMixin:
         model_path = self._model_path_from_key(model_key)
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found for {self.region.key}: {display_path(model_path)}")
-        return load_unet_checkpoint(model_path)
+        return load_model_checkpoint(model_path)
 
     def _default_model_path(self) -> Path:
         preferred = self.region.model_dir / "unet_current_v1" / "best.pt"

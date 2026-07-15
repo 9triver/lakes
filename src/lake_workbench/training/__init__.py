@@ -5,6 +5,7 @@ from lake_workbench.training.datasets import (
     dataset_summary_from_config,
     latest_patch_manifest_for_region,
     merge_training_dataset_summaries,
+    split_rows_by_site,
     summarize_training_manifest,
 )
 from lake_workbench.training.identity import bbox_from_row, bbox_iou, training_view_signature
@@ -44,6 +45,7 @@ __all__ = [
     "persisted_training_job",
     "run_patch_export",
     "run_training_job",
+    "split_rows_by_site",
     "summarize_training_manifest",
     "training_view_signature",
 ]

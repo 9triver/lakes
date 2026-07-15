@@ -13,7 +13,7 @@ from lake_workbench.models.metadata import (
     model_sort_key,
     model_training_metadata,
 )
-from lake_workbench.models.unet import load_unet_checkpoint
+from lake_workbench.models.runtime import load_model_checkpoint
 from lake_workbench.paths import PROJECT_ROOT
 
 
@@ -132,7 +132,7 @@ class RegionService:
             key = global_model_key(path)
             label = f"全部区域 / {path.parent.name}/{path.name}"
             try:
-                model = load_unet_checkpoint(path)
+                model = load_model_checkpoint(path)
                 item = {
                     "key": key,
                     "label": label,
@@ -142,6 +142,9 @@ class RegionService:
                     "epoch": model.epoch,
                     "in_channels": model.in_channels,
                     "base_channels": model.base_channels,
+                    "model_type": model.model_type,
+                    "model_options": model.model_options,
+                    "architecture_label": model.architecture_label,
                     "region": "all",
                     "region_name": "全部区域",
                     "scope": "all",
@@ -210,7 +213,7 @@ class RegionService:
         model_path = global_model_path_from_key(model_key)
         if not model_path.exists():
             raise FileNotFoundError(f"Global model not found: {display_path(model_path)}")
-        model = load_unet_checkpoint(model_path)
+        model = load_model_checkpoint(model_path)
         catalogs = list(self.catalogs.items())
         random.shuffle(catalogs)
         skipped = []

@@ -37,6 +37,7 @@ export interface TrainingRun {
 
 export interface TrainingOptions {
   run_name: string;
+  model_type: "unet" | "pixel_mlp";
   epochs: number;
   batch_size: number;
   lr: number;

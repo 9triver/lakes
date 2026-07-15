@@ -1,4 +1,4 @@
-"""Patch export and U-Net training job adapters."""
+"""Patch export and registered model training job adapters."""
 
 import argparse
 import contextlib
@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.models.runtime import normalize_model_type
 from lake_workbench.regions.config import load_region_configs
 from lake_workbench.training.datasets import latest_patch_manifest_for_region
 from lake_workbench.utils import (
@@ -84,7 +85,8 @@ def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
     scope = scope if scope == "all" else (scope if scope in REGIONS else DEFAULT_REGION_KEY)
-    run_name = safe_filename(clean_optional(options.get("run_name")) or f"unet_{time.strftime('%Y%m%d_%H%M%S')}")
+    model_type = normalize_model_type(options.get("model_type") or "unet")
+    run_name = safe_filename(clean_optional(options.get("run_name")) or f"{model_type}_{time.strftime('%Y%m%d_%H%M%S')}")
     output_dir = PROJECT_ROOT / "data" / "models" / scope / run_name
     manifest_text = clean_optional(options.get("manifest")) or ""
     patch_dir_text = clean_optional(options.get("patch_dir")) or ""
@@ -94,6 +96,7 @@ def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
         manifest = build_combined_training_manifest(output_dir)
     return argparse.Namespace(
         region=scope,
+        model_type=model_type,
         manifest=manifest,
         patch_dir=patch_dir,
         output_dir=output_dir,
@@ -138,6 +141,6 @@ def run_training_job(scope: str, options: dict, progress_callback=None, cancel_e
     scripts_dir = PROJECT_ROOT / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
-    from train_unet import train_unet
+    from train_unet import train_model
 
-    return train_unet(prepare_training_args(scope, options), progress_callback=progress_callback, cancel_event=cancel_event)
+    return train_model(prepare_training_args(scope, options), progress_callback=progress_callback, cancel_event=cancel_event)

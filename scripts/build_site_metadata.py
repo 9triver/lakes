@@ -114,9 +114,17 @@ def build_site_metadata(
     for index, site_dir in enumerate(site_dirs, start=1):
         site_id = f"{region.key}_{site_dir.name}"
         paths = sorted(site_dir.glob("*.img"))
-        if not paths:
+        assets = []
+        for path in paths:
+            if path.stat().st_size == 0:
+                print(f"[{region.key}] skip empty imagery {site_id}/{path.name}")
+                continue
+            try:
+                assets.append(inspect_imagery_asset(site_id, path, sentinel_index, footprint_size))
+            except (OSError, rasterio.errors.RasterioIOError) as exc:
+                print(f"[{region.key}] skip unreadable imagery {site_id}/{path.name}: {exc}")
+        if not assets:
             continue
-        assets = [inspect_imagery_asset(site_id, path, sentinel_index, footprint_size) for path in paths]
         assets.sort(key=lambda item: (item["acquisition_date"], item["filename"]))
         default_asset = assets[-1]
         default_asset["is_default"] = 1

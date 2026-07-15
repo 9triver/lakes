@@ -10,7 +10,7 @@ venv/
 .env
 
 # Large geospatial assets are managed outside Git.
-data/
+/data
 attic/
 
 # Local run artifacts.
@@ -18,5 +18,6 @@ attic/
 
 # Frontend dependencies and generated production assets.
 frontend/node_modules/
+frontend/dist/
 *.tsbuildinfo
 src/lake_workbench/static/dist/
