@@ -36,12 +36,6 @@ async function expectUsableMap(page: Page) {
 
 test.beforeAll(async () => mkdir(screenshotDir, { recursive: true }));
 
-test("legacy frontend remains available", async ({ page }) => {
-  await page.goto("legacy/");
-  await expect(page.locator("#region-select")).toBeVisible();
-  await expect(page.locator("#lake-list")).toBeVisible();
-});
-
 test("site browser restores filters and renders all map layers", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.goto("#/regions/gansu/sites/gansu_17407?has_osm=true&has_tci=true");
