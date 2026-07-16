@@ -68,6 +68,31 @@ def handle_site_get(handler, path: str, query_string: str) -> bool:
             except FileNotFoundError:
                 payload = blank_png(256)
             handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")
+    elif re.fullmatch(r"/api/sites/[^/]+/logical-patch-source/meta", path):
+        site = _site(handler, path.split("/")[-3])
+        patch_id = params.get("patch_id", [""])[0]
+        if site is not None:
+            try:
+                patch = handler.catalog.logical_patch_by_id(patch_id)
+                if patch.get("site_id") != site.site_id:
+                    raise KeyError(f"logical patch does not belong to site: {patch_id}")
+                handler._json(handler.catalog.logical_patch_source_meta(patch_id))
+            except (KeyError, FileNotFoundError) as exc:
+                handler._error(HTTPStatus.NOT_FOUND, str(exc))
+    elif re.fullmatch(r"/api/sites/[^/]+/logical-patch-source/tiles/\d+/\d+/\d+\.png", path):
+        match = re.fullmatch(r"/api/sites/([^/]+)/logical-patch-source/tiles/(\d+)/(\d+)/(\d+)\.png", path)
+        site = _site(handler, match.group(1))
+        patch_id = params.get("patch_id", [""])[0]
+        if site is not None:
+            try:
+                patch = handler.catalog.logical_patch_by_id(patch_id)
+                if patch.get("site_id") != site.site_id:
+                    raise KeyError(f"logical patch does not belong to site: {patch_id}")
+                with TILE_RENDER_SEMAPHORE:
+                    payload = handler.catalog.logical_patch_source_tile(patch_id, int(match.group(2)), int(match.group(3)), int(match.group(4)))
+            except (KeyError, FileNotFoundError):
+                payload = blank_png(256)
+            handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")
     elif re.fullmatch(r"/api/sites/[^/]+/annotations/[^/]+", path):
         parts = path.split("/")
         site = _site(handler, parts[-3])

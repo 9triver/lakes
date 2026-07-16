@@ -31,7 +31,6 @@ class SentinelCatalogMixin:
                     "tile": tile,
                     "downloaded": row is not None,
                     "site_coverage_ratio": coverage,
-                    "site_coverage_ratio": coverage,
                     "aoi_coverage_ratio": coverage,
                     "geometry": mapping(tile_geom) if tile_geom is not None else None,
                     "date": row.get("date") if row else None,

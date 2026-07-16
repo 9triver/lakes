@@ -50,46 +50,29 @@ lakes/
       config.py                  区域配置和标准数据路径
       service.py                 跨区域列表、训练数据和模型验证聚合
     training/
-      catalog.py                 训练样本和 Patch 的区域级持久化操作
+      catalog.py                 训练样本和逻辑 Patch 的区域级持久化操作
       identity.py                训练视图签名和范围相似度
-      datasets.py                Patch manifest 和训练数据集摘要
-      runner.py                  Patch 导出和多模型训练任务适配
+      logical_patches.py         512 逻辑网格和具名训练数据构建
+      datasets.py                训练数据 manifest 和摘要
+      runner.py                  数据构建和多模型训练任务适配
     water/
       annotations.py             site 水体标注的统一编排与结果契约
       providers.py               OSM/HydroLAKES/ESA/JRC/Local Label provider registry
       local_labels.py            本地 Shapefile 标注发现和 GeoJSON 转换
       layers.py                  ESA/JRC 栅格读取、多边形生成和缓存
     geo.py                       坐标转换、覆盖率和几何处理
-    jobs.py                      下载、Patch 导出和训练后台任务
+    jobs.py                      下载、数据构建和训练后台任务
     paths.py                     项目根路径
     utils.py                     路径、CSV、参数解析和序列化工具
-    static/                       React 构建产物和 `/legacy/` 迁移对照代码
+    static/                       指向 frontend 的兼容符号链接
       dist/                       React 构建产物，不纳入 Git
-      app.js                     页面状态、地图编排和事件绑定
-      api.js                     JSON HTTP 客户端
-      routing.js                 前端 URL 状态
-      formatters.js              纯格式化函数
-      model-ui.js                模型排序和详情渲染
-      map-ui.js                  OpenLayers 初始化、图层写入和地图视图控制
-      model-validation-controller.js
-                                模型列表、随机验证和预测结果控制
-      patch-review-controller.js
-                                Patch 筛选、分页、卡片和预览模态框
-      training-run-controller.js
-                                训练提交、轮询、指标、数据集和历史任务
-      training-samples-controller.js
-                                训练样本加载、编辑、定位和删除
-      patch-export-controller.js
-                                Patch 生成参数、任务提交和轮询
-      sentinel-download-controller.js
-                                Sentinel 产品查询、下载和任务轮询
-      index.html
-      styles.css
   scripts/
     prepare_data.py              下载公共基础数据
     build_site_metadata.py       构建观测区域元数据库
     site_metadata_sources.py     OSM、HydroLAKES 和 Sentinel 数据读取辅助
-    export_training_patches.py   全量或增量生成 Patch
+    build_logical_patches.py     构建固定 512 x 512 逻辑 Patch
+    build_training_dataset.py    从逻辑 Patch 物化具名训练数据
+    export_training_patches.py   旧 ps256_st128 数据导出器，仅用于历史数据
     train_model.py               训练已注册的分割模型
     train_unet.py                训练引擎和 U-Net 兼容入口
     download_sentinel.py         命令行 Sentinel 查询/下载
@@ -98,7 +81,7 @@ lakes/
   data/                          大型数据和模型，不纳入 Git
 ```
 
-Python 服务默认在根地址提供 React 前端。原生 JavaScript 前端暂时保留在 `/legacy/`，仅用于迁移对照；它依赖的旧 `/lakes` API 已移除，不再作为可用回退前端维护。
+Python 服务默认在根地址提供 React 前端。
 
 React 前端覆盖观测区域筛选、深链接、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
 
@@ -279,31 +262,21 @@ PYTHONPATH=src .venv/bin/python scripts/precompute_jrc_polygons.py \
 2. 打开可信的 OSM、HydroLAKES、ESA、JRC 或本地标注。
 3. 记录当前视图为训练区域。
 4. 系统检测严格重复和视图范围高度重叠的相似样本。
-5. 新样本自动按 `256 x 256`、stride `128` 增量生成 Patch。
-6. 在 Patch 页面审核并设置 include/exclude。
-7. 在训练页面按当前区域或全部区域启动 U-Net 或 Pixel MLP。
+5. 新样本自动生成固定 `512 x 512`、无重叠的逻辑 Patch。
+6. 在区域地图或训练集页面审核逻辑 Patch 的 include/exclude。
+7. 显式构建 `resize256_v1` 或 `native512_v1` 训练数据后启动 U-Net 或 Pixel MLP。
 8. 在模型验证页面选择权重并随机验证观测区域。
 9. 对预测较差的区域重新选择可信标注并补入训练集。
 
-手工生成 Patch：
+手工重建逻辑 Patch 和训练数据：
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/export_training_patches.py \
-  --region yunnan \
-  --patch-size 256 \
-  --stride 128 \
-  --preview-scale 2
+.venv/bin/python scripts/build_logical_patches.py --region yunnan
+.venv/bin/python scripts/build_training_dataset.py --region yunnan --config resize256_v1
+.venv/bin/python scripts/build_training_dataset.py --region yunnan --config native512_v1
 ```
 
-只更新一个样本：
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/export_training_patches.py \
-  --region yunnan \
-  --sample-id yunnan_18292_dba0c430b7d0
-```
-
-命令会保留其他样本的 manifest 行以及已有 Patch 的 include/exclude 状态。
+重建逻辑目录会按稳定 ID 保留已有 include/exclude 状态。实际训练数据是只读派生产物，逻辑状态或配置变化后必须重新构建。
 
 手工训练 Pixel MLP：
 
@@ -311,6 +284,7 @@ PYTHONPATH=src .venv/bin/python scripts/export_training_patches.py \
 PYTHONPATH=src .venv/bin/python scripts/train_model.py \
   --region gansu \
   --model-type pixel_mlp \
+  --dataset-config resize256_v1 \
   --epochs 30 \
   --batch-size 8 \
   --device cuda

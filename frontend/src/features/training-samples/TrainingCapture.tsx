@@ -53,11 +53,11 @@ export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imag
       if (result.patch_job?.job_id) {
         let job = await getJson<{ status: string; message?: string; result?: { patches?: number } }>(`/api/regions/${encodeURIComponent(region)}/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`);
         while (!["completed", "failed"].includes(job.status)) {
-          setMessage(job.message || "正在生成 Patch");
+          setMessage(job.message || "正在生成逻辑 Patch");
           await new Promise((resolve) => setTimeout(resolve, 1500));
           job = await getJson(`/api/regions/${encodeURIComponent(region)}/training-patches/export-jobs/${encodeURIComponent(result.patch_job!.job_id!)}`);
         }
-        if (job.status === "failed") throw new Error(job.message || "训练区域已保存，但 Patch 生成失败");
+        if (job.status === "failed") throw new Error(job.message || "训练区域已保存，但逻辑 Patch 生成失败");
         return { result, patches: job.result?.patches || 0 };
       }
       return { result, patches: null };
@@ -65,10 +65,11 @@ export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imag
     onSuccess: async ({ result, patches }) => {
       const similar = result.sample.similar_samples?.length || 0;
       const action = result.sample.duplicate ? "已更新已有训练区域" : "已记录训练区域";
-      setMessage(`${action}${patches == null ? "" : `，生成 ${patches} 个 Patch`}${similar ? `，${similar} 个相似视图` : ""}`);
+      setMessage(`${action}${patches == null ? "" : `，生成 ${patches} 个逻辑 Patch`}${similar ? `，${similar} 个相似视图` : ""}`);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["training-samples"] }),
-        queryClient.invalidateQueries({ queryKey: ["training-patches"] }),
+        queryClient.invalidateQueries({ queryKey: ["logical-patches"] }),
+        queryClient.invalidateQueries({ queryKey: ["training-datasets"] }),
         queryClient.invalidateQueries({ queryKey: ["sites"] }),
       ]);
     },

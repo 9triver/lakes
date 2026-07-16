@@ -125,6 +125,29 @@ class RegionService:
             "all_regions": True,
         }
 
+    def all_logical_patches_payload(self, include: str = "", site_id: str = "") -> dict:
+        items = []
+        for key, catalog in self.catalogs.items():
+            payload = catalog.list_logical_patches(include=include, site_id=site_id)
+            items.extend({**item, "region": key, "region_name": catalog.region.name} for item in payload["items"])
+        items.sort(key=lambda item: (item.get("region", ""), item.get("sample_id", ""), int(item.get("image_index") or 0), int(item.get("row_off") or 0), int(item.get("col_off") or 0)))
+        included_count = sum(1 for item in items if item["included"])
+        return {"total": len(items), "included_count": included_count, "excluded_count": len(items) - included_count, "items": items, "all_regions": True}
+
+    def all_training_dataset_statuses(self) -> dict:
+        configs = {}
+        for key, catalog in self.catalogs.items():
+            for item in catalog.training_dataset_statuses()["items"]:
+                aggregate = configs.setdefault(item["config_id"], {"config": item["config"], "config_id": item["config_id"], "regions": [], "patches": 0})
+                aggregate["regions"].append({"region": key, "status": item["status"], "patches": item["patches"]})
+                aggregate["patches"] += item["patches"]
+        items = []
+        for aggregate in configs.values():
+            statuses = {item["status"] for item in aggregate["regions"] if item["status"] != "missing_logical"}
+            status = "ready" if statuses and statuses == {"ready"} else "stale" if "stale" in statuses else "missing"
+            items.append({**aggregate, "status": status, "ready": status == "ready"})
+        return {"region": "all", "items": sorted(items, key=lambda item: item["config_id"])}
+
     def all_model_validation_models_payload(self) -> dict:
         items = []
         default_key = ""

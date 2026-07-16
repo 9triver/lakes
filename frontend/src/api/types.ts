@@ -26,6 +26,7 @@ export interface SiteSummary {
   metadata_quality?: string;
   best_tci_date?: string;
   usable_training_patch_count?: number;
+  included_logical_patch_count?: number;
 }
 
 export interface SitesResponse {
@@ -48,6 +49,8 @@ export interface GeoJsonLayer {
   properties?: Record<string, unknown>;
 }
 
+export type GeoJsonGeometry = Record<string, unknown>;
+
 export interface FeatureCollection {
   type: "FeatureCollection";
   features: Array<{ type: "Feature"; geometry: Record<string, unknown>; properties?: Record<string, unknown> }>;
@@ -60,12 +63,13 @@ export interface SiteDetail extends SiteSummary {
 }
 
 export interface TileMeta {
+  bounds?: [number, number, number, number];
   site_bounds?: [number, number, number, number];
-  tile_bounds: [number, number, number, number];
+  tile_bounds?: [number, number, number, number];
   tile_url: string;
-  tiles: string[];
-  dates: string[];
-  products: string[];
+  tiles?: string[];
+  dates?: string[];
+  products?: string[];
 }
 
 export interface ContextWaterResponse {
@@ -146,4 +150,12 @@ export interface TrainingPatch {
   ignore_pixels?: number;
   product_name?: string;
   image_path?: string;
+  product_date?: string;
+  label_source?: string;
+  label_sources?: string;
+  label_scope?: string;
+  mask_policy?: string;
+  logical_patch_id?: string;
+  image_index?: number | string;
+  geometry?: GeoJsonGeometry | null;
 }

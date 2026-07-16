@@ -8,9 +8,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lake_workbench.geo import site_aoi_geometry
+import rasterio
+from rasterio.warp import transform_bounds
+from shapely.geometry import box, mapping
+
+from lake_workbench.geo import site_aoi_geometry, transform_geom
+from lake_workbench.imagery.raster import blank_png, render_tci_xyz_tile, xyz_tile_bounds
 from lake_workbench.sentinel.download import upsert_csv_row
 from lake_workbench.training.identity import bbox_from_row, bbox_iou, training_view_signature
+from lake_workbench.training.logical_patches import dataset_configs, training_dataset_status
 from lake_workbench.utils import (
     clean_optional,
     count_values,
@@ -268,18 +274,40 @@ class TrainingCatalogMixin:
         if len(kept) == len(rows):
             raise KeyError(f"training sample not found: {sample_id}")
         write_csv_records(self.region.training_samples, kept)
-        return {"sample_id": sample_id, "deleted": True}
+        logical_rows = read_csv_records(self.region.logical_patch_manifest)
+        removed = [row for row in logical_rows if row.get("sample_id") == sample_id]
+        if removed:
+            write_csv_records(
+                self.region.logical_patch_manifest,
+                [row for row in logical_rows if row.get("sample_id") != sample_id],
+            )
+            for row in removed:
+                preview = resolve_data_path(row.get("preview_path", ""), self.region)
+                preview.unlink(missing_ok=True)
+        self._usable_training_patch_counts_cache = None
+        return {"sample_id": sample_id, "deleted": True, "logical_patches_deleted": len(removed)}
 
-    def list_training_patches(self, include: str = "") -> dict:
+    def list_logical_patches(
+        self,
+        include: str = "",
+        site_id: str = "",
+        sample_id: str = "",
+        image_index: str = "",
+    ) -> dict:
         rows = []
-        for manifest_path in self.training_patch_manifest_paths():
-            for row in read_csv_records(manifest_path):
-                item = self._training_patch_summary(row, manifest_path)
-                if include == "included" and not item["included"]:
-                    continue
-                if include == "excluded" and item["included"]:
-                    continue
-                rows.append(item)
+        for row in read_csv_records(self.region.logical_patch_manifest):
+            item = self._logical_patch_summary(row)
+            if include == "included" and not item["included"]:
+                continue
+            if include == "excluded" and item["included"]:
+                continue
+            if site_id and item.get("site_id") != site_id:
+                continue
+            if sample_id and item.get("sample_id") != sample_id:
+                continue
+            if image_index != "" and str(item.get("image_index")) != str(image_index):
+                continue
+            rows.append(item)
         rows.sort(key=lambda item: (item.get("sample_id", ""), int(item.get("row_off") or 0), int(item.get("col_off") or 0)))
         included_count = sum(1 for item in rows if item["included"])
         return {
@@ -289,97 +317,134 @@ class TrainingCatalogMixin:
             "items": rows,
         }
 
-    def usable_training_patch_counts(self) -> dict[str, int]:
-        manifests = self.training_patch_manifest_paths()
-        if not manifests:
-            return {}
-        manifest_path = manifests[0]
-        stat = manifest_path.stat()
-        signature = (str(manifest_path.resolve()), stat.st_mtime_ns, stat.st_size)
-        cached = getattr(self, "_usable_training_patch_counts_cache", None)
-        if cached and cached[0] == signature:
-            return dict(cached[1])
+    def list_training_patches(self, include: str = "") -> dict:
+        """Compatibility wrapper; active patch review is the logical catalog."""
+        return self.list_logical_patches(include=include)
 
+    def usable_training_patch_counts(self) -> dict[str, int]:
+        manifest_path = self.region.logical_patch_manifest
+        if not manifest_path.exists():
+            return {}
         counts: dict[str, int] = {}
         for row in read_csv_records(manifest_path):
             include_value = clean_optional(row.get("include") or row.get("included"))
             included = True if include_value is None else truthy_flag(include_value, default=True)
             site_id = clean_optional(row.get("site_id"))
-            npz_path_text = clean_optional(row.get("npz_path"))
-            if not included or not site_id or not npz_path_text:
-                continue
-            if not resolve_data_path(npz_path_text, self.region).exists():
+            if not included or not site_id:
                 continue
             counts[site_id] = counts.get(site_id, 0) + 1
 
-        self._usable_training_patch_counts_cache = (signature, counts)
         return dict(counts)
 
+    def update_logical_patches(self, patch_ids: list[str], operation: str) -> dict:
+        wanted = {str(value) for value in patch_ids if str(value)}
+        if not wanted:
+            raise ValueError("logical_patch_ids is required")
+        if operation not in {"exclude", "restore"}:
+            raise ValueError("operation must be exclude or restore")
+        rows = read_csv_records(self.region.logical_patch_manifest)
+        found = {row.get("logical_patch_id", "") for row in rows} & wanted
+        missing = sorted(wanted - found)
+        if missing:
+            raise KeyError(f"logical patches not found: {', '.join(missing)}")
+        included = operation == "restore"
+        updated = []
+        for row in rows:
+            if row.get("logical_patch_id") in wanted:
+                row["include"] = "true" if included else "false"
+                updated.append(self._logical_patch_summary(row))
+        write_csv_records(self.region.logical_patch_manifest, rows)
+        self._usable_training_patch_counts_cache = None
+        return {"operation": operation, "updated": len(updated), "items": updated}
+
     def update_training_patch(self, patch_id: str, payload: dict) -> dict:
-        patch_id = str(patch_id)
-        for manifest_path in self.training_patch_manifest_paths():
-            rows = read_csv_records(manifest_path)
-            updated = None
-            for row in rows:
-                if row.get("patch_id") != patch_id:
-                    continue
-                if "include" in payload or "included" in payload:
-                    value = payload.get("include") if "include" in payload else payload.get("included")
-                    row["include"] = "true" if truthy_flag(value, default=False) else "false"
-                if "patch_notes" in payload:
-                    row["patch_notes"] = clean_optional(payload.get("patch_notes")) or ""
-                updated = row
-                break
-            if updated is None:
-                continue
-            write_csv_records(manifest_path, rows)
-            self._usable_training_patch_counts_cache = None
-            return self._training_patch_summary(updated, manifest_path)
-        raise KeyError(f"training patch not found: {patch_id}")
+        value = payload.get("include") if "include" in payload else payload.get("included")
+        operation = "restore" if truthy_flag(value, default=False) else "exclude"
+        return self.update_logical_patches([patch_id], operation)["items"][0]
 
     def training_patch_preview(self, patch_id: str) -> tuple[bytes, str]:
-        patch = self.training_patch_by_id(patch_id)
+        patch = self.logical_patch_by_id(patch_id)
         preview_path = resolve_data_path(patch.get("preview_path", ""), self.region)
         if not preview_path.exists():
             raise FileNotFoundError(f"patch preview not found: {patch_id}")
         return preview_path.read_bytes(), mimetypes.guess_type(preview_path.name)[0] or "image/png"
 
     def training_patch_by_id(self, patch_id: str) -> dict:
+        return self.logical_patch_by_id(patch_id)
+
+    def logical_patch_by_id(self, patch_id: str) -> dict:
         patch_id = str(patch_id)
-        for manifest_path in self.training_patch_manifest_paths():
-            for row in read_csv_records(manifest_path):
-                if row.get("patch_id") == patch_id:
-                    return self._training_patch_summary(row, manifest_path)
-        raise KeyError(f"training patch not found: {patch_id}")
+        for row in read_csv_records(self.region.logical_patch_manifest):
+            if row.get("logical_patch_id") == patch_id:
+                return self._logical_patch_summary(row)
+        raise KeyError(f"logical patch not found: {patch_id}")
 
     def training_patch_manifest_paths(self) -> list[Path]:
-        root = self.region.processed_dir / "training_patches"
-        if not root.exists():
-            return []
-        return sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
+        return [self.region.logical_patch_manifest] if self.region.logical_patch_manifest.exists() else []
 
-    def _training_patch_summary(self, row: dict, manifest_path: Path) -> dict:
-        patch_id = row.get("patch_id", "")
+    def _logical_patch_summary(self, row: dict) -> dict:
+        patch_id = row.get("logical_patch_id", "")
         preview_path = resolve_data_path(row.get("preview_path", ""), self.region) if row.get("preview_path") else None
-        npz_path = resolve_data_path(row.get("npz_path", ""), self.region) if row.get("npz_path") else None
         include_value = clean_optional(row.get("include") or row.get("included"))
         included = True if include_value is None else truthy_flag(include_value, default=True)
         site_id = row.get("site_id", "")
         site = self.get_site(site_id) if site_id else None
         display_name = site.display_name if site else row.get("site_name") or site_id
+        geometry = None
+        try:
+            source_box = box(
+                float(row["bounds_left"]),
+                float(row["bounds_bottom"]),
+                float(row["bounds_right"]),
+                float(row["bounds_top"]),
+            )
+            geometry = mapping(transform_geom(source_box, row.get("crs") or "EPSG:4326", "EPSG:4326"))
+        except (KeyError, TypeError, ValueError):
+            geometry = None
         return {
             **row,
+            "patch_id": patch_id,
+            "logical_patch_id": patch_id,
             "site_id": site_id,
             "site_display_name": display_name,
             "included": included,
             "include": "true" if included else "false",
-            "manifest_path": display_path(manifest_path),
+            "manifest_path": display_path(self.region.logical_patch_manifest),
+            "geometry": geometry,
             "preview_exists": bool(preview_path and preview_path.exists()),
-            "npz_exists": bool(npz_path and npz_path.exists()),
-            "preview_url": f"/api/regions/{self.region.key}/training-patches/{patch_id}/preview.png"
+            "preview_url": f"/api/regions/{self.region.key}/logical-patches/{patch_id}/preview.png"
             if patch_id and preview_path and preview_path.exists()
             else "",
         }
+
+    def training_dataset_statuses(self) -> dict:
+        items = [training_dataset_status(self.region, config_id) for config_id in dataset_configs()]
+        return {"region": self.region.key, "items": items}
+
+    def logical_patch_source_meta(self, patch_id: str) -> dict:
+        patch = self.logical_patch_by_id(patch_id)
+        path = resolve_data_path(patch.get("image_path", ""), self.region)
+        if not path.exists():
+            raise FileNotFoundError(f"logical patch source image not found: {patch_id}")
+        with rasterio.open(path) as src:
+            bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds, densify_pts=21)
+        return {
+            "patch_id": patch_id,
+            "bounds": list(bounds),
+            "tile_url": f"/api/regions/{self.region.key}/sites/{patch.get('site_id')}/logical-patch-source/tiles/{{z}}/{{x}}/{{y}}.png?patch_id={patch_id}",
+        }
+
+    def logical_patch_source_tile(self, patch_id: str, z: int, x: int, y: int) -> bytes:
+        patch = self.logical_patch_by_id(patch_id)
+        path = resolve_data_path(patch.get("image_path", ""), self.region)
+        if not path.exists():
+            raise FileNotFoundError(f"logical patch source image not found: {patch_id}")
+        bounds_3857 = xyz_tile_bounds(z, x, y)
+        with rasterio.open(path) as src:
+            source_bounds = transform_bounds(src.crs, "EPSG:3857", *src.bounds, densify_pts=21)
+        if not box(*source_bounds).intersects(box(*bounds_3857)):
+            return blank_png(256)
+        return render_tci_xyz_tile([{"tci_path": str(path), "source": "local_img", "valid_ratio": 1}], bounds_3857)
 
     def _training_sample_summary(self, row: dict) -> dict:
         site_id = row.get("site_id", "")

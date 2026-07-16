@@ -97,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=sorted(REGIONS) + ["all"], default=DEFAULT_REGION_KEY)
     parser.add_argument("--model-type", choices=SUPPORTED_MODEL_TYPES, default="unet")
+    parser.add_argument("--dataset-config", dest="dataset_config_id", default="resize256_v1")
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--patch-dir", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -129,7 +130,7 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
     seed_everything(args.seed)
     selected_model_type = normalize_model_type(getattr(args, "model_type", "unet"))
     region = REGIONS[args.region] if args.region != "all" else None
-    manifest = args.manifest or latest_manifest(region, args.patch_dir)
+    manifest = args.manifest or latest_manifest(region, args.patch_dir, getattr(args, "dataset_config_id", "resize256_v1"))
     output_dir = args.output_dir or MODEL_ROOT / args.region / f"{selected_model_type}_{time.strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -154,6 +155,7 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
         "region": args.region if args.region != "all" else "",
         "regions": sorted(REGIONS) if args.region == "all" else [args.region],
         "manifest": display_path(manifest),
+        "dataset_config_id": getattr(args, "dataset_config_id", ""),
         "output_dir": display_path(output_dir),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
@@ -353,7 +355,7 @@ def load_manifest_rows(path: Path) -> list[dict]:
     return rows
 
 
-def latest_manifest(region, patch_dir: Path | None) -> Path:
+def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "resize256_v1") -> Path:
     if patch_dir:
         manifest = patch_dir / "manifest.csv" if patch_dir.is_dir() else patch_dir
         if manifest.exists():
@@ -361,11 +363,10 @@ def latest_manifest(region, patch_dir: Path | None) -> Path:
         raise SystemExit(f"manifest not found: {manifest}")
     if region is None:
         raise SystemExit("all-scope training requires --manifest or --patch-dir with a combined manifest")
-    root = region.processed_dir / "training_patches"
-    manifests = sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not manifests:
-        raise SystemExit(f"no patch manifest found under {root}; run scripts/export_training_patches.py first")
-    return manifests[0]
+    manifest = region.training_dataset_dir / dataset_config_id / "manifest.csv"
+    if not manifest.exists():
+        raise SystemExit(f"training dataset manifest not found: {manifest}; run scripts/build_training_dataset.py first")
+    return manifest
 
 
 def compute_normalization(rows: list[dict], max_patches: int = 0) -> Normalization:

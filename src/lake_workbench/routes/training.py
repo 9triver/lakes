@@ -8,13 +8,34 @@ from lake_workbench.utils import truthy_flag
 
 
 def handle_training_get(handler, path: str, query_string: str) -> bool:
+    params = parse_qs(query_string)
     if path == "/api/all/training-samples":
         handler._json(handler.__class__.region_service.all_training_samples_payload())
+    elif path == "/api/all/logical-patches":
+        handler._json(
+            handler.__class__.region_service.all_logical_patches_payload(
+                include=params.get("include", [""])[0],
+                site_id=params.get("site_id", [""])[0],
+            )
+        )
+    elif path == "/api/logical-patches":
+        handler._json(
+            handler.catalog.list_logical_patches(
+                include=params.get("include", [""])[0],
+                site_id=params.get("site_id", [""])[0],
+                sample_id=params.get("sample_id", [""])[0],
+                image_index=params.get("image_index", [""])[0],
+            )
+        )
+    elif path == "/api/all/training-datasets":
+        handler._json(handler.__class__.region_service.all_training_dataset_statuses())
+    elif path == "/api/training-datasets":
+        handler._json(handler.catalog.training_dataset_statuses())
     elif path == "/api/all/training-patches":
-        include = parse_qs(query_string).get("include", [""])[0]
+        include = params.get("include", [""])[0]
         handler._json(handler.__class__.region_service.all_training_patches_payload(include=include))
     elif path in {"/api/training-runs", "/api/all/training-runs"}:
-        handler._json(handler.training_runs.list())
+        handler._json(handler.training_runs.list(params.get("dataset_config_id", ["resize256_v1"])[0]))
     elif re.fullmatch(r"/api/(?:all/)?training-runs/[^/]+", path):
         job_id = path.rsplit("/", 1)[-1]
         job = handler.training_runs.get(job_id)
@@ -28,7 +49,6 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
         if site is None:
             handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
         else:
-            params = parse_qs(query_string)
             buffer_ratio = float(params.get("buffer_ratio", ["0.8"])[0])
             handler._json(handler.catalog.training_sample_readiness(site, buffer_ratio=buffer_ratio))
     elif path == "/api/training-samples":
@@ -43,7 +63,14 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
             handler._error(HTTPStatus.NOT_FOUND, "Patch export job not found")
         else:
             handler._json(job)
-    elif re.fullmatch(r"/api/training-patches/[^/]+/preview\.png", path):
+    elif re.fullmatch(r"/api/(?:all/)?training-datasets/[^/]+/build-jobs/[^/]+", path):
+        job_id = path.rsplit("/", 1)[-1]
+        job = handler.dataset_builds.get(job_id)
+        if job is None:
+            handler._error(HTTPStatus.NOT_FOUND, "Training dataset build job not found")
+        else:
+            handler._json(job)
+    elif re.fullmatch(r"/api/(?:logical-patches|training-patches)/[^/]+/preview\.png", path):
         patch_id = path.split("/")[-2]
         try:
             payload, content_type = handler.catalog.training_patch_preview(patch_id)
@@ -81,8 +108,11 @@ def handle_training_post(handler, path: str) -> bool:
                 }
             )
         handler._json({"sample": result, "patch_job": patch_job})
-    elif path in {"/api/training-patches/export-jobs", "/api/all/training-patches/export-jobs"}:
+    elif path in {"/api/logical-patches/build-jobs", "/api/all/logical-patches/build-jobs", "/api/training-patches/export-jobs", "/api/all/training-patches/export-jobs"}:
         handler._json(handler.patch_exports.create(handler._read_json()))
+    elif re.fullmatch(r"/api/(?:all/)?training-datasets/[^/]+/build-jobs", path):
+        config_id = path.split("/")[-2]
+        handler._json(handler.dataset_builds.create({**handler._read_json(), "config_id": config_id}))
     elif path in {"/api/training-runs", "/api/all/training-runs"}:
         handler._json(handler.training_runs.create(handler._read_json()))
     elif re.fullmatch(r"/api/(?:all/)?training-runs/[^/]+/cancel", path):
@@ -106,7 +136,17 @@ def handle_training_patch(handler, path: str) -> bool:
             handler._error(HTTPStatus.NOT_FOUND, str(exc))
         else:
             handler._json({"sample": result})
-    elif re.fullmatch(r"/api/training-patches/[^/]+", path):
+    elif path == "/api/logical-patches":
+        payload = handler._read_json()
+        try:
+            result = handler.catalog.update_logical_patches(payload.get("logical_patch_ids") or [], str(payload.get("operation") or ""))
+        except ValueError as exc:
+            handler._error(HTTPStatus.BAD_REQUEST, str(exc))
+        except KeyError as exc:
+            handler._error(HTTPStatus.NOT_FOUND, str(exc))
+        else:
+            handler._json(result)
+    elif re.fullmatch(r"/api/(?:logical-patches|training-patches)/[^/]+", path):
         patch_id = path.rsplit("/", 1)[-1]
         try:
             result = handler.catalog.update_training_patch(patch_id, handler._read_json())

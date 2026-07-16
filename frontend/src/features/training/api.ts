@@ -44,7 +44,18 @@ export interface TrainingOptions {
   base_channels: number;
   device: string;
   no_augment: boolean;
+  dataset_config_id: string;
 }
+
+export interface TrainingDatasetConfigStatus {
+  config_id: string;
+  config: { id: string; label: string; output_size: number; min_valid_ratio: number; min_water_pixels: number; negative_ratio: number };
+  status: "ready" | "stale" | "missing" | "missing_logical";
+  ready: boolean;
+  patches: number;
+}
+
+export interface DatasetBuildJob { job_id: string; status: string; message?: string; progress?: number }
 
 const runningStatuses = new Set(["queued", "configured", "running", "cancel_requested"]);
 
@@ -52,10 +63,10 @@ export function isTrainingRunActive(run?: TrainingRun) {
   return Boolean(run && runningStatuses.has(run.status));
 }
 
-export function useTrainingRuns(scope: string) {
+export function useTrainingRuns(scope: string, datasetConfigId = "resize256_v1") {
   return useQuery({
-    queryKey: ["training-runs", scope],
-    queryFn: () => getJson<{ scope: string; dataset: TrainingDataset; items: TrainingRun[] }>(`/api/regions/${encodeURIComponent(scope)}/training-runs`),
+    queryKey: ["training-runs", scope, datasetConfigId],
+    queryFn: () => getJson<{ scope: string; dataset: TrainingDataset; items: TrainingRun[] }>(`/api/regions/${encodeURIComponent(scope)}/training-runs?dataset_config_id=${encodeURIComponent(datasetConfigId)}`),
     enabled: Boolean(scope),
     refetchInterval: (query) => query.state.data?.items.some(isTrainingRunActive) ? 2000 : false,
   });
@@ -69,4 +80,28 @@ export function useStartTrainingRun(scope: string) {
 export function useCancelTrainingRun(scope: string) {
   const client = useQueryClient();
   return useMutation({ mutationFn: (jobId: string) => postJson<TrainingRun>(`/api/regions/${encodeURIComponent(scope)}/training-runs/${encodeURIComponent(jobId)}/cancel`, {}), onSuccess: () => client.invalidateQueries({ queryKey: ["training-runs", scope] }) });
+}
+
+export function useTrainingDatasetConfigs(scope: string) {
+  return useQuery({ queryKey: ["training-datasets", scope], queryFn: () => getJson<{ items: TrainingDatasetConfigStatus[] }>(`/api/regions/${encodeURIComponent(scope)}/training-datasets`), enabled: Boolean(scope) });
+}
+
+export function useBuildTrainingDataset(scope: string) {
+  return useMutation({ mutationFn: (configId: string) => postJson<DatasetBuildJob>(`/api/regions/${encodeURIComponent(scope)}/training-datasets/${encodeURIComponent(configId)}/build-jobs`, {}) });
+}
+
+export function useTrainingDatasetBuildJob(scope: string, configId: string, jobId: string) {
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: ["training-dataset-build", scope, configId, jobId],
+    queryFn: async () => {
+      const job = await getJson<DatasetBuildJob>(`/api/regions/${encodeURIComponent(scope)}/training-datasets/${encodeURIComponent(configId)}/build-jobs/${encodeURIComponent(jobId)}`);
+      if (job.status === "completed") {
+        await Promise.all([client.invalidateQueries({ queryKey: ["training-datasets", scope] }), client.invalidateQueries({ queryKey: ["training-runs", scope] })]);
+      }
+      return job;
+    },
+    enabled: Boolean(scope && configId && jobId),
+    refetchInterval: (query) => ["completed", "failed"].includes(query.state.data?.status || "") ? false : 1500,
+  });
 }

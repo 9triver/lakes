@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Button, Chip, CircularProgress, FormControl, FormControlLabel, InputLabel, LinearProgress, List, ListItemButton, ListItemText, MenuItem, Select, Switch, TextField, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { Play, RefreshCw, Square } from "lucide-react";
-import { isTrainingRunActive, type TrainingDataset, type TrainingRun, useCancelTrainingRun, useStartTrainingRun, useTrainingRuns } from "./api";
+import { isTrainingRunActive, type TrainingDataset, type TrainingRun, useBuildTrainingDataset, useCancelTrainingRun, useStartTrainingRun, useTrainingDatasetBuildJob, useTrainingDatasetConfigs, useTrainingRuns } from "./api";
 
 function percent(value?: number) { return Number.isFinite(value) ? `${(Number(value) * 100).toFixed(1)}%` : "-"; }
 function metric(value?: number) { return Number.isFinite(value) ? Number(value).toFixed(4) : "-"; }
@@ -45,9 +45,12 @@ function RunDetails({ run }: { run?: TrainingRun }) {
 }
 
 export function TrainingView({ scope }: { scope: string }) {
-  const query = useTrainingRuns(scope);
+  const [datasetConfigId, setDatasetConfigId] = useState("resize256_v1");
+  const query = useTrainingRuns(scope, datasetConfigId);
   const start = useStartTrainingRun(scope);
   const cancel = useCancelTrainingRun(scope);
+  const datasetConfigs = useTrainingDatasetConfigs(scope);
+  const buildDataset = useBuildTrainingDataset(scope);
   const [selectedId, setSelectedId] = useState("");
   const [runName, setRunName] = useState("");
   const [modelType, setModelType] = useState<"unet" | "pixel_mlp">("unet");
@@ -57,6 +60,8 @@ export function TrainingView({ scope }: { scope: string }) {
   const [baseChannels, setBaseChannels] = useState(32);
   const [device, setDevice] = useState("cuda");
   const [noAugment, setNoAugment] = useState(false);
+  const [buildJobId, setBuildJobId] = useState("");
+  const buildJob = useTrainingDatasetBuildJob(scope, datasetConfigId, buildJobId);
   const runs = query.data?.items || [];
   const activeRun = runs.find(isTrainingRunActive);
   const selected = useMemo(() => runs.find((item) => item.job_id === selectedId) || activeRun || runs[0], [activeRun, runs, selectedId]);
@@ -64,10 +69,17 @@ export function TrainingView({ scope }: { scope: string }) {
 
   if (query.isLoading) return <Box sx={{ display: "grid", placeItems: "center", height: "100%" }}><CircularProgress size={28} /></Box>;
   if (query.isError) return <Typography color="error" sx={{ p: 2 }}>{query.error.message}</Typography>;
-  const submit = () => start.mutate({ run_name: runName.trim(), model_type: modelType, epochs, batch_size: batchSize, lr, base_channels: baseChannels, device, no_augment: modelType === "pixel_mlp" || noAugment }, { onSuccess: (run) => setSelectedId(run.job_id) });
+  const selectedDataset = (datasetConfigs.data?.items || []).find((item) => item.config_id === datasetConfigId);
+  const submit = () => start.mutate({ run_name: runName.trim(), model_type: modelType, epochs, batch_size: batchSize, lr, base_channels: baseChannels, device, no_augment: modelType === "pixel_mlp" || noAugment, dataset_config_id: datasetConfigId }, { onSuccess: (run) => setSelectedId(run.job_id) });
 
   return <Box sx={{ height: "100%", overflow: "auto", p: { xs: 1.5, sm: 2 }, display: "grid", gap: 2, alignContent: "start" }}>
     <DatasetSummary dataset={query.data?.dataset} />
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+      <FormControl sx={{ minWidth: 210 }}><InputLabel id="training-dataset-config-label">训练数据配置</InputLabel><Select labelId="training-dataset-config-label" label="训练数据配置" value={datasetConfigId} onChange={(event) => { setDatasetConfigId(event.target.value); setBuildJobId(""); }}>{(datasetConfigs.data?.items || []).map((item) => <MenuItem key={item.config_id} value={item.config_id}>{item.config.label} · {item.config.output_size} px</MenuItem>)}</Select></FormControl>
+      <Chip size="small" color={selectedDataset?.ready ? "success" : selectedDataset?.status === "stale" ? "warning" : "default"} label={selectedDataset?.ready ? `可用 · ${selectedDataset.patches}` : selectedDataset?.status === "stale" ? "已过期" : "未构建"} />
+      <Button startIcon={<RefreshCw size={15} />} variant={selectedDataset?.ready ? "outlined" : "contained"} disabled={buildDataset.isPending || ["queued", "running"].includes(buildJob.data?.status || "")} onClick={() => buildDataset.mutate(datasetConfigId, { onSuccess: (job) => setBuildJobId(job.job_id) })}>重建训练数据</Button>
+      {(buildJob.data?.message || buildDataset.error) && <Typography variant="caption" color={buildJob.data?.status === "failed" || buildDataset.isError ? "error" : "text.secondary"}>{buildDataset.error?.message || buildJob.data?.message}</Typography>}
+    </Box>
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
       <ToggleButtonGroup exclusive size="small" value={modelType} onChange={(_, value: "unet" | "pixel_mlp" | null) => { if (value) setModelType(value); }} aria-label="模型类型">
         <ToggleButton value="unet">U-Net</ToggleButton>
@@ -80,7 +92,7 @@ export function TrainingView({ scope }: { scope: string }) {
       {modelType === "unet" && <TextField label="模型宽度" type="number" value={baseChannels} onChange={(event) => setBaseChannels(Number(event.target.value))} sx={{ width: 115 }} slotProps={{ htmlInput: { min: 4, max: 128, step: 4 } }} />}
       <FormControl sx={{ width: 105 }}><InputLabel>设备</InputLabel><Select label="设备" value={device} onChange={(event) => setDevice(event.target.value)}><MenuItem value="cuda">GPU</MenuItem><MenuItem value="auto">自动</MenuItem><MenuItem value="cpu">CPU</MenuItem></Select></FormControl>
       {modelType === "unet" && <FormControlLabel control={<Switch size="small" checked={noAugment} onChange={(event) => setNoAugment(event.target.checked)} />} label="关闭增强" />}
-      <Button variant="contained" startIcon={<Play size={16} />} disabled={Boolean(activeRun) || start.isPending || !query.data?.dataset?.usable_patches} onClick={submit}>开始训练</Button>
+      <Button variant="contained" startIcon={<Play size={16} />} disabled={Boolean(activeRun) || start.isPending || !selectedDataset?.ready || !selectedDataset.patches} onClick={submit}>开始训练</Button>
       <Button color="error" startIcon={<Square size={15} />} disabled={!activeRun || cancel.isPending} onClick={() => activeRun && cancel.mutate(activeRun.job_id)}>取消</Button>
       <Button startIcon={<RefreshCw size={15} />} onClick={() => query.refetch()}>刷新</Button>
     </Box>

@@ -1,0 +1,13 @@
+{
+  "include": [
+    "src/lake_workbench/training/logical_patches.py",
+    "src/lake_workbench/training/runner.py",
+    "src/lake_workbench/routes/training.py",
+    "src/lake_workbench/jobs.py",
+    "src/lake_workbench/regions/service.py"
+  ],
+  "extraPaths": ["src", "scripts"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

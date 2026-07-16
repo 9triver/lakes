@@ -38,12 +38,11 @@ def split_rows_by_site(rows: list[dict], val_ratio: float, seed: int) -> tuple[l
     return train, val
 
 
-def latest_patch_manifest_for_region(region: RegionConfig) -> Path:
-    root = region.processed_dir / "training_patches"
-    manifests = sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not manifests:
-        raise FileNotFoundError(f"no patch manifest found under {display_path(root)}")
-    return manifests[0]
+def latest_patch_manifest_for_region(region: RegionConfig, config_id: str = "resize256_v1") -> Path:
+    manifest = region.training_dataset_dir / config_id / "manifest.csv"
+    if not manifest.exists():
+        raise FileNotFoundError(f"training dataset manifest not found: {display_path(manifest)}")
+    return manifest
 
 
 def read_json_file(path: Path, default):
@@ -164,20 +163,20 @@ def merge_training_dataset_summaries(scope: str, summaries: list[dict]) -> dict:
     return totals
 
 
-def current_training_dataset_summary(scope: str) -> dict:
+def current_training_dataset_summary(scope: str, config_id: str = "resize256_v1") -> dict:
     try:
         if scope == "all":
             summaries = []
             for region in REGIONS.values():
                 try:
-                    summaries.append(summarize_training_manifest(latest_patch_manifest_for_region(region), region.key))
+                    summaries.append(summarize_training_manifest(latest_patch_manifest_for_region(region, config_id), region.key))
                 except FileNotFoundError:
                     continue
             if not summaries:
                 raise FileNotFoundError("no patch manifest found for any region")
             return merge_training_dataset_summaries(scope, summaries)
         region = REGIONS.get(scope) or REGIONS[DEFAULT_REGION_KEY]
-        summary = summarize_training_manifest(latest_patch_manifest_for_region(region), region.key)
+        summary = summarize_training_manifest(latest_patch_manifest_for_region(region, config_id), region.key)
         return merge_training_dataset_summaries(scope, [summary])
     except Exception as exc:
         return {

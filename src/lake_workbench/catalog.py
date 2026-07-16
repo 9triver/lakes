@@ -151,6 +151,7 @@ class SiteCatalog(
             "items": [
                 {
                     **self._summary(site),
+                    "included_logical_patch_count": patch_counts.get(site.site_id, 0),
                     "usable_training_patch_count": patch_counts.get(site.site_id, 0),
                 }
                 for site in page

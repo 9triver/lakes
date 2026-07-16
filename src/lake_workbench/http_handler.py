@@ -30,6 +30,7 @@ from lake_workbench.routes.training import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
 
@@ -38,11 +39,14 @@ class SiteHandler(BaseHTTPRequestHandler):
     catalogs: dict[str, SiteCatalog]
     downloads_by_region: dict[str, DownloadManager]
     patch_exports_by_region: dict[str, PatchExportManager]
+    dataset_builds_by_region: dict[str, PatchExportManager]
     training_runs_by_scope: dict[str, TrainingManager]
     all_patch_exports: PatchExportManager
+    all_dataset_builds: PatchExportManager
     catalog: SiteCatalog
     downloads: DownloadManager
     patch_exports: PatchExportManager
+    dataset_builds: PatchExportManager
     training_runs: TrainingManager
     region_service: RegionService
 
@@ -70,6 +74,8 @@ class SiteHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
             else:
                 self._serve_file(STATIC_DIR / "dist" / "index.html")
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -88,6 +94,8 @@ class SiteHandler(BaseHTTPRequestHandler):
             if handle_site_post(self, path):
                 return
             self._error(HTTPStatus.NOT_FOUND, "Not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -101,6 +109,8 @@ class SiteHandler(BaseHTTPRequestHandler):
 
             if not handle_training_patch(self, path):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -114,6 +124,8 @@ class SiteHandler(BaseHTTPRequestHandler):
 
             if not handle_training_delete(self, path):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:  # noqa: BLE001 - surface local diagnostics in MVP.
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(exc).__name__}: {exc}")
 
@@ -139,10 +151,12 @@ class SiteHandler(BaseHTTPRequestHandler):
             self.catalog = self.__class__.catalog
             self.downloads = self.__class__.downloads
             self.patch_exports = self.__class__.all_patch_exports
+            self.dataset_builds = self.__class__.all_dataset_builds
         else:
             self.catalog = self.__class__.catalogs[region_key]
             self.downloads = self.__class__.downloads_by_region[region_key]
             self.patch_exports = self.__class__.patch_exports_by_region[region_key]
+            self.dataset_builds = self.__class__.dataset_builds_by_region[region_key]
         self.training_runs = self.__class__.training_runs_by_scope[region_key]
         return normalized_path
 
@@ -211,6 +225,8 @@ def create_site_handler(
     all_patch_exports: PatchExportManager,
     default_region_key: str,
     region_service: RegionService,
+    dataset_builds_by_region: dict[str, PatchExportManager] | None = None,
+    all_dataset_builds: PatchExportManager | None = None,
 ) -> type[SiteHandler]:
     """Bind one server's runtime dependencies to an isolated handler class."""
 
@@ -220,11 +236,14 @@ def create_site_handler(
     ConfiguredSiteHandler.catalogs = catalogs
     ConfiguredSiteHandler.downloads_by_region = downloads_by_region
     ConfiguredSiteHandler.patch_exports_by_region = patch_exports_by_region
+    ConfiguredSiteHandler.dataset_builds_by_region = dataset_builds_by_region or patch_exports_by_region
     ConfiguredSiteHandler.training_runs_by_scope = training_runs_by_scope
     ConfiguredSiteHandler.all_patch_exports = all_patch_exports
+    ConfiguredSiteHandler.all_dataset_builds = all_dataset_builds or all_patch_exports
     ConfiguredSiteHandler.catalog = catalogs[default_region_key]
     ConfiguredSiteHandler.downloads = downloads_by_region[default_region_key]
     ConfiguredSiteHandler.patch_exports = patch_exports_by_region[default_region_key]
+    ConfiguredSiteHandler.dataset_builds = ConfiguredSiteHandler.dataset_builds_by_region[default_region_key]
     ConfiguredSiteHandler.training_runs = training_runs_by_scope[default_region_key]
     ConfiguredSiteHandler.region_service = region_service
     return ConfiguredSiteHandler

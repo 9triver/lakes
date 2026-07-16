@@ -34,6 +34,12 @@ lakes-workbench = "lake_workbench.server:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "ruff>=0.15.21",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

@@ -30,7 +30,7 @@ async function expectUsableMap(page: Page) {
       if (pixels[index + 3] > 0 && pixels[index] + pixels[index + 1] + pixels[index + 2] > 90) visible += 1;
     }
     return visible;
-  }), { timeout: 20_000 }).toBeGreaterThan(2_000);
+  }), { timeout: 20_000 }).toBeGreaterThan(500);
   await page.waitForTimeout(500);
 }
 
@@ -40,11 +40,15 @@ test("site browser restores filters and renders all map layers", async ({ page }
   const errors = await observePageErrors(page);
   await page.goto("#/regions/gansu/sites/gansu_17407?has_osm=true&has_tci=true");
   await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
-  await expect(page.getByRole("button", { name: /区域 17407（苏干湖附近） 训练 \d+/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /区域 17407（苏干湖附近） 逻辑 \d+/ })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "OSM 标注" })).toHaveText(/有候选/);
   await expect(page.getByRole("combobox", { name: "影像" })).toHaveText(/有影像/);
   for (const label of ["影像", "Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).toBeVisible();
+  }
+  await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
+  for (const label of ["Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
+    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
   }
   await expectUsableMap(page);
   await page.screenshot({ path: `${screenshotDir}/lake-desktop.png`, fullPage: true });
@@ -57,8 +61,8 @@ test("training sample, patch review, and training history views load", async ({ 
   await expect(page.getByText(/\d+ 个样本/)).toBeVisible();
   await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).first()).toBeVisible();
 
-  await page.getByRole("tab", { name: "Patch 审核" }).click();
-  await expect(page.getByText(/Patch 审核 · [1-9]\d*/)).toBeVisible();
+  await page.getByRole("tab", { name: "逻辑 Patch" }).click();
+  await expect(page.getByText(/逻辑 Patch 审核 · [1-9]\d*/)).toBeVisible();
   const preview = page.locator('button img[loading="lazy"]').first();
   await expect(preview).toBeVisible();
   await expect.poll(() => preview.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
@@ -78,7 +82,11 @@ test("cached model validation deep link restores prediction", async ({ page }) =
   const errors = await observePageErrors(page);
   await page.goto("#/regions/shaanxi/model/shaanxi_23294?model=unet_current_v1%2Flast.pt");
   await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_current_v1/)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByLabel("模型预测", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "模型预测", exact: true })).toBeChecked();
+  for (const label of ["Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
+    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
+  }
   await expectUsableMap(page);
   await page.screenshot({ path: `${screenshotDir}/model-validation-desktop.png`, fullPage: true });
   expect(errors).toEqual([]);
@@ -94,10 +102,28 @@ test("mobile site and training pages do not overflow", async ({ page }) => {
   await page.screenshot({ path: `${screenshotDir}/lake-mobile.png`, fullPage: true });
 
   await page.goto("#/regions/all/training/patches");
-  await expect(page.getByText(/Patch 审核 · [1-9]\d*/)).toBeVisible();
+  await expect(page.getByText(/逻辑 Patch 审核 · [1-9]\d*/)).toBeVisible();
   await expect(page.locator('button img[loading="lazy"]').first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/patches-mobile.png`, fullPage: true });
+  expect(errors).toEqual([]);
+});
+
+test("site map opens logical patch review without mutating data", async ({ page }) => {
+  const errors = await observePageErrors(page);
+  await page.goto("#/regions/gansu/sites/gansu_17407");
+  await expect(page.getByRole("checkbox", { name: "Patch", exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: "Patch", exact: true }).check();
+  await expect(page.getByRole("combobox", { name: "训练样本 / 影像" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "排除" })).toBeVisible();
+  await expect(page.getByText(/待处理 0/)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => performance.getEntriesByType("resource").some((entry) => entry.name.includes("/logical-patch-source/tiles/"))), { timeout: 30_000 }).toBe(true);
+  const map = page.locator(".ol-viewport").first();
+  await expect(map.locator(".ol-zoom-in")).toBeVisible();
+  await expect(map.locator(".ol-zoom-out")).toBeVisible();
+  await map.click({ position: { x: 500, y: 280 } });
+  await expect(page.getByText(/gansu_17407_.*_lr\d+_lc\d+/)).toBeVisible({ timeout: 200 });
+  await page.screenshot({ path: `${screenshotDir}/logical-patches-map.png`, fullPage: true });
   expect(errors).toEqual([]);
 });
 

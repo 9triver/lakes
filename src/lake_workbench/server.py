@@ -22,7 +22,7 @@ from lake_workbench.models.validation import ModelInferenceBusy
 from lake_workbench.regions.config import load_region_configs
 from lake_workbench.regions.service import RegionService
 from lake_workbench.training.datasets import current_training_dataset_summary
-from lake_workbench.training.runner import run_patch_export, run_training_job
+from lake_workbench.training.runner import run_dataset_build, run_patch_export, run_training_job
 from lake_workbench.utils import parse_int_or_default
 
 
@@ -51,6 +51,11 @@ def main() -> None:
         for key, catalog in catalogs.items()
     }
     all_patch_exports = PatchExportManager(catalogs=catalogs, exporter=run_patch_export)
+    dataset_builds_by_region = {
+        key: PatchExportManager(catalog, exporter=run_dataset_build)
+        for key, catalog in catalogs.items()
+    }
+    all_dataset_builds = PatchExportManager(catalogs=catalogs, exporter=run_dataset_build)
     training_manager_options = {
         "model_root": PROJECT_ROOT / "data" / "models",
         "dataset_summary": current_training_dataset_summary,
@@ -66,8 +71,10 @@ def main() -> None:
         catalogs=catalogs,
         downloads_by_region=downloads_by_region,
         patch_exports_by_region=patch_exports_by_region,
+        dataset_builds_by_region=dataset_builds_by_region,
         training_runs_by_scope=training_runs_by_scope,
         all_patch_exports=all_patch_exports,
+        all_dataset_builds=all_dataset_builds,
         default_region_key=DEFAULT_REGION_KEY,
         region_service=RegionService(catalogs, DEFAULT_REGION_KEY, ModelInferenceBusy),
     )

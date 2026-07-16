@@ -122,6 +122,18 @@ class RegionConfig:
         return self.processed_dir / "training_labels"
 
     @property
+    def logical_patch_dir(self) -> Path:
+        return self.processed_dir / "logical_patches"
+
+    @property
+    def logical_patch_manifest(self) -> Path:
+        return self.logical_patch_dir / "manifest.csv"
+
+    @property
+    def training_dataset_dir(self) -> Path:
+        return self.processed_dir / "training_datasets"
+
+    @property
     def sentinel_download_dir(self) -> Path:
         return self.data_dir / "sentinel_products" / "products"
 

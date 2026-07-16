@@ -55,7 +55,10 @@ class DownloadManager:
             job["updated_at"] = _timestamp()
 
     def _run(self, job_id: str) -> None:
-        product = self.get(job_id)["product"]
+        job = self.get(job_id)
+        if job is None:
+            return
+        product = job["product"]
         try:
             self._update(job_id, status="authenticating", message="连接 Copernicus")
 
@@ -124,7 +127,10 @@ class PatchExportManager:
             job["updated_at"] = _timestamp()
 
     def _run(self, job_id: str) -> None:
-        options = self.get(job_id)["options"]
+        job = self.get(job_id)
+        if job is None:
+            return
+        options = job["options"]
         try:
             self._update(job_id, status="running", message="生成 patch 中", progress=10)
             if self.catalogs:
@@ -140,6 +146,7 @@ class PatchExportManager:
                     "patches": sum(item.get("patches", 0) for item in results),
                 }
             else:
+                assert self.catalog is not None
                 result = self.exporter(self.catalog.region.key, options)
             self._update(
                 job_id,
@@ -158,7 +165,7 @@ class TrainingManager:
         scope: str,
         *,
         model_root: Path,
-        dataset_summary: Callable[[str], dict],
+        dataset_summary: Callable[..., dict],
         runner: Callable[..., dict],
         persisted_job_loader: Callable[[str, Path], dict | None],
         parse_epochs: Callable[[Any, int], int],
@@ -191,7 +198,7 @@ class TrainingManager:
             "epochs": self.parse_epochs(options.get("epochs"), 30),
             "history": [],
             "options": options,
-            "dataset": self.dataset_summary(self.scope),
+            "dataset": self.dataset_summary(self.scope, str(options.get("dataset_config_id") or "resize256_v1")),
             "created_at": _timestamp(),
             "updated_at": _timestamp(),
         }
@@ -206,11 +213,11 @@ class TrainingManager:
             job = self.jobs.get(job_id)
             return dict(job) if job else None
 
-    def list(self) -> dict:
+    def list(self, dataset_config_id: str = "resize256_v1") -> dict:
         with self._lock:
             jobs = [dict(job) for job in self.jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return {"scope": self.scope, "dataset": self.dataset_summary(self.scope), "items": jobs}
+        return {"scope": self.scope, "dataset": self.dataset_summary(self.scope, dataset_config_id), "items": jobs}
 
     def cancel(self, job_id: str) -> dict | None:
         with self._lock:
@@ -248,6 +255,8 @@ class TrainingManager:
 
     def _run(self, job_id: str) -> None:
         job = self.get(job_id)
+        if job is None:
+            return
         options = job["options"]
         cancel_event = self.cancel_events[job_id]
         try:

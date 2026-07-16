@@ -9,6 +9,8 @@ import { SiteMap, type SiteMapHandle } from "../features/map/SiteMap";
 import { ImageryPanel } from "../features/imagery/ImageryPanel";
 import { useSentinelTiles } from "../features/imagery/api";
 import { PatchReviewView } from "../features/patches/PatchReviewView";
+import { SitePatchReviewPanel, type PatchGroup, type PatchOperation } from "../features/patches/SitePatchReviewPanel";
+import { useBatchUpdateLogicalPatches, useLogicalPatchSourceMeta, useSiteLogicalPatches } from "../features/patches/api";
 import { TrainingCapture } from "../features/training-samples/TrainingCapture";
 import { TrainingSamplesView } from "../features/training-samples/TrainingSamplesView";
 import { TrainingView } from "../features/training/TrainingView";
@@ -32,6 +34,11 @@ export function App() {
   const [jrcThreshold, setJrcThreshold] = useState(75);
   const [selectedLocalLabel, setSelectedLocalLabel] = useState("");
   const [imagerySelection, setImagerySelection] = useState({ tile: "", product: "" });
+  const [patchReviewEnabled, setPatchReviewEnabled] = useState(false);
+  const [patchGroupKey, setPatchGroupKey] = useState("");
+  const [patchOperation, setPatchOperation] = useState<PatchOperation>("exclude");
+  const [pendingPatchIds, setPendingPatchIds] = useState<Set<string>>(() => new Set());
+  const [activePatchId, setActivePatchId] = useState("");
   const mapRef = useRef<SiteMapHandle>(null);
   const region = useWorkbenchStore((state) => state.region);
   const setRegion = useWorkbenchStore((state) => state.setRegion);
@@ -63,6 +70,20 @@ export function App() {
   const jrc = useJrcLayer(selectedRegion, selectedSiteId, jrcThreshold);
   const localLabels = useLocalLabels(selectedRegion, selectedSiteId);
   const localLabel = useLocalLabel(selectedRegion, selectedSiteId, selectedLocalLabel);
+  const logicalPatches = useSiteLogicalPatches(selectedRegion, selectedSiteId);
+  const updateLogicalPatches = useBatchUpdateLogicalPatches(selectedRegion, selectedSiteId);
+  const patchGroups = useMemo<PatchGroup[]>(() => {
+    const groups = new Map<string, TrainingPatch[]>();
+    for (const patch of logicalPatches.data?.items || []) {
+      const key = `${patch.sample_id}:${patch.image_index || 0}`;
+      groups.set(key, [...(groups.get(key) || []), patch]);
+    }
+    return [...groups.entries()].map(([key, patches]) => ({ key, patches, label: `${patches[0]?.product_date || patches[0]?.product_name || patches[0]?.sample_id} · ${patches.length} 个` })).sort((a, b) => b.label.localeCompare(a.label));
+  }, [logicalPatches.data?.items]);
+  const activePatchGroup = patchGroups.find((group) => group.key === patchGroupKey) || patchGroups[0];
+  const visibleLogicalPatches = activePatchGroup?.patches || logicalPatches.data?.items || [];
+  const activePatch = visibleLogicalPatches.find((patch) => (patch.logical_patch_id || patch.patch_id) === activePatchId);
+  const patchSource = useLogicalPatchSourceMeta(selectedRegion, selectedSiteId, visibleLogicalPatches[0]?.logical_patch_id || visibleLogicalPatches[0]?.patch_id || "", patchReviewEnabled);
 
   useEffect(() => {
     if (!region && regions.data) setRegion(siteListRoute?.[1] || siteRoute?.[1] || trainingRoute?.[1] || modelRoute?.[1] || regions.data.default);
@@ -77,6 +98,16 @@ export function App() {
     const items = localLabels.data || [];
     if (!items.some((item) => item.id === selectedLocalLabel)) setSelectedLocalLabel(items[0]?.id || "");
   }, [localLabels.data, selectedSiteId, selectedLocalLabel]);
+  useEffect(() => {
+    setPatchReviewEnabled(false);
+    setPatchGroupKey("");
+    setPendingPatchIds(new Set());
+    setActivePatchId("");
+  }, [selectedRegion, selectedSiteId]);
+  useEffect(() => {
+    if (!patchGroups.length) setPatchGroupKey("");
+    else if (!patchGroups.some((group) => group.key === patchGroupKey)) setPatchGroupKey(patchGroups[0].key);
+  }, [patchGroupKey, patchGroups]);
   const siteSearch = useMemo(() => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -94,6 +125,17 @@ export function App() {
     navigate({ pathname: location.pathname, search: siteSearch }, { replace: true });
   }, [isSiteWorkspace, siteSearch, location.pathname, location.search, navigate]);
   const handleImagerySelection = useCallback((selection: { tile: string; product: string }) => setImagerySelection((current) => current.tile === selection.tile && current.product === selection.product ? current : selection), []);
+  const handleLogicalPatchClick = useCallback((patchId: string) => {
+    setActivePatchId(patchId);
+    const patch = visibleLogicalPatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
+    const selectable = patchOperation === "exclude" ? patch?.included : patch && !patch.included;
+    if (!selectable) return;
+    setPendingPatchIds((current) => {
+      const next = new Set(current);
+      if (next.has(patchId)) next.delete(patchId); else next.add(patchId);
+      return next;
+    });
+  }, [patchOperation, visibleLogicalPatches]);
   const navigateToSite = useCallback((item: TrainingSample | TrainingPatch) => {
     navigate(`/regions/${item.region || region}/sites/${item.site_id}${siteSearch}`);
   }, [siteSearch, navigate, region]);
@@ -131,7 +173,7 @@ export function App() {
             {!siteItems.length && <Box sx={{ p: 3, textAlign: "center" }}><Typography variant="body2">没有符合条件的观测区域</Typography></Box>}
             {siteItems.map((site, index) => (
               <ListItemButton key={`${site.region || region}:${site.site_id}:${index}`} divider selected={site.site_id === selectedSiteId} onClick={() => navigate(`/regions/${site.region || region}/sites/${site.site_id}${siteSearch}`)}>
-                <ListItemText primary={<Box sx={{ display: "flex", alignItems: "center", gap: .75 }}><Typography variant="body2" noWrap sx={{ flex: 1 }}>{site.display_name || site.site_id}</Typography>{Boolean(site.usable_training_patch_count) && <Chip size="small" color="success" variant="outlined" label={`训练 ${site.usable_training_patch_count}`} />}{region === "all" && <Chip size="small" label={site.region_name || site.region} />}</Box>} secondary={`覆盖 ${site.coverage_area_km2.toFixed(2)} km² · ${(site.tiles || []).join(", ")}${site.has_tci ? " · 影像" : ""}`} />
+                <ListItemText primary={<Box sx={{ display: "flex", alignItems: "center", gap: .75 }}><Typography variant="body2" noWrap sx={{ flex: 1 }}>{site.display_name || site.site_id}</Typography>{Boolean(site.included_logical_patch_count) && <Chip size="small" color="success" variant="outlined" label={`逻辑 ${site.included_logical_patch_count}`} />}{region === "all" && <Chip size="small" label={site.region_name || site.region} />}</Box>} secondary={`覆盖 ${site.coverage_area_km2.toFixed(2)} km² · ${(site.tiles || []).join(", ")}${site.has_tci ? " · 影像" : ""}`} />
               </ListItemButton>
             ))}
             {sites.hasNextPage && <Box sx={{ p: 1.5 }}><Button fullWidth variant="outlined" disabled={sites.isFetchingNextPage} onClick={() => sites.fetchNextPage()}>{sites.isFetchingNextPage ? "加载中" : "加载更多"}</Button></Box>}
@@ -144,7 +186,7 @@ export function App() {
             <IconButton sx={{ display: { md: "none" }, mr: .5 }} onClick={() => navigate(`/regions/${region}/sites`)}><ArrowLeft size={19} /></IconButton>
             <Tabs value={trainingView} onChange={(_, value) => navigate(`/regions/${region}/training/${value}`)}>
               <Tab value="samples" label="样本" />
-              <Tab value="patches" label="Patch 审核" />
+              <Tab value="patches" label="逻辑 Patch" />
               <Tab value="train" label="训练" />
             </Tabs>
             <Button sx={{ ml: "auto", display: { xs: "none", sm: "inline-flex" } }} startIcon={<Images size={16} />} onClick={() => navigate(`/regions/${region}/sites`)}>浏览区域</Button>
@@ -172,10 +214,19 @@ export function App() {
             onLocalLabelChange={setSelectedLocalLabel}
             jrcThreshold={jrcThreshold}
             onJrcThresholdChange={setJrcThreshold}
+            logicalPatches={visibleLogicalPatches}
+            patchReviewEnabled={patchReviewEnabled}
+            onPatchReviewEnabledChange={(enabled) => { setPatchReviewEnabled(enabled); setPendingPatchIds(new Set()); setActivePatchId(""); }}
+            activePatchId={activePatchId}
+            pendingPatchIds={pendingPatchIds}
+            onLogicalPatchClick={handleLogicalPatchClick}
+            patchSourceMeta={patchSource.data}
           />
           <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
-            <ImageryPanel region={selectedRegion} siteId={selectedSiteId} onSelectionChange={handleImagerySelection} />
-            <TrainingCapture region={selectedRegion} siteId={selectedSiteId} jrcThreshold={jrcThreshold} localLabel={(localLabels.data || []).find((item) => item.id === selectedLocalLabel)} imagery={imagerySelection} mapHandle={mapRef} />
+            {patchReviewEnabled ? <SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updateLogicalPatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updateLogicalPatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /> : <>
+              <ImageryPanel region={selectedRegion} siteId={selectedSiteId} onSelectionChange={handleImagerySelection} />
+              <TrainingCapture region={selectedRegion} siteId={selectedSiteId} jrcThreshold={jrcThreshold} localLabel={(localLabels.data || []).find((item) => item.id === selectedLocalLabel)} imagery={imagerySelection} mapHandle={mapRef} />
+            </>}
           </Box>
         </> : <Box sx={{ display: "grid", placeItems: "center" }}><Typography color="error">观测区域加载失败</Typography></Box>}
       </Box>

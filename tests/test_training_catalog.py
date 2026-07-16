@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,43 +74,34 @@ class CurrentViewLabelTests(unittest.TestCase):
 
 
 class TrainingPatchCountTests(unittest.TestCase):
-    def test_counts_only_included_patches_with_existing_npz_files(self) -> None:
+    def test_counts_only_included_logical_patches(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
-            manifest = root_path / "processed" / "training_patches" / "ps256_st128" / "manifest.csv"
-            first_npz = root_path / "first.npz"
-            second_npz = root_path / "second.npz"
-            first_npz.touch()
-            second_npz.touch()
+            manifest = root_path / "processed" / "logical_patches" / "manifest.csv"
             write_csv_records(
                 manifest,
                 [
-                    {"patch_id": "included", "site_id": "site-a", "npz_path": str(first_npz), "include": "true"},
-                    {"patch_id": "default-included", "site_id": "site-a", "npz_path": str(second_npz), "include": ""},
-                    {"patch_id": "excluded", "site_id": "site-a", "npz_path": str(first_npz), "include": "false"},
-                    {"patch_id": "missing", "site_id": "site-b", "npz_path": str(root_path / "missing.npz"), "include": "true"},
+                    {"logical_patch_id": "included", "site_id": "site-a", "include": "true"},
+                    {"logical_patch_id": "default-included", "site_id": "site-a", "include": ""},
+                    {"logical_patch_id": "excluded", "site_id": "site-a", "include": "false"},
+                    {"logical_patch_id": "included-b", "site_id": "site-b", "include": "true"},
                 ],
             )
             catalog = TrainingCatalogStub()
-            catalog.region = SimpleNamespace(processed_dir=root_path / "processed")
+            catalog.region = SimpleNamespace(logical_patch_manifest=manifest)
 
-            self.assertEqual(catalog.usable_training_patch_counts(), {"site-a": 2})
+            self.assertEqual(catalog.usable_training_patch_counts(), {"site-a": 2, "site-b": 1})
 
-    def test_uses_only_the_latest_patch_manifest(self) -> None:
+    def test_cache_tracks_logical_manifest_changes(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)
-            patch_root = root_path / "processed" / "training_patches"
-            old_manifest = patch_root / "old" / "manifest.csv"
-            new_manifest = patch_root / "new" / "manifest.csv"
-            npz_path = root_path / "patch.npz"
-            npz_path.touch()
-            write_csv_records(old_manifest, [{"patch_id": "old", "site_id": "old-site", "npz_path": str(npz_path), "include": "true"}])
-            write_csv_records(new_manifest, [{"patch_id": "new", "site_id": "new-site", "npz_path": str(npz_path), "include": "true"}])
-            os.utime(old_manifest, ns=(1_000_000_000, 1_000_000_000))
-            os.utime(new_manifest, ns=(2_000_000_000, 2_000_000_000))
+            manifest = root_path / "processed" / "logical_patches" / "manifest.csv"
+            write_csv_records(manifest, [{"logical_patch_id": "old", "site_id": "old-site", "include": "true"}])
             catalog = TrainingCatalogStub()
-            catalog.region = SimpleNamespace(processed_dir=root_path / "processed")
+            catalog.region = SimpleNamespace(logical_patch_manifest=manifest)
 
+            self.assertEqual(catalog.usable_training_patch_counts(), {"old-site": 1})
+            write_csv_records(manifest, [{"logical_patch_id": "new", "site_id": "new-site", "include": "true"}])
             self.assertEqual(catalog.usable_training_patch_counts(), {"new-site": 1})
 
 

@@ -1,0 +1,15 @@
+[datasets.resize256_v1]
+label = "Resize 256"
+output_size = 256
+min_valid_ratio = 0.6
+min_water_pixels = 1
+negative_ratio = 0.25
+negative_seed = 42
+
+[datasets.native512_v1]
+label = "Native 512"
+output_size = 512
+min_valid_ratio = 0.6
+min_water_pixels = 1
+negative_ratio = 0.25
+negative_seed = 42
