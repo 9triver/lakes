@@ -39,6 +39,17 @@ class SiteDisplayNameTests(unittest.TestCase):
         self.assertEqual(detail["geometry"]["type"], "Polygon")
         self.assertNotIn("layers", detail)
 
+    def test_site_list_includes_usable_training_patch_count(self) -> None:
+        site = self.site_record()
+        catalog = SiteCatalog.__new__(SiteCatalog)
+        catalog.sites = [site]
+        catalog._summary_cache = {site.site_id: {"site_id": site.site_id}}
+        catalog.usable_training_patch_counts = lambda: {site.site_id: 3}
+
+        payload = catalog.list_sites()
+
+        self.assertEqual(payload["items"][0]["usable_training_patch_count"], 3)
+
     def test_display_name_keeps_directory_identity_first(self) -> None:
         self.assertEqual(site_display_name("20307"), "区域 20307")
         self.assertEqual(site_display_name("17407", "苏干湖"), "区域 17407（苏干湖附近）")

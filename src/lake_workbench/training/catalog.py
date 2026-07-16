@@ -289,6 +289,32 @@ class TrainingCatalogMixin:
             "items": rows,
         }
 
+    def usable_training_patch_counts(self) -> dict[str, int]:
+        manifests = self.training_patch_manifest_paths()
+        if not manifests:
+            return {}
+        manifest_path = manifests[0]
+        stat = manifest_path.stat()
+        signature = (str(manifest_path.resolve()), stat.st_mtime_ns, stat.st_size)
+        cached = getattr(self, "_usable_training_patch_counts_cache", None)
+        if cached and cached[0] == signature:
+            return dict(cached[1])
+
+        counts: dict[str, int] = {}
+        for row in read_csv_records(manifest_path):
+            include_value = clean_optional(row.get("include") or row.get("included"))
+            included = True if include_value is None else truthy_flag(include_value, default=True)
+            site_id = clean_optional(row.get("site_id"))
+            npz_path_text = clean_optional(row.get("npz_path"))
+            if not included or not site_id or not npz_path_text:
+                continue
+            if not resolve_data_path(npz_path_text, self.region).exists():
+                continue
+            counts[site_id] = counts.get(site_id, 0) + 1
+
+        self._usable_training_patch_counts_cache = (signature, counts)
+        return dict(counts)
+
     def update_training_patch(self, patch_id: str, payload: dict) -> dict:
         patch_id = str(patch_id)
         for manifest_path in self.training_patch_manifest_paths():
@@ -307,6 +333,7 @@ class TrainingCatalogMixin:
             if updated is None:
                 continue
             write_csv_records(manifest_path, rows)
+            self._usable_training_patch_counts_cache = None
             return self._training_patch_summary(updated, manifest_path)
         raise KeyError(f"training patch not found: {patch_id}")
 

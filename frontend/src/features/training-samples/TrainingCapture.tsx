@@ -69,6 +69,7 @@ export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imag
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["training-samples"] }),
         queryClient.invalidateQueries({ queryKey: ["training-patches"] }),
+        queryClient.invalidateQueries({ queryKey: ["sites"] }),
       ]);
     },
     onError: (error) => setMessage(error.message),

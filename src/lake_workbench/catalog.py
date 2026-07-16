@@ -142,12 +142,19 @@ class SiteCatalog(
             ]
         filtered = self._apply_filters(filtered, filters or {})
         page = filtered[offset : offset + limit]
+        patch_counts = self.usable_training_patch_counts()
         return {
             "total": len(filtered),
             "offset": offset,
             "limit": limit,
             "facets": self._facets(filtered),
-            "items": [self._summary(site) for site in page],
+            "items": [
+                {
+                    **self._summary(site),
+                    "usable_training_patch_count": patch_counts.get(site.site_id, 0),
+                }
+                for site in page
+            ],
         }
 
     def _apply_filters(self, sites: list[SiteRecord], filters: dict) -> list[SiteRecord]:

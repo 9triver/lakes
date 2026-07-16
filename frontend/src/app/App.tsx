@@ -131,7 +131,7 @@ export function App() {
             {!siteItems.length && <Box sx={{ p: 3, textAlign: "center" }}><Typography variant="body2">没有符合条件的观测区域</Typography></Box>}
             {siteItems.map((site, index) => (
               <ListItemButton key={`${site.region || region}:${site.site_id}:${index}`} divider selected={site.site_id === selectedSiteId} onClick={() => navigate(`/regions/${site.region || region}/sites/${site.site_id}${siteSearch}`)}>
-                <ListItemText primary={<Box sx={{ display: "flex", alignItems: "center", gap: .75 }}><Typography variant="body2" noWrap sx={{ flex: 1 }}>{site.display_name || site.site_id}</Typography>{region === "all" && <Chip size="small" label={site.region_name || site.region} />}</Box>} secondary={`覆盖 ${site.coverage_area_km2.toFixed(2)} km² · ${(site.tiles || []).join(", ")}${site.has_tci ? " · 影像" : ""}`} />
+                <ListItemText primary={<Box sx={{ display: "flex", alignItems: "center", gap: .75 }}><Typography variant="body2" noWrap sx={{ flex: 1 }}>{site.display_name || site.site_id}</Typography>{Boolean(site.usable_training_patch_count) && <Chip size="small" color="success" variant="outlined" label={`训练 ${site.usable_training_patch_count}`} />}{region === "all" && <Chip size="small" label={site.region_name || site.region} />}</Box>} secondary={`覆盖 ${site.coverage_area_km2.toFixed(2)} km² · ${(site.tiles || []).join(", ")}${site.has_tci ? " · 影像" : ""}`} />
               </ListItemButton>
             ))}
             {sites.hasNextPage && <Box sx={{ p: 1.5 }}><Button fullWidth variant="outlined" disabled={sites.isFetchingNextPage} onClick={() => sites.fetchNextPage()}>{sites.isFetchingNextPage ? "加载中" : "加载更多"}</Button></Box>}

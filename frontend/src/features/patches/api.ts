@@ -23,7 +23,15 @@ export function useTrainingPatches(scope: string, include: string) {
 
 export function useUpdateTrainingPatch(scope: string, include: string) {
   const client = useQueryClient();
-  return useMutation({ mutationFn: (patch: TrainingPatch) => patchJson(`/api/regions/${encodeURIComponent(patch.region || scope)}/training-patches/${encodeURIComponent(patch.patch_id)}`, { include: !patch.included }), onSuccess: () => client.invalidateQueries({ queryKey: ["training-patches", scope, include] }) });
+  return useMutation({
+    mutationFn: (patch: TrainingPatch) => patchJson(`/api/regions/${encodeURIComponent(patch.region || scope)}/training-patches/${encodeURIComponent(patch.patch_id)}`, { include: !patch.included }),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["training-patches", scope, include] }),
+        client.invalidateQueries({ queryKey: ["sites"] }),
+      ]);
+    },
+  });
 }
 
 export function useStartPatchExport(scope: string) {

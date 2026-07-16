@@ -192,13 +192,20 @@ npm run build
 PYTHONPATH=src HOST=0.0.0.0 PORT=18765 scripts/run_dev.sh
 ```
 
-当前部署使用用户级 `lakes.service`：
+用户级 systemd 服务模板位于 `systemd/lakes.service`。安装并启动：
 
 ```bash
-systemctl --user restart lakes.service
+mkdir -p ~/.config/systemd/user
+cp systemd/lakes.service ~/.config/systemd/user/lakes.service
+systemctl --user daemon-reload
+systemctl --user enable --now lakes.service
 systemctl --user status lakes.service
-journalctl --user -u lakes.service
+journalctl --user -u lakes.service -f
 ```
+
+服务默认从 `~/lakes` 启动后端，监听 `0.0.0.0:18765`。修改 unit 后执行
+`systemctl --user daemon-reload` 和 `systemctl --user restart lakes.service`。若要在用户未
+登录时也保持服务运行，管理员需执行 `sudo loginctl enable-linger lake`。
 
 ## 准备区域数据
 

@@ -46,6 +46,7 @@ test("site browser restores filters and renders all map layers", async ({ page }
   const errors = await observePageErrors(page);
   await page.goto("#/regions/gansu/sites/gansu_17407?has_osm=true&has_tci=true");
   await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("button", { name: /区域 17407（苏干湖附近） 训练 \d+/ })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "OSM 标注" })).toHaveText(/有候选/);
   await expect(page.getByRole("combobox", { name: "影像" })).toHaveText(/有影像/);
   for (const label of ["影像", "Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {

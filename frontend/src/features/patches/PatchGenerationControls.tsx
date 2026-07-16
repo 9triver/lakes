@@ -17,7 +17,12 @@ export function PatchGenerationControls({ scope }: { scope: string }) {
   const running = start.isPending || status === "queued" || status === "running";
 
   useEffect(() => {
-    if (status === "completed") queryClient.invalidateQueries({ queryKey: ["training-patches", scope] });
+    if (status === "completed") {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["training-patches", scope] }),
+        queryClient.invalidateQueries({ queryKey: ["sites"] }),
+      ]);
+    }
   }, [queryClient, scope, status]);
 
   const submit = () => {

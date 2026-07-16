@@ -25,6 +25,7 @@ export interface SiteSummary {
   polygon_quality?: string;
   metadata_quality?: string;
   best_tci_date?: string;
+  usable_training_patch_count?: number;
 }
 
 export interface SitesResponse {
