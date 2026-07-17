@@ -3,7 +3,6 @@ import { Box, Button, Chip, CircularProgress, FormControl, IconButton, InputLabe
 import { ArrowLeft, BrainCircuit, Database, Images, Search } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useContextWater, useEsaLayer, useHydrolakesLayer, useJrcLayer, useOsmLayer, useSite, useSites, useLocalLabel, useLocalLabels, useTileMeta } from "../features/sites/api";
-import { SiteFilterControls } from "../features/sites/SiteFilterControls";
 import { useRegions } from "../features/regions/api";
 import { SiteMap, type SiteMapHandle } from "../features/map/SiteMap";
 import { ImageryPanel } from "../features/imagery/ImageryPanel";
@@ -15,7 +14,7 @@ import { TrainingCapture } from "../features/training-samples/TrainingCapture";
 import { TrainingSamplesView } from "../features/training-samples/TrainingSamplesView";
 import { TrainingView } from "../features/training/TrainingView";
 import { ModelValidationView } from "../features/model-validation/ModelValidationView";
-import type { SiteFilters, TrainingPatch, TrainingSample } from "../api/types";
+import type { TrainingPatch, TrainingSample } from "../api/types";
 import { useWorkbenchStore } from "./store";
 
 export function App() {
@@ -23,14 +22,6 @@ export function App() {
   const navigate = useNavigate();
   const initialSearch = useMemo(() => new URLSearchParams(location.search), []);
   const [query, setQuery] = useState(() => initialSearch.get("q") || "");
-  const [filters, setFilters] = useState<SiteFilters>(() => ({
-    area_bucket: initialSearch.get("area_bucket") || "",
-    has_name: initialSearch.get("has_name") || "",
-    has_tci: initialSearch.get("has_tci") || "",
-    has_osm: initialSearch.get("has_osm") || "",
-    has_hydrolakes: initialSearch.get("has_hydrolakes") || "",
-    has_local_labels: initialSearch.get("has_local_labels") || "",
-  }));
   const [jrcThreshold, setJrcThreshold] = useState(75);
   const [selectedLocalLabel, setSelectedLocalLabel] = useState("");
   const [imagerySelection, setImagerySelection] = useState({ tile: "", product: "" });
@@ -57,7 +48,7 @@ export function App() {
   const modelSiteRegion = routeParams.get("site_region") || (modelRoute?.[1] === "all" ? "" : modelRoute?.[1] || "");
   const isSiteWorkspace = !isTraining && !isModelValidation;
   const regions = useRegions();
-  const sites = useSites(region, query, filters);
+  const sites = useSites(region, query);
   const siteItems = sites.data?.pages.flatMap((page) => page.items) || [];
   const siteTotal = sites.data?.pages[0]?.total;
   const site = useSite(selectedRegion, selectedSiteId);
@@ -111,10 +102,9 @@ export function App() {
   const siteSearch = useMemo(() => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
-    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
     const value = params.toString();
     return value ? `?${value}` : "";
-  }, [filters, query]);
+  }, [query]);
 
   useEffect(() => {
     if (region && location.pathname === "/") navigate(`/regions/${region}/sites${siteSearch}`, { replace: true });
@@ -164,7 +154,6 @@ export function App() {
           </List>
           {isSiteWorkspace && <>
             <TextField fullWidth placeholder="区域 ID / 名称提示" value={query} onChange={(event) => setQuery(event.target.value)} slotProps={{ input: { startAdornment: <Search size={17} /> } }} />
-            <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1 }}><SiteFilterControls value={filters} onChange={setFilters} /></Box>
             <Typography variant="caption" color="text.secondary">{siteTotal != null ? `${siteTotal} 个观测区域，显示 ${siteItems.length} 个` : "加载中"}</Typography>
           </>}
         </Box>

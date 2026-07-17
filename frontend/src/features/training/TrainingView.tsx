@@ -30,7 +30,7 @@ function RunDetails({ run }: { run?: TrainingRun }) {
   const latest = history.at(-1);
   const bestIou = run.result?.best_iou;
   const config = run.config || run.result?.config || {};
-  const architecture = String(config.architecture_label || (config.model_type === "pixel_mlp" ? "5 -> 32 -> 16 -> 1" : `U-Net (base ${config.base_channels || "-"})`));
+  const architecture = String(config.architecture_label || (config.model_type === "pixel_mlp" ? "5 -> 16 -> 8 -> 1" : `U-Net (base ${config.base_channels || "-"})`));
   return <Box sx={{ minWidth: 0 }}>
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}><Typography variant="subtitle1" color="text.primary">{run.run_name || run.job_id}</Typography><Chip size="small" label={statusLabel(run.status)} color={run.status === "completed" ? "success" : run.status === "failed" ? "error" : isTrainingRunActive(run) ? "primary" : "default"} /></Box>
     <LinearProgress variant="determinate" value={Number(run.progress || 0)} sx={{ mb: 1.5 }} />
@@ -58,6 +58,7 @@ export function TrainingView({ scope }: { scope: string }) {
   const [batchSize, setBatchSize] = useState(8);
   const [lr, setLr] = useState(0.001);
   const [baseChannels, setBaseChannels] = useState(32);
+  const [hiddenChannels, setHiddenChannels] = useState<[number, number]>([16, 8]);
   const [device, setDevice] = useState("cuda");
   const [noAugment, setNoAugment] = useState(false);
   const [buildJobId, setBuildJobId] = useState("");
@@ -70,7 +71,7 @@ export function TrainingView({ scope }: { scope: string }) {
   if (query.isLoading) return <Box sx={{ display: "grid", placeItems: "center", height: "100%" }}><CircularProgress size={28} /></Box>;
   if (query.isError) return <Typography color="error" sx={{ p: 2 }}>{query.error.message}</Typography>;
   const selectedDataset = (datasetConfigs.data?.items || []).find((item) => item.config_id === datasetConfigId);
-  const submit = () => start.mutate({ run_name: runName.trim(), model_type: modelType, epochs, batch_size: batchSize, lr, base_channels: baseChannels, device, no_augment: modelType === "pixel_mlp" || noAugment, dataset_config_id: datasetConfigId }, { onSuccess: (run) => setSelectedId(run.job_id) });
+  const submit = () => start.mutate({ run_name: runName.trim(), model_type: modelType, epochs, batch_size: batchSize, lr, base_channels: baseChannels, hidden_channels: hiddenChannels, device, no_augment: modelType === "pixel_mlp" || noAugment, dataset_config_id: datasetConfigId }, { onSuccess: (run) => setSelectedId(run.job_id) });
 
   return <Box sx={{ height: "100%", overflow: "auto", p: { xs: 1.5, sm: 2 }, display: "grid", gap: 2, alignContent: "start" }}>
     <DatasetSummary dataset={query.data?.dataset} />
@@ -90,6 +91,8 @@ export function TrainingView({ scope }: { scope: string }) {
       <TextField label="Batch" type="number" value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} sx={{ width: 95 }} slotProps={{ htmlInput: { min: 1, max: 128 } }} />
       <TextField label="学习率" type="number" value={lr} onChange={(event) => setLr(Number(event.target.value))} sx={{ width: 115 }} slotProps={{ htmlInput: { min: .000001, max: 1, step: .0001 } }} />
       {modelType === "unet" && <TextField label="模型宽度" type="number" value={baseChannels} onChange={(event) => setBaseChannels(Number(event.target.value))} sx={{ width: 115 }} slotProps={{ htmlInput: { min: 4, max: 128, step: 4 } }} />}
+      {modelType === "pixel_mlp" && <TextField label="隐藏层 1" type="number" value={hiddenChannels[0]} onChange={(event) => setHiddenChannels([Number(event.target.value), hiddenChannels[1]])} sx={{ width: 105 }} slotProps={{ htmlInput: { min: 1, max: 1024, step: 1 } }} />}
+      {modelType === "pixel_mlp" && <TextField label="隐藏层 2" type="number" value={hiddenChannels[1]} onChange={(event) => setHiddenChannels([hiddenChannels[0], Number(event.target.value)])} sx={{ width: 105 }} slotProps={{ htmlInput: { min: 1, max: 1024, step: 1 } }} />}
       <FormControl sx={{ width: 105 }}><InputLabel>设备</InputLabel><Select label="设备" value={device} onChange={(event) => setDevice(event.target.value)}><MenuItem value="cuda">GPU</MenuItem><MenuItem value="auto">自动</MenuItem><MenuItem value="cpu">CPU</MenuItem></Select></FormControl>
       {modelType === "unet" && <FormControlLabel control={<Switch size="small" checked={noAugment} onChange={(event) => setNoAugment(event.target.checked)} />} label="关闭增强" />}
       <Button variant="contained" startIcon={<Play size={16} />} disabled={Boolean(activeRun) || start.isPending || !selectedDataset?.ready || !selectedDataset.patches} onClick={submit}>开始训练</Button>

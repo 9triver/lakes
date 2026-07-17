@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from lake_workbench.models.metadata import model_sort_key
+from lake_workbench.models.metadata import model_sort_key, persisted_training_job
 from lake_workbench.training.datasets import split_rows_by_site
 from lake_workbench.training.identity import bbox_iou, training_view_signature
 
@@ -72,6 +75,20 @@ class TrainingIdentityTests(unittest.TestCase):
         ]
         ordered = sorted(items, key=model_sort_key)
         self.assertEqual([item["label"] for item in ordered], ["best", "last", "lower"])
+
+    def test_persisted_job_without_training_artifacts_is_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "interrupted_run"
+            run_dir.mkdir()
+            (run_dir / "config.json").write_text(json.dumps({"epochs": 30}), encoding="utf-8")
+
+            job = persisted_training_job("all", run_dir)
+
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["result"]["status"], "failed")
+        self.assertEqual(job["message"], "训练未完成（服务重启或启动失败）")
 
 
 if __name__ == "__main__":

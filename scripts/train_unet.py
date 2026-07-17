@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
 from lake_workbench.models.runtime import (  # noqa: E402
+    PIXEL_MLP_HIDDEN_CHANNELS,
     SUPPORTED_MODEL_TYPES,
     architecture_label,
     build_model,
@@ -106,6 +107,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--base-channels", type=int, default=32)
+    parser.add_argument(
+        "--hidden-channels",
+        type=int,
+        nargs=2,
+        default=list(PIXEL_MLP_HIDDEN_CHANNELS),
+        metavar=("HIDDEN_1", "HIDDEN_2"),
+    )
     parser.add_argument("--val-ratio", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -141,9 +149,13 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
     train_rows, val_rows = split_rows_by_site(rows, args.val_ratio, args.seed)
     normalization = compute_normalization(train_rows, max_patches=args.max_norm_patches)
     pos_weight = compute_pos_weight(train_rows) if args.pos_weight == "auto" else float(args.pos_weight)
+    configured_hidden_channels = getattr(args, "hidden_channels", None)
     selected_model_options = model_options(
         selected_model_type,
-        {"base_channels": args.base_channels},
+        {
+            "base_channels": args.base_channels,
+            "model_options": {"hidden_channels": configured_hidden_channels} if configured_hidden_channels else {},
+        },
     )
 
     config = {

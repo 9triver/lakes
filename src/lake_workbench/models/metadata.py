@@ -117,8 +117,10 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
     history = read_json_file(run_dir / "history.json", [])
     if not isinstance(history, list):
         history = []
+    completed = (run_dir / "best.pt").exists() or (run_dir / "last.pt").exists() or bool(history)
+    status = "completed" if completed else "failed"
     result = {
-        "status": "completed",
+        "status": status,
         "output_dir": display_path(run_dir),
         "manifest": config.get("manifest") or display_path(run_dir / "manifest.csv"),
         "best_model": display_path(run_dir / "best.pt") if (run_dir / "best.pt").exists() else "",
@@ -128,7 +130,6 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
     }
     if history:
         result["best_iou"] = max((parse_float((record.get("val") or {}).get("iou")) or 0 for record in history), default=0)
-    status = "completed" if result["best_model"] or result["last_model"] or history else "configured"
     epoch = parse_int_or_default((history[-1] if history else {}).get("epoch"), 0)
     epochs = parse_int_or_default(config.get("epochs"), epoch)
     config_path = run_dir / "config.json"
@@ -137,7 +138,7 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
         "scope": scope,
         "run_name": run_dir.name,
         "status": status,
-        "message": "历史训练任务",
+        "message": "历史训练任务" if completed else "训练未完成（服务重启或启动失败）",
         "progress": 100 if status == "completed" else 5,
         "epoch": epoch,
         "epochs": epochs,

@@ -55,6 +55,7 @@ class PixelTrainingTests(unittest.TestCase):
                 lr=1e-3,
                 weight_decay=1e-4,
                 base_channels=32,
+                hidden_channels=[12, 6],
                 val_ratio=0.5,
                 seed=42,
                 num_workers=0,
@@ -70,6 +71,8 @@ class PixelTrainingTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["config"]["model_type"], "pixel_mlp")
+            self.assertEqual(result["config"]["model_options"]["hidden_channels"], [12, 6])
+            self.assertEqual(result["config"]["architecture_label"], "5 -> 12 -> 6 -> 1")
             self.assertEqual(result["config"]["split_group"], "site_id")
             self.assertFalse(result["config"]["augmentation_enabled"])
             self.assertTrue((output_dir / "best.pt").exists())

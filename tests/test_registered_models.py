@@ -11,6 +11,12 @@ from lake_workbench.models.runtime import build_model, load_model_checkpoint, pr
 
 
 class RegisteredModelTests(unittest.TestCase):
+    def test_pixel_mlp_uses_smaller_default_architecture(self) -> None:
+        model = build_model("pixel_mlp", 5)
+
+        self.assertEqual(model[0].out_channels, 16)
+        self.assertEqual(model[2].out_channels, 8)
+
     def test_pixel_mlp_is_pointwise_and_preserves_image_shape(self) -> None:
         model = build_model("pixel_mlp", 5).eval()
         first = torch.zeros(1, 5, 4, 4)
@@ -27,7 +33,7 @@ class RegisteredModelTests(unittest.TestCase):
     def test_pixel_mlp_checkpoint_round_trip_and_tiled_prediction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pixel.pt"
-            network = build_model("pixel_mlp", 5)
+            network = build_model("pixel_mlp", 5, {"hidden_channels": [32, 16]})
             torch.save(
                 {
                     "epoch": 3,

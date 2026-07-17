@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from lake_workbench.paths import PROJECT_ROOT
-from lake_workbench.models.runtime import normalize_model_type
+from lake_workbench.models.runtime import PIXEL_MLP_HIDDEN_CHANNELS, normalize_model_type
 from lake_workbench.regions.config import load_region_configs
 from lake_workbench.training.logical_patches import build_logical_patches, build_training_dataset, training_dataset_status
 from lake_workbench.utils import (
@@ -70,6 +70,7 @@ def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
         lr=parse_float_or_default(options.get("lr"), 1e-3),
         weight_decay=parse_float_or_default(options.get("weight_decay"), 1e-4),
         base_channels=parse_int_or_default(options.get("base_channels"), 32),
+        hidden_channels=options.get("hidden_channels") or list(PIXEL_MLP_HIDDEN_CHANNELS),
         val_ratio=parse_float_or_default(options.get("val_ratio"), 0.25),
         seed=parse_int_or_default(options.get("seed"), 42),
         num_workers=parse_int_or_default(options.get("num_workers"), 0),

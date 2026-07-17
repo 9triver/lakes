@@ -1,15 +1,14 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
-import type { ContextWaterResponse, FeatureCollection, GeoJsonLayer, SiteDetail, SiteFilters, SitesResponse, LocalLabelItem, TileMeta } from "../../api/types";
+import type { ContextWaterResponse, FeatureCollection, GeoJsonLayer, SiteDetail, SitesResponse, LocalLabelItem, TileMeta } from "../../api/types";
 
 const sitePageSize = 200;
 
-export function useSites(region: string, query: string, filters: SiteFilters) {
+export function useSites(region: string, query: string) {
   return useInfiniteQuery({
-    queryKey: ["sites", region, query, filters],
+    queryKey: ["sites", region, query],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ q: query, limit: String(sitePageSize), offset: String(pageParam) });
-      Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
       return getJson<SitesResponse>(`/api/regions/${encodeURIComponent(region)}/sites?${params}`);
     },
     initialPageParam: 0,

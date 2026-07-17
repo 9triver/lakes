@@ -12,7 +12,7 @@ import numpy as np
 
 
 SUPPORTED_MODEL_TYPES = ("unet", "pixel_mlp")
-PIXEL_MLP_HIDDEN_CHANNELS = (32, 16)
+PIXEL_MLP_HIDDEN_CHANNELS = (16, 8)
 PIXEL_MLP_INFERENCE_TILE = 512
 
 torch = None
@@ -53,8 +53,8 @@ def model_options(model_type: str, config: dict | None = None) -> dict:
     if model_type == "pixel_mlp":
         hidden = stored.get("hidden_channels") or PIXEL_MLP_HIDDEN_CHANNELS
         hidden = [int(value) for value in hidden]
-        if hidden != list(PIXEL_MLP_HIDDEN_CHANNELS):
-            raise ValueError(f"pixel_mlp hidden_channels must be {list(PIXEL_MLP_HIDDEN_CHANNELS)}")
+        if len(hidden) != 2 or any(value <= 0 for value in hidden):
+            raise ValueError("pixel_mlp hidden_channels must contain two positive integers")
         return {"hidden_channels": hidden}
     return {"base_channels": int(stored.get("base_channels") or config.get("base_channels") or 32)}
 

@@ -35,15 +35,6 @@ export interface SitesResponse {
   facets?: Record<string, Record<string, number>>;
 }
 
-export interface SiteFilters {
-  area_bucket: string;
-  has_name: string;
-  has_tci: string;
-  has_osm: string;
-  has_hydrolakes: string;
-  has_local_labels: string;
-}
-
 export interface GeoJsonLayer {
   geometry?: Record<string, unknown> | null;
   properties?: Record<string, unknown>;
@@ -126,7 +117,6 @@ export interface TrainingSample {
   region?: string;
   region_name?: string;
   status?: string;
-  split?: string;
   notes?: string;
   label_source?: string;
   product_date?: string;

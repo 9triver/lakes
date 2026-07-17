@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
 import uuid
@@ -17,6 +18,18 @@ JobRunner = Callable[..., dict]
 
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _release_cuda_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+    except Exception:
+        # Cleanup is best-effort and must not mask the training result.
+        pass
 
 
 class DownloadManager:
@@ -274,6 +287,7 @@ class TrainingManager:
         except Exception as exc:  # noqa: BLE001 - surfaced to the local UI.
             self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")
         finally:
+            _release_cuda_memory()
             with self._lock:
                 self.cancel_events.pop(job_id, None)
 

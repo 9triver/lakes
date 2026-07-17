@@ -36,13 +36,17 @@ async function expectUsableMap(page: Page) {
 
 test.beforeAll(async () => mkdir(screenshotDir, { recursive: true }));
 
-test("site browser restores filters and renders all map layers", async ({ page }) => {
+test("site browser restores search and renders all map layers", async ({ page }) => {
   const errors = await observePageErrors(page);
-  await page.goto("#/regions/gansu/sites/gansu_17407?has_osm=true&has_tci=true");
+  await page.goto("#/regions/gansu/sites/gansu_17407?q=17407&has_osm=true&has_tci=true");
   await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
   await expect(page.getByRole("button", { name: /区域 17407（苏干湖附近） 逻辑 \d+/ })).toBeVisible();
-  await expect(page.getByRole("combobox", { name: "OSM 标注" })).toHaveText(/有候选/);
-  await expect(page.getByRole("combobox", { name: "影像" })).toHaveText(/有影像/);
+  await expect(page.getByPlaceholder("区域 ID / 名称提示")).toHaveValue("17407");
+  await expect(page).toHaveURL(/#\/regions\/gansu\/sites\/gansu_17407\?q=17407$/);
+  await expect(page.getByRole("combobox", { name: "区域" })).toBeVisible();
+  for (const label of ["覆盖面积", "名称提示", "影像", "OSM 标注", "HydroLAKES", "本地标注"]) {
+    await expect(page.getByRole("combobox", { name: label, exact: true })).toHaveCount(0);
+  }
   for (const label of ["影像", "Tile", "OSM", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).toBeVisible();
   }

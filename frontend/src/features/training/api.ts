@@ -42,6 +42,7 @@ export interface TrainingOptions {
   batch_size: number;
   lr: number;
   base_channels: number;
+  hidden_channels: [number, number];
   device: string;
   no_augment: boolean;
   dataset_config_id: string;

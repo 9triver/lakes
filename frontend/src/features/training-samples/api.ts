@@ -8,7 +8,7 @@ export function useTrainingSamples(scope: string) {
 
 export function useUpdateTrainingSample(scope: string) {
   const client = useQueryClient();
-  return useMutation({ mutationFn: ({ sample, changes }: { sample: TrainingSample; changes: { split: string; notes: string } }) => patchJson(`/api/regions/${encodeURIComponent(sample.region || scope)}/training-samples/${encodeURIComponent(sample.sample_id)}`, changes), onSuccess: () => client.invalidateQueries({ queryKey: ["training-samples", scope] }) });
+  return useMutation({ mutationFn: ({ sample, changes }: { sample: TrainingSample; changes: { notes: string } }) => patchJson(`/api/regions/${encodeURIComponent(sample.region || scope)}/training-samples/${encodeURIComponent(sample.sample_id)}`, changes), onSuccess: () => client.invalidateQueries({ queryKey: ["training-samples", scope] }) });
 }
 
 export function useDeleteTrainingSample(scope: string) {
