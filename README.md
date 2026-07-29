@@ -125,14 +125,16 @@ data/regions/<region>/
     active_imagery.json
     training_samples.csv
     training_labels/
-    training_patches/
+    logical_patches/
+    training_patch_cache/
 ```
 
-模型统一放在：
+Profile 状态和模型统一放在：
 
 ```text
-data/models/<region>/<run>/
-data/models/all/<run>/
+data/profiles/<profile>/
+data/models/profiles/<profile>/<region-or-all>/<run>/
+data/models/<region-or-all>/<run>/        旧模型，只由默认 Profile 读取
 ```
 
 每个训练目录通常包含 `config.json`、`history.json`、`manifest.csv`、`best.pt` 和 `last.pt`。
@@ -258,30 +260,29 @@ PYTHONPATH=src .venv/bin/python scripts/precompute_jrc_polygons.py \
 
 ## 训练工作流
 
-1. 在观测区域页面选择本地影像或已下载的 Sentinel 产品。
-2. 打开可信的 OSM、HydroLAKES、ESA、JRC 或本地标注。
-3. 记录当前视图为训练区域。
-4. 系统检测严格重复和视图范围高度重叠的相似样本。
-5. 新样本自动生成固定 `512 x 512`、无重叠的逻辑 Patch。
-6. 在区域地图或训练集页面审核逻辑 Patch 的 include/exclude。
-7. 显式构建 `resize256_v1` 或 `native512_v1` 训练数据后启动 U-Net 或 Pixel MLP。
-8. 在模型验证页面选择权重并随机验证观测区域。
-9. 对预测较差的区域重新选择可信标注并补入训练集。
+1. 访问根路径，在全屏用户选择页进入或新建一个全局“用户”（内部称 Training Profile）；新用户可以为空，也可以取多个已解析用户的 Patch 快照并集。
+2. 在观测区域页面选择影像，打开可信的 OSM、HydroLAKES、ESA、JRC 或本地标注并记录训练区域。
+3. Training Sample 属于共享基础观测数据；逻辑 Patch 底稿和审核状态由每个用户独享，新 Patch 只生成到当前用户。
+4. 在区域地图或训练集页面审核当前用户的逻辑 Patch 选择。
+5. 同一 site 出现不同来源变体时，用户进入待处理状态；人工确认来源子集后才能构建或训练。
+6. 显式构建 `resize256_v1` 或 `native512_v1` Profile Dataset，然后启动 U-Net 或 Pixel MLP。
+7. 每个 Run 固化 manifest，模型归属当前用户；模型验证默认显示当前用户，也可切换全部用户。
 
 手工重建逻辑 Patch 和训练数据：
 
 ```bash
-.venv/bin/python scripts/build_logical_patches.py --region yunnan
-.venv/bin/python scripts/build_training_dataset.py --region yunnan --config resize256_v1
-.venv/bin/python scripts/build_training_dataset.py --region yunnan --config native512_v1
+.venv/bin/python scripts/build_logical_patches.py --profile default --region yunnan
+.venv/bin/python scripts/build_training_dataset.py --profile default --region yunnan --config resize256_v1
+.venv/bin/python scripts/build_training_dataset.py --profile default --region yunnan --config native512_v1
 ```
 
-重建逻辑目录会按稳定 ID 保留已有 include/exclude 状态。实际训练数据是只读派生产物，逻辑状态或配置变化后必须重新构建。
+重建逻辑目录只处理命令指定用户已经拥有的 Training Sample，不会读取或复制其他用户的 Logical Patch。可用 `--sample <sample_id>` 将一个共享 Training Sample 加入该用户。实际训练数据是只读派生产物，用户的 Patch、来源选择或 Dataset Config 变化后必须重新构建。
 
 手工训练 Pixel MLP：
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train_model.py \
+  --profile default \
   --region gansu \
   --model-type pixel_mlp \
   --dataset-config resize256_v1 \
@@ -294,23 +295,36 @@ PYTHONPATH=src .venv/bin/python scripts/train_model.py \
 
 ## API 约定
 
-区域化 API 使用以下形式：
+共享目录、影像、标注和 Training Sample 使用全局 API：
 
 ```text
 /api/regions
-/api/regions/<region>/sites
+/api/regions/<region-or-all>/sites
 /api/regions/<region>/sites/<site_id>
 /api/regions/<region>/sites/<site_id>/annotations/<source>
 /api/regions/<region>/sites/<site_id>/local-labels
 /api/regions/<region>/sites/<site_id>/imagery
-/api/regions/<region>/training-samples
-/api/regions/<region>/training-patches
-/api/regions/<region>/training-runs
-/api/regions/<region>/model-validation/models
-/api/regions/<region>/model-validation/random
+/api/regions/<region-or-all>/training-samples
 ```
 
-单个观测区域的详情、影像、标注和 Sentinel 操作必须使用实际 region。`all` 用于跨区域观测区域列表、训练样本、Patch、训练任务和模型验证等聚合场景。
+用户管理和用户工作区数据必须显式携带 Profile：
+
+```text
+/api/profiles
+/api/profiles/<profile>
+/api/profiles/<profile>/source-conflicts
+/api/profiles/<profile>/regions/<region-or-all>/sites
+/api/profiles/<profile>/regions/<region>/sites/<site_id>/training-samples
+/api/profiles/<profile>/regions/<region-or-all>/logical-patches
+/api/profiles/<profile>/regions/<region-or-all>/training-datasets
+/api/profiles/<profile>/regions/<region-or-all>/training-runs
+/api/profiles/<profile>/regions/<region-or-all>/model-validation/models
+/api/profiles/<profile>/regions/<region-or-all>/model-validation/random
+```
+
+单个观测区域的影像、标注、Sentinel 操作和已有 Training Sample 仍是全局共享数据；创建 Training Sample 时因为会自动生成并加入当前用户的 Logical Patch，必须走用户工作区 API。Patch 选择、数据集、训练任务和模型接口也必须携带 Profile。不存在隐式 `default` 用户，旧 Profile 敏感接口返回 `404`。`all` 用于跨区域聚合场景。
+
+前端根路径 `#/` 是用户选择页，工作区使用 `#/profiles/<profile>/regions/...`。`#/profiles/<profile>` 会进入该用户的默认区域；不带用户的旧 `#/regions/...` 路由不再支持。
 
 OSM、HydroLAKES、ESA、JRC 和 Local Label 通过统一 annotation provider 读取。标注接口返回：
 

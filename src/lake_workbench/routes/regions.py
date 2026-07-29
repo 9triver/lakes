@@ -35,6 +35,8 @@ def handle_region_get(handler, path: str, query_string: str) -> bool:
                 limit=limit,
                 offset=offset,
                 filters=filters,
+                profile_store=getattr(handler.__class__, "profile_store", None) if getattr(handler, "profile_id", None) else None,
+                profile_id=getattr(handler, "profile_id", None),
             )
         )
     else:

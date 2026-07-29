@@ -16,6 +16,7 @@ from lake_workbench.jobs import DownloadManager, PatchExportManager, TrainingMan
 from lake_workbench.catalog import SiteCatalog
 from lake_workbench.regions.service import RegionService
 from lake_workbench.routes.frontend import handle_frontend_get
+from lake_workbench.routes.profiles import handle_profile_get, handle_profile_patch, handle_profile_post
 from lake_workbench.routes.sites import handle_site_get, handle_site_post
 from lake_workbench.routes.models import handle_model_get
 from lake_workbench.routes.regions import handle_region_get
@@ -40,15 +41,15 @@ class SiteHandler(BaseHTTPRequestHandler):
     downloads_by_region: dict[str, DownloadManager]
     patch_exports_by_region: dict[str, PatchExportManager]
     dataset_builds_by_region: dict[str, PatchExportManager]
-    training_runs_by_scope: dict[str, TrainingManager]
     all_patch_exports: PatchExportManager
     all_dataset_builds: PatchExportManager
     catalog: SiteCatalog
     downloads: DownloadManager
     patch_exports: PatchExportManager
     dataset_builds: PatchExportManager
-    training_runs: TrainingManager
+    training_runs: TrainingManager | None
     region_service: RegionService
+    profile_id: str | None = None
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -59,6 +60,8 @@ class SiteHandler(BaseHTTPRequestHandler):
                 return
 
             if handle_frontend_get(self, path, STATIC_DIR):
+                return
+            if handle_profile_get(self, path, parsed.query):
                 return
             if handle_region_get(self, path, parsed.query):
                 return
@@ -87,6 +90,8 @@ class SiteHandler(BaseHTTPRequestHandler):
             if path is None:
                 return
 
+            if handle_profile_post(self, path):
+                return
             if handle_training_post(self, path):
                 return
             if handle_sentinel_post(self, path):
@@ -107,6 +112,8 @@ class SiteHandler(BaseHTTPRequestHandler):
             if path is None:
                 return
 
+            if handle_profile_patch(self, path):
+                return
             if not handle_training_patch(self, path):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")
         except CLIENT_DISCONNECT_ERRORS:
@@ -135,7 +142,24 @@ class SiteHandler(BaseHTTPRequestHandler):
     def _bind_request_context(self, path: str) -> str | None:
         region_key = self.__class__.catalog.region.key
         normalized_path = path
-        if path.startswith("/api/regions/all/"):
+        profile_id = None
+        profile_match = re.match(r"^/api/profiles/([^/]+)/regions/([^/]+)(/.*)?$", path)
+        if profile_match:
+            profile_id, region_key = profile_match.group(1), profile_match.group(2)
+            store = getattr(self.__class__, "profile_store", None)
+            if store is None:
+                self._error(HTTPStatus.NOT_FOUND, "用户功能尚未配置")
+                return None
+            try:
+                store.get(profile_id, allow_archived=False)
+            except (KeyError, ValueError) as exc:
+                self._error(HTTPStatus.NOT_FOUND, str(exc))
+                return None
+            if region_key != "all" and region_key not in self.__class__.catalogs:
+                self._error(HTTPStatus.NOT_FOUND, f"Region not found: {region_key}")
+                return None
+            normalized_path = ("/api/all" if region_key == "all" else "/api") + (profile_match.group(3) or "")
+        elif path.startswith("/api/regions/all/"):
             region_key = "all"
             normalized_path = "/api/all" + path.removeprefix("/api/regions/all")
         elif path.startswith("/api/regions/"):
@@ -157,7 +181,9 @@ class SiteHandler(BaseHTTPRequestHandler):
             self.downloads = self.__class__.downloads_by_region[region_key]
             self.patch_exports = self.__class__.patch_exports_by_region[region_key]
             self.dataset_builds = self.__class__.dataset_builds_by_region[region_key]
-        self.training_runs = self.__class__.training_runs_by_scope[region_key]
+        self.profile_id = profile_id
+        factory = getattr(self.__class__, "training_manager_factory", None)
+        self.training_runs = factory(profile_id, region_key) if factory and profile_id else None
         return normalized_path
 
 
@@ -221,12 +247,13 @@ def create_site_handler(
     catalogs: dict[str, SiteCatalog],
     downloads_by_region: dict[str, DownloadManager],
     patch_exports_by_region: dict[str, PatchExportManager],
-    training_runs_by_scope: dict[str, TrainingManager],
     all_patch_exports: PatchExportManager,
     default_region_key: str,
     region_service: RegionService,
     dataset_builds_by_region: dict[str, PatchExportManager] | None = None,
     all_dataset_builds: PatchExportManager | None = None,
+    profile_store=None,
+    training_manager_factory=None,
 ) -> type[SiteHandler]:
     """Bind one server's runtime dependencies to an isolated handler class."""
 
@@ -237,13 +264,14 @@ def create_site_handler(
     ConfiguredSiteHandler.downloads_by_region = downloads_by_region
     ConfiguredSiteHandler.patch_exports_by_region = patch_exports_by_region
     ConfiguredSiteHandler.dataset_builds_by_region = dataset_builds_by_region or patch_exports_by_region
-    ConfiguredSiteHandler.training_runs_by_scope = training_runs_by_scope
     ConfiguredSiteHandler.all_patch_exports = all_patch_exports
     ConfiguredSiteHandler.all_dataset_builds = all_dataset_builds or all_patch_exports
     ConfiguredSiteHandler.catalog = catalogs[default_region_key]
     ConfiguredSiteHandler.downloads = downloads_by_region[default_region_key]
     ConfiguredSiteHandler.patch_exports = patch_exports_by_region[default_region_key]
     ConfiguredSiteHandler.dataset_builds = ConfiguredSiteHandler.dataset_builds_by_region[default_region_key]
-    ConfiguredSiteHandler.training_runs = training_runs_by_scope[default_region_key]
+    ConfiguredSiteHandler.training_runs = None
     ConfiguredSiteHandler.region_service = region_service
+    ConfiguredSiteHandler.profile_store = profile_store
+    ConfiguredSiteHandler.training_manager_factory = training_manager_factory
     return ConfiguredSiteHandler

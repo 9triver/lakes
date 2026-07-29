@@ -224,4 +224,4 @@ def is_frontend_route(path: str) -> bool:
     if path == "/":
         return True
     first = path.strip("/").split("/", 1)[0]
-    return first in {"regions", "sites", "training", "model"}
+    return first in {"profiles", "regions", "sites", "training", "model"}

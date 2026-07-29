@@ -56,6 +56,7 @@ def model_training_metadata(model_path: Path, scope: str) -> dict:
                 "val_site_count",
                 "split_group",
                 "manifest",
+                "profile_id",
             )
             if key in config
         },
@@ -127,6 +128,7 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
         "last_model": display_path(run_dir / "last.pt") if (run_dir / "last.pt").exists() else "",
         "history": history,
         "config": config,
+        "profile_id": clean_optional(config.get("profile_id")) or "",
     }
     if history:
         result["best_iou"] = max((parse_float((record.get("val") or {}).get("iou")) or 0 for record in history), default=0)

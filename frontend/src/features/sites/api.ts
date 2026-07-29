@@ -1,30 +1,31 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
 import type { ContextWaterResponse, FeatureCollection, GeoJsonLayer, SiteDetail, SitesResponse, LocalLabelItem, TileMeta } from "../../api/types";
+import { profileRegionApi } from "../profiles/api";
 
 const sitePageSize = 200;
 
-export function useSites(region: string, query: string) {
+export function useSites(profileId: string, region: string, query: string) {
   return useInfiniteQuery({
-    queryKey: ["sites", region, query],
+    queryKey: ["sites", profileId, region, query],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ q: query, limit: String(sitePageSize), offset: String(pageParam) });
-      return getJson<SitesResponse>(`/api/regions/${encodeURIComponent(region)}/sites?${params}`);
+      return getJson<SitesResponse>(profileRegionApi(profileId, region, `/sites?${params}`));
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => {
       const loaded = pages.reduce((total, page) => total + page.items.length, 0);
       return loaded < lastPage.total ? loaded : undefined;
     },
-    enabled: Boolean(region),
+    enabled: Boolean(profileId && region),
   });
 }
 
-export function useSite(region: string, siteId: string) {
+export function useSite(region: string, siteId: string, profileId: string) {
   return useQuery({
-    queryKey: ["site", region, siteId],
-    queryFn: () => getJson<SiteDetail>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}`),
-    enabled: Boolean(region && siteId),
+    queryKey: ["site", profileId, region, siteId],
+    queryFn: () => getJson<SiteDetail>(profileRegionApi(profileId, region, `/sites/${encodeURIComponent(siteId)}`)),
+    enabled: Boolean(profileId && region && siteId),
   });
 }
 

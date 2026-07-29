@@ -17,13 +17,13 @@ function percent(value?: number) {
   return `${(Number(value || 0) * 100).toFixed(1)}%`;
 }
 
-export function PatchReviewView({ scope, onLocate }: { scope: string; onLocate: (patch: TrainingPatch) => void }) {
+export function PatchReviewView({ profileId, scope, onLocate }: { profileId: string; scope: string; onLocate: (patch: TrainingPatch) => void }) {
   const [include, setInclude] = useState("");
   const [water, setWater] = useState("");
   const [page, setPage] = useState(1);
   const [active, setActive] = useState<TrainingPatch | null>(null);
-  const query = useTrainingPatches(scope, include);
-  const update = useUpdateTrainingPatch(scope, include);
+  const query = useTrainingPatches(profileId, scope, include);
+  const update = useUpdateTrainingPatch(profileId, scope, include);
   const filtered = useMemo(
     () => (query.data?.items || []).filter((patch) => water === "water" ? Number(patch.water_pixels || 0) > 0 : water === "negative" ? Number(patch.water_pixels || 0) <= 0 : true),
     [query.data?.items, water],
@@ -34,7 +34,7 @@ export function PatchReviewView({ scope, onLocate }: { scope: string; onLocate: 
   const items = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return <Box sx={{ height: "100%", overflow: "auto" }}>
-    <PatchGenerationControls scope={scope} />
+    <PatchGenerationControls profileId={profileId} scope={scope} />
     <Box sx={{ px: 2, py: 1, borderBottom: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
       <Typography variant="subtitle1" sx={{ mr: "auto" }}>逻辑 Patch 审核 · {filtered.length}</Typography>
       <FormControl sx={{ minWidth: 120 }}><InputLabel>状态</InputLabel><Select label="状态" value={include} onChange={(event) => { setInclude(event.target.value); setPage(1); }}><MenuItem value="">全部</MenuItem><MenuItem value="included">包含</MenuItem><MenuItem value="excluded">排除</MenuItem></Select></FormControl>

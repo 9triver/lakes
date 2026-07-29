@@ -44,13 +44,13 @@ function RunDetails({ run }: { run?: TrainingRun }) {
   </Box>;
 }
 
-export function TrainingView({ scope }: { scope: string }) {
+export function TrainingView({ profileId, scope, blocked = false, defaults = {} }: { profileId: string; scope: string; blocked?: boolean; defaults?: Record<string, unknown> }) {
   const [datasetConfigId, setDatasetConfigId] = useState("resize256_v1");
-  const query = useTrainingRuns(scope, datasetConfigId);
-  const start = useStartTrainingRun(scope);
-  const cancel = useCancelTrainingRun(scope);
-  const datasetConfigs = useTrainingDatasetConfigs(scope);
-  const buildDataset = useBuildTrainingDataset(scope);
+  const query = useTrainingRuns(profileId, scope, datasetConfigId);
+  const start = useStartTrainingRun(profileId, scope);
+  const cancel = useCancelTrainingRun(profileId, scope);
+  const datasetConfigs = useTrainingDatasetConfigs(profileId, scope);
+  const buildDataset = useBuildTrainingDataset(profileId, scope);
   const [selectedId, setSelectedId] = useState("");
   const [runName, setRunName] = useState("");
   const [modelType, setModelType] = useState<"unet" | "pixel_mlp">("unet");
@@ -62,11 +62,26 @@ export function TrainingView({ scope }: { scope: string }) {
   const [device, setDevice] = useState("cuda");
   const [noAugment, setNoAugment] = useState(false);
   const [buildJobId, setBuildJobId] = useState("");
-  const buildJob = useTrainingDatasetBuildJob(scope, datasetConfigId, buildJobId);
+  const buildJob = useTrainingDatasetBuildJob(profileId, scope, datasetConfigId, buildJobId);
   const runs = query.data?.items || [];
   const activeRun = runs.find(isTrainingRunActive);
   const selected = useMemo(() => runs.find((item) => item.job_id === selectedId) || activeRun || runs[0], [activeRun, runs, selectedId]);
   useEffect(() => { if (selected && !selectedId) setSelectedId(selected.job_id); }, [selected, selectedId]);
+  useEffect(() => {
+    setDatasetConfigId(String(defaults.dataset_config_id || "resize256_v1"));
+    setModelType(defaults.model_type === "pixel_mlp" ? "pixel_mlp" : "unet");
+    setEpochs(Number(defaults.epochs || 30));
+    setBatchSize(Number(defaults.batch_size || 8));
+    setLr(Number(defaults.lr || .001));
+    setBaseChannels(Number(defaults.base_channels || 32));
+    const hidden = Array.isArray(defaults.hidden_channels) ? defaults.hidden_channels : [16, 8];
+    setHiddenChannels([Number(hidden[0] || 16), Number(hidden[1] || 8)]);
+    setDevice(String(defaults.device || "cuda"));
+    setNoAugment(Boolean(defaults.no_augment));
+    setRunName("");
+    setBuildJobId("");
+    setSelectedId("");
+  }, [profileId]);
 
   if (query.isLoading) return <Box sx={{ display: "grid", placeItems: "center", height: "100%" }}><CircularProgress size={28} /></Box>;
   if (query.isError) return <Typography color="error" sx={{ p: 2 }}>{query.error.message}</Typography>;
@@ -78,7 +93,7 @@ export function TrainingView({ scope }: { scope: string }) {
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
       <FormControl sx={{ minWidth: 210 }}><InputLabel id="training-dataset-config-label">训练数据配置</InputLabel><Select labelId="training-dataset-config-label" label="训练数据配置" value={datasetConfigId} onChange={(event) => { setDatasetConfigId(event.target.value); setBuildJobId(""); }}>{(datasetConfigs.data?.items || []).map((item) => <MenuItem key={item.config_id} value={item.config_id}>{item.config.label} · {item.config.output_size} px</MenuItem>)}</Select></FormControl>
       <Chip size="small" color={selectedDataset?.ready ? "success" : selectedDataset?.status === "stale" ? "warning" : "default"} label={selectedDataset?.ready ? `可用 · ${selectedDataset.patches}` : selectedDataset?.status === "stale" ? "已过期" : "未构建"} />
-      <Button startIcon={<RefreshCw size={15} />} variant={selectedDataset?.ready ? "outlined" : "contained"} disabled={buildDataset.isPending || ["queued", "running"].includes(buildJob.data?.status || "")} onClick={() => buildDataset.mutate(datasetConfigId, { onSuccess: (job) => setBuildJobId(job.job_id) })}>重建训练数据</Button>
+      <Button startIcon={<RefreshCw size={15} />} variant={selectedDataset?.ready ? "outlined" : "contained"} disabled={blocked || buildDataset.isPending || ["queued", "running"].includes(buildJob.data?.status || "")} onClick={() => buildDataset.mutate(datasetConfigId, { onSuccess: (job) => setBuildJobId(job.job_id) })}>重建训练数据</Button>
       {(buildJob.data?.message || buildDataset.error) && <Typography variant="caption" color={buildJob.data?.status === "failed" || buildDataset.isError ? "error" : "text.secondary"}>{buildDataset.error?.message || buildJob.data?.message}</Typography>}
     </Box>
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -95,7 +110,7 @@ export function TrainingView({ scope }: { scope: string }) {
       {modelType === "pixel_mlp" && <TextField label="隐藏层 2" type="number" value={hiddenChannels[1]} onChange={(event) => setHiddenChannels([hiddenChannels[0], Number(event.target.value)])} sx={{ width: 105 }} slotProps={{ htmlInput: { min: 1, max: 1024, step: 1 } }} />}
       <FormControl sx={{ width: 105 }}><InputLabel>设备</InputLabel><Select label="设备" value={device} onChange={(event) => setDevice(event.target.value)}><MenuItem value="cuda">GPU</MenuItem><MenuItem value="auto">自动</MenuItem><MenuItem value="cpu">CPU</MenuItem></Select></FormControl>
       {modelType === "unet" && <FormControlLabel control={<Switch size="small" checked={noAugment} onChange={(event) => setNoAugment(event.target.checked)} />} label="关闭增强" />}
-      <Button variant="contained" startIcon={<Play size={16} />} disabled={Boolean(activeRun) || start.isPending || !selectedDataset?.ready || !selectedDataset.patches} onClick={submit}>开始训练</Button>
+      <Button variant="contained" startIcon={<Play size={16} />} disabled={blocked || Boolean(activeRun) || start.isPending || !selectedDataset?.ready || !selectedDataset.patches} onClick={submit}>开始训练</Button>
       <Button color="error" startIcon={<Square size={15} />} disabled={!activeRun || cancel.isPending} onClick={() => activeRun && cancel.mutate(activeRun.job_id)}>取消</Button>
       <Button startIcon={<RefreshCw size={15} />} onClick={() => query.refetch()}>刷新</Button>
     </Box>

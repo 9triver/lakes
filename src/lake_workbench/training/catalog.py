@@ -293,10 +293,12 @@ class TrainingCatalogMixin:
         site_id: str = "",
         sample_id: str = "",
         image_index: str = "",
+        manifest_path: Path | None = None,
     ) -> dict:
         rows = []
-        for row in read_csv_records(self.region.logical_patch_manifest):
-            item = self._logical_patch_summary(row)
+        selected_manifest = manifest_path or self.region.logical_patch_manifest
+        for row in read_csv_records(selected_manifest):
+            item = self._logical_patch_summary(row, selected_manifest)
             if include == "included" and not item["included"]:
                 continue
             if include == "excluded" and item["included"]:
@@ -372,17 +374,18 @@ class TrainingCatalogMixin:
     def training_patch_by_id(self, patch_id: str) -> dict:
         return self.logical_patch_by_id(patch_id)
 
-    def logical_patch_by_id(self, patch_id: str) -> dict:
+    def logical_patch_by_id(self, patch_id: str, manifest_path: Path | None = None) -> dict:
         patch_id = str(patch_id)
-        for row in read_csv_records(self.region.logical_patch_manifest):
+        selected_manifest = manifest_path or self.region.logical_patch_manifest
+        for row in read_csv_records(selected_manifest):
             if row.get("logical_patch_id") == patch_id:
-                return self._logical_patch_summary(row)
+                return self._logical_patch_summary(row, selected_manifest)
         raise KeyError(f"logical patch not found: {patch_id}")
 
     def training_patch_manifest_paths(self) -> list[Path]:
         return [self.region.logical_patch_manifest] if self.region.logical_patch_manifest.exists() else []
 
-    def _logical_patch_summary(self, row: dict) -> dict:
+    def _logical_patch_summary(self, row: dict, manifest_path: Path | None = None) -> dict:
         patch_id = row.get("logical_patch_id", "")
         preview_path = resolve_data_path(row.get("preview_path", ""), self.region) if row.get("preview_path") else None
         include_value = clean_optional(row.get("include") or row.get("included"))
@@ -409,20 +412,18 @@ class TrainingCatalogMixin:
             "site_display_name": display_name,
             "included": included,
             "include": "true" if included else "false",
-            "manifest_path": display_path(self.region.logical_patch_manifest),
+            "manifest_path": display_path(manifest_path or self.region.logical_patch_manifest),
             "geometry": geometry,
             "preview_exists": bool(preview_path and preview_path.exists()),
-            "preview_url": f"/api/regions/{self.region.key}/logical-patches/{patch_id}/preview.png"
-            if patch_id and preview_path and preview_path.exists()
-            else "",
+            "preview_url": "",
         }
 
     def training_dataset_statuses(self) -> dict:
         items = [training_dataset_status(self.region, config_id) for config_id in dataset_configs()]
         return {"region": self.region.key, "items": items}
 
-    def logical_patch_source_meta(self, patch_id: str) -> dict:
-        patch = self.logical_patch_by_id(patch_id)
+    def logical_patch_source_meta(self, patch_id: str, manifest_path: Path | None = None) -> dict:
+        patch = self.logical_patch_by_id(patch_id, manifest_path)
         path = resolve_data_path(patch.get("image_path", ""), self.region)
         if not path.exists():
             raise FileNotFoundError(f"logical patch source image not found: {patch_id}")
@@ -434,8 +435,8 @@ class TrainingCatalogMixin:
             "tile_url": f"/api/regions/{self.region.key}/sites/{patch.get('site_id')}/logical-patch-source/tiles/{{z}}/{{x}}/{{y}}.png?patch_id={patch_id}",
         }
 
-    def logical_patch_source_tile(self, patch_id: str, z: int, x: int, y: int) -> bytes:
-        patch = self.logical_patch_by_id(patch_id)
+    def logical_patch_source_tile(self, patch_id: str, z: int, x: int, y: int, manifest_path: Path | None = None) -> bytes:
+        patch = self.logical_patch_by_id(patch_id, manifest_path)
         path = resolve_data_path(patch.get("image_path", ""), self.region)
         if not path.exists():
             raise FileNotFoundError(f"logical patch source image not found: {patch_id}")

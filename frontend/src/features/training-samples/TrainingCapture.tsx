@@ -5,8 +5,10 @@ import { ScanLine } from "lucide-react";
 import { getJson, postJson } from "../../api/client";
 import type { LocalLabelItem } from "../../api/types";
 import type { SiteMapHandle } from "../map/SiteMap";
+import { profileRegionApi } from "../profiles/api";
 
 interface TrainingCaptureProps {
+  profileId: string;
   region: string;
   siteId: string;
   jrcThreshold: number;
@@ -21,7 +23,7 @@ interface SaveResponse {
   patch_job?: { job_id?: string };
 }
 
-export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null }: TrainingCaptureProps) {
+export function TrainingCapture({ profileId, region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null }: TrainingCaptureProps) {
   const [notes, setNotes] = useState("");
   const [message, setMessage] = useState("");
   const queryClient = useQueryClient();
@@ -40,7 +42,7 @@ export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imag
         model_prediction_excluded: true,
         model_validation: modelValidation,
       };
-      const result = await postJson<SaveResponse>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/training-samples`, {
+      const result = await postJson<SaveResponse>(profileRegionApi(profileId, region, `/sites/${encodeURIComponent(siteId)}/training-samples`), {
         label_source: "current_view",
         label_threshold: String(jrcThreshold),
         label_scope: "current_view",
@@ -51,11 +53,11 @@ export function TrainingCapture({ region, siteId, jrcThreshold, localLabel, imag
         view_state: viewState,
       });
       if (result.patch_job?.job_id) {
-        let job = await getJson<{ status: string; message?: string; result?: { patches?: number } }>(`/api/regions/${encodeURIComponent(region)}/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`);
+        let job = await getJson<{ status: string; message?: string; result?: { patches?: number } }>(profileRegionApi(profileId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`));
         while (!["completed", "failed"].includes(job.status)) {
           setMessage(job.message || "正在生成逻辑 Patch");
           await new Promise((resolve) => setTimeout(resolve, 1500));
-          job = await getJson(`/api/regions/${encodeURIComponent(region)}/training-patches/export-jobs/${encodeURIComponent(result.patch_job!.job_id!)}`);
+          job = await getJson(profileRegionApi(profileId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job!.job_id!)}`));
         }
         if (job.status === "failed") throw new Error(job.message || "训练区域已保存，但逻辑 Patch 生成失败");
         return { result, patches: job.result?.patches || 0 };

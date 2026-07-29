@@ -121,8 +121,8 @@ class ModelValidationMixin:
             default_key = next((item["key"] for item in items if not item.get("error")), items[0]["key"])
         return {"region": self.region.key, "default": default_key, "items": items}
 
-    def model_validation_random(self, threshold: float = 0.5, model_key: str = "") -> dict:
-        model = self._load_validation_model(model_key)
+    def model_validation_random(self, threshold: float = 0.5, model_key: str = "", model: Any = None) -> dict:
+        model = model or self._load_validation_model(model_key)
         candidates = list(self.sites)
         random.shuffle(candidates)
         skipped = []

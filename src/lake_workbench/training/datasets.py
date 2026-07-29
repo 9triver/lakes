@@ -193,6 +193,56 @@ def current_training_dataset_summary(scope: str, config_id: str = "resize256_v1"
         }
 
 
+def current_profile_training_dataset_summary(
+    profile_store,
+    profile_id: str,
+    scope: str,
+    config_id: str = "resize256_v1",
+) -> dict:
+    """Summarize Profile-specific manifests without consulting legacy include state."""
+    try:
+        summaries = []
+        selected = REGIONS.values() if scope == "all" else [REGIONS.get(scope) or REGIONS[DEFAULT_REGION_KEY]]
+        for region in selected:
+            manifest = profile_store.profile_dataset_dir(profile_id, region.key, config_id) / "manifest.csv"
+            if manifest.exists():
+                summaries.append(summarize_training_manifest(manifest, region.key))
+        if not summaries:
+            return {
+                "profile_id": profile_id,
+                "scope": scope,
+                "manifests": [],
+                "total_patches": 0,
+                "included_patches": 0,
+                "excluded_patches": 0,
+                "usable_patches": 0,
+                "sample_count": 0,
+                "site_count": 0,
+                "lake_count": 0,
+                "regions": [],
+                "status": "missing_selection",
+                "error": "当前用户还没有已选逻辑 Patch，请先在 Patch 审核中选择训练 Patch。",
+            }
+        result = merge_training_dataset_summaries(scope, summaries)
+        result["profile_id"] = profile_id
+        return result
+    except Exception as exc:
+        return {
+            "profile_id": profile_id,
+            "scope": scope,
+            "manifests": [],
+            "total_patches": 0,
+            "included_patches": 0,
+            "excluded_patches": 0,
+            "usable_patches": 0,
+            "sample_count": 0,
+            "site_count": 0,
+            "lake_count": 0,
+            "regions": [],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def dataset_summary_from_config(config: dict) -> dict:
     manifest_text = clean_optional(config.get("manifest"))
     scope = clean_optional(config.get("scope") or config.get("region")) or "all"

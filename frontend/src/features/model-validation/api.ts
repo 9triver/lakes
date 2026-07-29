@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
 import type { FeatureCollection, SiteSummary } from "../../api/types";
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
+import { profileRegionApi } from "../profiles/api";
 
 export interface ModelOption {
   key: string;
@@ -24,6 +25,9 @@ export interface ModelOption {
   latest?: TrainingEpoch;
   dataset?: TrainingDataset;
   config?: Record<string, unknown>;
+  profile_id?: string;
+  profile_name?: string;
+  profile_status?: string;
 }
 
 export interface ModelValidationResult {
@@ -49,33 +53,32 @@ function sortedModels(items: ModelOption[]) {
   });
 }
 
-export function useValidationModels(scope: string) {
+export function useValidationModels(profileId: string, scope: string, visibility: "current" | "all") {
   return useQuery({
-    queryKey: ["validation-models", scope],
+    queryKey: ["validation-models", profileId, scope, visibility],
     queryFn: async () => {
-      const result = await getJson<{ default: string; items: ModelOption[] }>(`/api/regions/${encodeURIComponent(scope)}/model-validation/models`);
+      const result = await getJson<{ default: string; items: ModelOption[] }>(profileRegionApi(profileId, scope, `/model-validation/models?visibility=${visibility}`));
       return { ...result, items: sortedModels(result.items) };
     },
-    enabled: Boolean(scope),
+    enabled: Boolean(profileId && scope),
   });
 }
 
-export function useRandomModelValidation(scope: string) {
+export function useRandomModelValidation(profileId: string, scope: string) {
   return useMutation({ mutationFn: ({ model, threshold }: { model: string; threshold: number }) => {
     const params = new URLSearchParams({ model, threshold: String(threshold) });
-    return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(scope)}/model-validation/random?${params}`);
+    return getJson<ModelValidationResult>(profileRegionApi(profileId, scope, `/model-validation/random?${params}`));
   } });
 }
 
-export function useSiteModelPrediction(region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
+export function useSiteModelPrediction(profileId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
   return useQuery({
-    queryKey: ["model-prediction", region, siteId, model, threshold],
+    queryKey: ["model-prediction", profileId, region, siteId, model, threshold],
     queryFn: () => {
-      const localModel = model.startsWith(`${region}/`) ? model.slice(region.length + 1) : model;
-      const params = new URLSearchParams({ model: localModel, threshold: String(threshold) });
-      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`);
+      const params = new URLSearchParams({ model, threshold: String(threshold) });
+      return getJson<ModelValidationResult>(profileRegionApi(profileId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
     },
-    enabled: enabled && Boolean(region && siteId && model),
+    enabled: enabled && Boolean(profileId && region && siteId && model),
     retry: false,
   });
 }

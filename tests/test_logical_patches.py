@@ -88,6 +88,14 @@ class LogicalPatchPipelineTests(unittest.TestCase):
             self.assertEqual({(int(row["row_off"]), int(row["col_off"])) for row in logical_rows}, {(0, 0), (0, 512), (512, 0), (512, 512)})
             self.assertTrue(all(Path(row["preview_path"]).exists() for row in logical_rows))
 
+            profile_dir = root / "profiles" / "user-a" / "logical_patches" / "test"
+            empty = build_logical_patches(region, output_dir=profile_dir, sample_ids=set())
+            self.assertEqual(empty["patches"], 0)
+            self.assertFalse((profile_dir / "manifest.csv").exists())
+            isolated = build_logical_patches(region, output_dir=profile_dir, sample_ids={"test_sample"})
+            self.assertEqual(isolated["patches"], 4)
+            self.assertTrue(all(profile_dir in Path(row["preview_path"]).parents for row in read_csv_records(profile_dir / "manifest.csv")))
+
             edge_row = next(row for row in logical_rows if int(row["row_off"]) == 512 and int(row["col_off"]) == 512)
             edge_row["include"] = "false"
             excluded_id = edge_row["logical_patch_id"]

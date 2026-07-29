@@ -4,13 +4,30 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from lake_workbench.models.metadata import model_sort_key, persisted_training_job
 from lake_workbench.training.datasets import split_rows_by_site
 from lake_workbench.training.identity import bbox_iou, training_view_signature
+from lake_workbench.training.runner import run_dataset_build
 
 
 class TrainingIdentityTests(unittest.TestCase):
+    def test_profile_dataset_build_skips_region_without_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            region = SimpleNamespace(key="test", logical_patch_manifest=Path(directory) / "logical.csv")
+            store = SimpleNamespace(
+                members=lambda _profile_id, _region: set(),
+                get=lambda _profile_id: {"status": "active"},
+                profile_dataset_dir=lambda _profile_id, _region, config_id: Path(directory) / config_id,
+            )
+            with patch("lake_workbench.training.runner.REGIONS", {"test": region}):
+                result = run_dataset_build("test", {"profile_id": "profile-1", "config_id": "resize256_v1"}, store)
+
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["status"], "missing_selection")
+
     def test_site_split_is_deterministic_and_has_no_site_overlap(self) -> None:
         rows = [
             {"patch_id": "a1", "sample_id": "sample-a1", "site_id": "site-a"},

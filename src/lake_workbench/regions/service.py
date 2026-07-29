@@ -65,16 +65,19 @@ class RegionService:
             )
         return {"default": self.default_region_key, "items": items}
 
-    def all_sites_payload(self, query: str, limit: int, offset: int, filters: dict) -> dict:
+    def all_sites_payload(self, query: str, limit: int, offset: int, filters: dict, profile_store=None, profile_id: str | None = None) -> dict:
         merged = []
         total = 0
         for key, catalog in self.catalogs.items():
             payload = catalog.list_sites(query=query, limit=10**9, offset=0, filters=filters)
             total += payload["total"]
-            merged.extend(
-                {**item, "region": key, "region_name": catalog.region.name}
-                for item in payload["items"]
-            )
+            counts = profile_store.patch_counts(profile_id, key) if profile_store else {}
+            merged.extend({
+                **item,
+                "region": key,
+                "region_name": catalog.region.name,
+                **({"included_logical_patch_count": counts.get(item.get("site_id", ""), 0)} if profile_store else {}),
+            } for item in payload["items"])
         merged.sort(key=lambda item: (-(item.get("coverage_area_km2") or 0), item.get("region", ""), item.get("site_id", "")))
         return {
             "total": total,
@@ -134,6 +137,32 @@ class RegionService:
         included_count = sum(1 for item in items if item["included"])
         return {"total": len(items), "included_count": included_count, "excluded_count": len(items) - included_count, "items": items, "all_regions": True}
 
+    def all_profile_logical_patches_payload(
+        self,
+        profile_store,
+        profile_id: str,
+        include: str = "",
+        site_id: str = "",
+    ) -> dict:
+        items = []
+        for key, catalog in self.catalogs.items():
+            manifest = profile_store.ensure_profile_logical_patch_manifest(profile_id, key)
+            payload = catalog.list_logical_patches(include=include, site_id=site_id, manifest_path=manifest)
+            for item in payload["items"]:
+                included = bool(item.get("included"))
+                items.append({
+                    **item,
+                    "included": included,
+                    "include": "true" if included else "false",
+                    "region": key,
+                    "region_name": catalog.region.name,
+                    "profile_id": profile_id,
+                    "preview_url": f"/api/profiles/{profile_id}/regions/{key}/logical-patches/{item.get('logical_patch_id', '')}/preview.png",
+                })
+        items.sort(key=lambda item: (item.get("region", ""), item.get("sample_id", ""), int(item.get("image_index") or 0), int(item.get("row_off") or 0), int(item.get("col_off") or 0)))
+        included_count = sum(1 for item in items if item["included"])
+        return {"profile_id": profile_id, "total": len(items), "included_count": included_count, "excluded_count": len(items) - included_count, "items": items, "all_regions": True}
+
     def all_training_dataset_statuses(self) -> dict:
         configs = {}
         for key, catalog in self.catalogs.items():
@@ -147,6 +176,38 @@ class RegionService:
             status = "ready" if statuses and statuses == {"ready"} else "stale" if "stale" in statuses else "missing"
             items.append({**aggregate, "status": status, "ready": status == "ready"})
         return {"region": "all", "items": sorted(items, key=lambda item: item["config_id"])}
+
+    def all_profile_training_dataset_statuses(self, profile_store, profile_id: str) -> dict:
+        from lake_workbench.training.logical_patches import dataset_configs, profile_training_dataset_status
+
+        items = []
+        for config_id, config in dataset_configs().items():
+            regions = [
+                profile_training_dataset_status(catalog.region, config_id, profile_store, profile_id)
+                for catalog in self.catalogs.values()
+            ]
+            relevant = [item for item in regions if item["status"] != "missing_selection"]
+            statuses = {item["status"] for item in relevant}
+            if not relevant:
+                status = "missing_selection"
+            elif statuses == {"ready"}:
+                status = "ready"
+            elif "needs_resolution" in statuses:
+                status = "needs_resolution"
+            elif "stale" in statuses:
+                status = "stale"
+            else:
+                status = "missing"
+            items.append({
+                "profile_id": profile_id,
+                "config_id": config_id,
+                "config": config,
+                "regions": regions,
+                "patches": sum(item["patches"] for item in relevant),
+                "status": status,
+                "ready": status == "ready",
+            })
+        return {"profile_id": profile_id, "region": "all", "items": items}
 
     def all_model_validation_models_payload(self) -> dict:
         items = []
@@ -231,6 +292,24 @@ class RegionService:
         result["site"]["region"] = region_key
         result["site"]["region_name"] = catalog.region.name
         return result
+
+    def all_model_validation_random_loaded(self, model, threshold: float, model_key: str) -> dict:
+        catalogs = list(self.catalogs.items())
+        random.shuffle(catalogs)
+        errors = []
+        for region_key, catalog in catalogs:
+            try:
+                result = catalog.model_validation_random(threshold=threshold, model=model)
+            except FileNotFoundError as exc:
+                errors.append(str(exc))
+                continue
+            result["model"]["key"] = model_key
+            result["model"]["profile_model"] = True
+            result["site"]["region"] = region_key
+            result["site"]["region_name"] = catalog.region.name
+            result["region"] = region_key
+            return result
+        raise FileNotFoundError("No observation site can validate the selected model" + (f": {errors[0]}" if errors else ""))
 
     def _all_model_validation_random_global(self, threshold: float, model_key: str) -> dict:
         model_path = global_model_path_from_key(model_key)

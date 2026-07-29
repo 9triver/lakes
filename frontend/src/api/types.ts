@@ -5,6 +5,36 @@ export interface RegionSummary {
   site_count: number;
 }
 
+export interface TrainingProfile {
+  id: string;
+  name: string;
+  status: "active" | "needs_resolution" | "archived";
+  source_profile_ids: string[];
+  selected_patch_count: number;
+  site_count: number;
+  conflict_count: number;
+  default: boolean;
+  training_defaults?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SourceVariant {
+  id: string;
+  site_id: string;
+  source: string;
+  label: string;
+  parameters?: Record<string, unknown>;
+  sample_ids?: string[];
+}
+
+export interface SiteSourceConflict {
+  site_id: string;
+  candidate_variant_ids: string[];
+  source_profile_ids: string[];
+  variants: SourceVariant[];
+}
+
 export interface RegionsResponse {
   default: string;
   items: RegionSummary[];
@@ -148,4 +178,6 @@ export interface TrainingPatch {
   logical_patch_id?: string;
   image_index?: number | string;
   geometry?: GeoJsonGeometry | null;
+  profile_id?: string;
+  source_variants?: SourceVariant[];
 }

@@ -182,9 +182,13 @@ class TrainingManager:
         runner: Callable[..., dict],
         persisted_job_loader: Callable[[str, Path], dict | None],
         parse_epochs: Callable[[Any, int], int],
+        profile_id: str = "",
+        legacy_model_dir: Path | None = None,
     ) -> None:
         self.scope = scope
+        self.profile_id = profile_id
         self.model_root = model_root
+        self.legacy_model_dir = legacy_model_dir
         self.dataset_summary = dataset_summary
         self.runner = runner
         self.persisted_job_loader = persisted_job_loader
@@ -199,11 +203,13 @@ class TrainingManager:
         return self.model_root / self.scope
 
     def create(self, options: dict) -> dict:
+        options = {**options, "profile_id": self.profile_id} if self.profile_id else dict(options)
         job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
         job = {
             "job_id": job_id,
             "scope": self.scope,
+            "profile_id": self.profile_id,
             "status": "queued",
             "message": "排队中",
             "progress": 0,
@@ -230,7 +236,12 @@ class TrainingManager:
         with self._lock:
             jobs = [dict(job) for job in self.jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return {"scope": self.scope, "dataset": self.dataset_summary(self.scope, dataset_config_id), "items": jobs}
+        return {
+            "profile_id": self.profile_id,
+            "scope": self.scope,
+            "dataset": self.dataset_summary(self.scope, dataset_config_id),
+            "items": jobs,
+        }
 
     def cancel(self, job_id: str) -> dict | None:
         with self._lock:
@@ -292,10 +303,12 @@ class TrainingManager:
                 self.cancel_events.pop(job_id, None)
 
     def _load_persisted_jobs(self) -> None:
-        if not self.model_dir.exists():
-            return
-        paths = sorted(self.model_dir.glob("*/config.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        paths = list(self.model_dir.glob("*/config.json")) if self.model_dir.exists() else []
+        if self.legacy_model_dir and self.legacy_model_dir.exists():
+            paths.extend(self.legacy_model_dir.glob("*/config.json"))
+        paths = sorted(set(paths), key=lambda path: path.stat().st_mtime, reverse=True)
         for config_path in paths:
             job = self.persisted_job_loader(self.scope, config_path.parent)
             if job:
+                job["profile_id"] = self.profile_id
                 self.jobs[job["job_id"]] = job
