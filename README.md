@@ -1,120 +1,75 @@
 # Lakes
 
-Lakes 是一个面向多区域遥感观测、水体标注和语义分割训练的本地 Web GIS。
+Lakes is a local Web GIS for multi-region satellite observation, water annotation, and semantic-segmentation training. It combines local imagery, on-demand Sentinel-2 products, external water providers, training-area capture, Patch review, GPU training, and model validation in one workbench.
 
-系统将观测区域元数据库、本地影像、按需下载的 Sentinel-2 产品、外部水体数据和多模型训练流程组织在同一个工作台中。一个观测区域可以包含多个水体，也可以与其他观测区域覆盖同一个水体。
+## Capabilities
 
-## 功能
+- Browse observation Sites defined by local imagery directories across Gansu, Shaanxi, and Yunnan.
+- Display OSM, HydroLAKES, ESA WorldCover, JRC GSW, and local Shapefile annotations independently.
+- Query and download Sentinel-2 SAFE/TCI products and select active imagery per Site.
+- Generate Workspace-owned Patches directly from the current map extent, imagery, and visible annotations.
+- Review Patch include/exclude state and contribute selected included Patches to versioned shared Datasets.
+- Train U-Net or Pixel MLP models from Workspace or shared data by region or across all regions.
+- Inspect run history and validate selected model weights on random or selected Sites in the unified Model view.
 
-- 按省份浏览由本地影像目录定义的观测区域。
-- 独立显示 OSM、HydroLAKES、ESA WorldCover、JRC GSW 和本地 Shapefile 标注。
-- 查询并下载 Sentinel-2 SAFE/TCI 产品，指定观测区域当前使用的影像。
-- 捕获当前地图视图和可见标注，记录训练区域。
-- 检测重复或高度相似的训练视图。
-- 为新增训练样本增量生成 Patch，并审核 include/exclude 状态。
-- 按区域或全部区域训练 U-Net 或逐像元 Pixel MLP。
-- 浏览历史训练任务、指标和模型权重。
-- 随机选择观测区域进行模型验证，并将失败案例重新加入训练集。
+Model predictions are diagnostic overlays and are never captured as training truth.
 
-模型预测只作为诊断图层记录，不会作为训练真值。
+## Domain Model
 
-## 项目结构
+The main ownership chain is:
 
 ```text
-lakes/
-  config/
-    regions.toml                 区域定义和数据路径
-  frontend/                      React + Vite + TypeScript 新前端
-    src/
-      app/                       应用入口、主题和客户端状态
-      api/                       类型化 API 客户端
-      features/                  按业务组织的观测区域、影像和训练功能
-  src/lake_workbench/
-    server.py                    依赖组装和服务入口
-    http_handler.py              HTTP 请求上下文、路由调度和响应处理
-    routes/                      按观测区域、训练、模型、Sentinel 等域组织的 API 路由
-    catalog.py                   观测区域元数据加载、筛选、详情和摘要
-    imagery/
-      inventory.py               本地/下载影像库存、active 选择和产品登记
-      raster.py                  TCI 渲染、影像拼接和模型预测矢量化
-      rendering.py               观测区域 mosaic 和 XYZ 瓦片渲染编排
-    sentinel/
-      catalog.py                 Sentinel MGRS tile 匹配和产品覆盖率
-      download.py                Copernicus 查询和下载
-    models/
-      metadata.py                模型权重发现、训练指标和持久化任务元数据
-      validation.py              模型发现、推理缓存和随机验证
-      runtime.py                 模型注册、checkpoint 加载和通用推理
-      unet.py                    U-Net 兼容导出
-    regions/
-      config.py                  区域配置和标准数据路径
-      service.py                 跨区域列表、训练数据和模型验证聚合
-    training/
-      catalog.py                 训练样本和逻辑 Patch 的区域级持久化操作
-      identity.py                训练视图签名和范围相似度
-      logical_patches.py         512 逻辑网格和具名训练数据构建
-      datasets.py                训练数据 manifest 和摘要
-      runner.py                  数据构建和多模型训练任务适配
-    water/
-      annotations.py             site 水体标注的统一编排与结果契约
-      providers.py               OSM/HydroLAKES/ESA/JRC/Local Label provider registry
-      local_labels.py            本地 Shapefile 标注发现和 GeoJSON 转换
-      layers.py                  ESA/JRC 栅格读取、多边形生成和缓存
-    geo.py                       坐标转换、覆盖率和几何处理
-    jobs.py                      下载、数据构建和训练后台任务
-    paths.py                     项目根路径
-    utils.py                     路径、CSV、参数解析和序列化工具
-    static/                       指向 frontend 的兼容符号链接
-      dist/                       React 构建产物，不纳入 Git
-  scripts/
-    prepare_data.py              下载公共基础数据
-    build_site_metadata.py       构建观测区域元数据库
-    site_metadata_sources.py     OSM、HydroLAKES 和 Sentinel 数据读取辅助
-    build_logical_patches.py     构建固定 512 x 512 逻辑 Patch
-    build_training_dataset.py    从逻辑 Patch 物化具名训练数据
-    export_training_patches.py   旧 ps256_st128 数据导出器，仅用于历史数据
-    train_model.py               训练已注册的分割模型
-    train_unet.py                训练引擎和 U-Net 兼容入口
-    download_sentinel.py         命令行 Sentinel 查询/下载
-    precompute_*.py              预生成 ESA/JRC polygon
-    migrate_site_data.py         将历史持久化数据迁移为 site 规范字段
-  data/                          大型数据和模型，不纳入 Git
+External identity -> User -> default Workspace
+
+Shared observations
+  Region / Site / Imagery / Annotation
+
+Workspace-owned training resources
+  Source record (provenance) / Logical Patch / Dataset / Run / Model
+
+Shared training resources
+  Global Dataset / Dataset version / contributed Patch snapshot
 ```
 
-Python 服务默认在根地址提供 React 前端。
+A User is an authenticated operator. Production identities come from a verified Cloudflare Access JWT; local development uses a fixed identity. Each User maps one-way to exactly one default Workspace. Workspace remains independent and does not contain `user_id`.
 
-React 前端覆盖观测区域筛选、深链接、TCI 和 Tile 地图、外部及本地标注、Sentinel 产品查询下载、训练区域记录、训练样本管理、Patch 生成审核、模型训练和模型验证。
+New Workspaces are empty. The default Workspace lazily migrates legacy region-level source records once. A source record preserves the captured view for provenance, while Logical Patches are the user-facing training-data units.
 
-## 区域配置
+## Repository Layout
 
-区域统一配置在 `config/regions.toml`。当前包括：
+```text
+config/regions.toml                 Region definitions and paths
+frontend/                           React, Vite, TypeScript, MUI, OpenLayers
+src/lake_workbench/
+  server.py                         Runtime dependency assembly and HTTP entry point
+  http_handler.py                   Request context, dispatch, and static serving
+  catalog.py                        Regional Site catalog facade
+  routes/                           User, Workspace, Site, training, model, Sentinel APIs
+  users/                            User registry and default Workspace mapping
+  workspaces/                       Workspace state and training artifact ownership
+  regions/                          Region configuration and cross-region queries
+  imagery/                          Inventory, mosaics, raster rendering, XYZ tiles
+  water/                            Unified annotation providers and local labels
+  sentinel/                         Product catalog, query, and download
+  training/                         Samples, Logical Patches, datasets, and runners
+  models/                           Architectures, checkpoints, metadata, validation
+scripts/                            Data preparation, metadata, Patch, and training CLIs
+data/                               Large local data, ignored by Git
+```
 
-- `gansu`：甘肃省，从本地 IMG 范围匹配外部水体。
-- `shaanxi`：陕西省，从本地 IMG 范围匹配外部水体。
-- `yunnan`：云南省，从本地 IMG 范围匹配外部水体。
+## Data Layout
 
-`shared_data_dir` 配置与行政区域无关、只需保存一份的全球数据。目前包括 HydroLAKES 和 Sentinel-2 MGRS Tile Grid。
-
-全局共享数据由 `regions.toml` 的 `shared_data_dir` 指定：
+Region data contains shared observations only:
 
 ```text
 data/shared/
-  external_water/
-    hydrolakes/
+  external_water/hydrolakes/
   sentinel_2_tiles/
-```
 
-每个区域使用统一的数据布局：
-
-```text
 data/regions/<region>/
   raw/
     local_imagery/<directory-id>/
-    review/
-    external_water/
-      osm/
-      esa_worldcover/
-      jrc_gsw/
+    external_water/{osm,esa_worldcover,jrc_gsw}/
     sentinel_products/
   processed/
     site_metadata.gpkg
@@ -125,232 +80,195 @@ data/regions/<region>/
     active_imagery.json
     training_samples.csv
     training_labels/
-    logical_patches/
-    training_patch_cache/
 ```
 
-Profile 状态和模型统一放在：
+User and Workspace state is separate:
 
 ```text
-data/profiles/<profile>/
-data/models/profiles/<profile>/<region-or-all>/<run>/
-data/models/<region-or-all>/<run>/        旧模型，只由默认 Profile 读取
+data/users/users.json
+data/workspaces/workspaces.json
+data/workspaces/<workspace>/
+  samples/<region>/manifest.csv
+  samples/<region>/labels/
+  site_sources.json
+  logical_patches/<region>/
+  training_patch_cache/<region>/<dataset-config>/
+  training_datasets/<region>/<dataset-config>/
+data/global_datasets/<scope>/
+  manifest.csv
+  versions/<version>.csv
+data/models/workspaces/<workspace>/<region-or-all>/<run>/
 ```
 
-每个训练目录通常包含 `config.json`、`history.json`、`manifest.csv`、`best.pt` 和 `last.pt`。
+A model run normally contains `config.json`, `history.json`, `manifest.csv`, `best.pt`, and `last.pt`.
 
-## 安装和运行
+## Install And Run
 
-项目要求 Python 3.11 以上。
+Python 3.11 or newer is required.
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install -e .
+cd frontend && npm install && npm run build && cd ..
 PYTHONPATH=src .venv/bin/python -m lake_workbench.server --host 0.0.0.0 --port 18765
 ```
 
-浏览器访问：
+Open `http://127.0.0.1:18765`. The Python server serves the built React application and API.
+
+Local startup defaults to development authentication and provisions the fixed local identity. Its values can be overridden with `LAKES_DEV_USER_SUBJECT`, `LAKES_DEV_USER_EMAIL`, and `LAKES_DEV_USER_NAME`.
+
+### Production authentication
+
+Put the application hostname behind a Cloudflare Access self-hosted application, then configure the service environment:
 
 ```text
-http://127.0.0.1:18765
+LAKES_AUTH_MODE=cloudflare
+LAKES_CF_TEAM_DOMAIN=https://<team>.cloudflareaccess.com
+LAKES_CF_AUD=<application-audience-tag>
+LAKES_BOOTSTRAP_EMAIL=owner@example.com
+LAKES_ADMIN_EMAILS=owner@example.com
+LAKES_LOCAL_AUTH_BYPASS=true
+LAKES_LOCAL_NETWORK=192.168.30.0/24
+LAKES_LOCAL_USER_ID=default
 ```
 
-React 前端开发环境：
+`LAKES_CF_AUD` is the Application Audience tag shown by Cloudflare Zero Trust. `LAKES_BOOTSTRAP_EMAIL` binds that first verified identity to the existing default User and Workspace; it can also replace a previous development identity binding. Additional first-time identities receive a new empty Workspace. `LAKES_ADMIN_EMAILS` is a comma-separated list and is evaluated on every request.
+
+The optional local bypass above is intentionally limited to the trusted LAN CIDR and the configured existing User. It applies only when a request has no Cloudflare Access token; requests through the public hostname still use JWT authentication. Any device that can reach the configured LAN address and port can use this bypass, so disable it on an untrusted network.
+
+In Cloudflare Zero Trust, create an Access application under **Access > Applications > Add an application > Self-hosted**, attach the desired identity provider and allow policy, and protect the actual Lakes hostname. Keep the origin reachable only through Cloudflare Tunnel or an equivalent firewall rule; otherwise requests could bypass Access entirely. Lakes verifies the JWT signature, issuer, and audience and does not trust plain identity headers.
+
+The repository service unit reads optional values from `%h/lakes/.env`. Reload it after changing the unit or environment:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart lakes.service
+```
+
+For frontend development:
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
-Vite 默认运行于 `http://127.0.0.1:5173/static/dist/`，并将 `/api` 代理到 `18765`。也可以通过 Python 服务查看构建结果：`http://127.0.0.1:18765/static/dist/index.html`。生产构建执行：
+Vite listens on `http://127.0.0.1:5173`, serves the app under `/static/dist/`, and proxies `/api` to `http://127.0.0.1:18765`. Production output is written to `src/lake_workbench/static/dist/`.
+
+The user-level service can be managed with:
 
 ```bash
-cd frontend
-npm run typecheck
-npm run build
-```
-
-也可以使用：
-
-```bash
-PYTHONPATH=src HOST=0.0.0.0 PORT=18765 scripts/run_dev.sh
-```
-
-用户级 systemd 服务模板位于 `systemd/lakes.service`。安装并启动：
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/lakes.service ~/.config/systemd/user/lakes.service
-systemctl --user daemon-reload
-systemctl --user enable --now lakes.service
+systemctl --user restart lakes.service
 systemctl --user status lakes.service
 journalctl --user -u lakes.service -f
 ```
 
-服务默认从 `~/lakes` 启动后端，监听 `0.0.0.0:18765`。修改 unit 后执行
-`systemctl --user daemon-reload` 和 `systemctl --user restart lakes.service`。若要在用户未
-登录时也保持服务运行，管理员需执行 `sudo loginctl enable-linger lake`。
+## Prepare Region Data
 
-## 准备区域数据
-
-下载公共基础数据并构建元数据库：
+Download public inputs and build Site metadata:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu all
 ```
 
-单独执行：
+Individual stages are `osm`, `hydrolakes`, `esa`, `jrc`, `sentinel-grid`, and `metadata`. HydroLAKES and the Sentinel grid are shared and need to be downloaded only once. Sentinel SAFE/TCI products are not downloaded by `prepare_data.py`; users select them on demand.
 
-```bash
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu osm
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu hydrolakes
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu esa
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu jrc
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu sentinel-grid
-PYTHONPATH=src .venv/bin/python scripts/prepare_data.py --region gansu metadata
-```
-
-需要代理访问 JRC Google Storage 时显式传入：
+JRC Google Storage can use an explicit proxy during preparation:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/prepare_data.py \
-  --region gansu \
-  --proxy 192.168.30.107:7897 \
-  jrc
+  --region gansu --proxy 192.168.30.107:7897 jrc
 ```
 
-Copernicus 查询和下载会显式忽略代理环境变量。凭据放在 `.env` 或环境变量中：
+Copernicus requests made by the running Lakes service explicitly ignore proxy environment variables. Credentials are read from `.env` or environment variables:
 
 ```text
 COPERNICUS_USERNAME=...
 COPERNICUS_PASSWORD=...
 ```
 
-Sentinel SAFE/TCI 产品不会在 `prepare_data.py all` 中自动下载，由用户在界面或命令行按需选择。
-
-HydroLAKES 和 Sentinel Grid 命令虽然保留 `--region` 参数以兼容统一命令格式，但输出均写入 `shared_data_dir`；任意 region 成功执行一次即可。
-
-## 元数据库
-
-观测区域身份由目录确定：`site_id = <region>_<directory-id>`。例如 `gansu_17407` 的显示名称为 `区域 17407`，当外部候选提供可信名称时显示为 `区域 17407（苏干湖附近）`；外部名称不参与身份判定。
-
-手工重建某个区域的元数据库：
+Rebuild one Site catalog manually with:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/build_site_metadata.py --region gansu
 ```
 
-`site_metadata.gpkg` 包含五个图层：
+`site_metadata.gpkg` contains `sites`, `site_coverage_core`, `imagery_assets`, `local_label_features`, and `external_water_features`. Site identity is directory-based: `site_id = <region>_<directory-id>`, for example `gansu_17407`.
 
-- `sites`：区域身份、显示名称、影像覆盖并集、日期、Tile 和候选统计。
-- `site_coverage_core`：至少 80% 本地影像共同覆盖的核心区域。
-- `imagery_assets`：每个 IMG 资产的有效覆盖、日期、分辨率、波段和路径。
-- `local_label_features`：本地 Shapefile 中的全部水体要素。
-- `external_water_features`：与区域相交的 OSM、HydroLAKES、ESA 和 JRC 水体候选。
+## Training Workflow
 
-单独预生成某个观测区域的 ESA/JRC 多边形缓存：
+1. In **Observation Sites**, select a Site, imagery, map extent, and trusted visible annotations, then choose **Generate training data**.
+2. Lakes preserves an internal source record, generates Logical Patches, and opens **Training Data** filtered to the new batch.
+3. Include or exclude individual Patches. Included Patches form the current Workspace training selection and can optionally be contributed to a regional or `all` shared Dataset.
+4. In **Models > Train**, select the current Workspace or shared Dataset and start a U-Net or Pixel MLP run. Required NPZ data is materialized automatically.
+5. In **Models > Validate**, select model weights and validate on a random or selected Site. A validation view can generate another Patch batch for iterative improvement.
 
-```bash
-PYTHONPATH=src .venv/bin/python scripts/precompute_esa_polygons.py \
-  --region gansu --site gansu_17407
-PYTHONPATH=src .venv/bin/python scripts/precompute_jrc_polygons.py \
-  --region gansu --site gansu_17407 --thresholds 50,75,90
-```
+Exact duplicates and high-overlap Patches require replacement confirmation. Excluding a Workspace Patch and withdrawing its shared snapshot are independent operations.
 
-## 训练工作流
-
-1. 访问根路径，在全屏用户选择页进入或新建一个全局“用户”（内部称 Training Profile）；新用户可以为空，也可以取多个已解析用户的 Patch 快照并集。
-2. 在观测区域页面选择影像，打开可信的 OSM、HydroLAKES、ESA、JRC 或本地标注并记录训练区域。
-3. Training Sample 属于共享基础观测数据；逻辑 Patch 底稿和审核状态由每个用户独享，新 Patch 只生成到当前用户。
-4. 在区域地图或训练集页面审核当前用户的逻辑 Patch 选择。
-5. 同一 site 出现不同来源变体时，用户进入待处理状态；人工确认来源子集后才能构建或训练。
-6. 显式构建 `resize256_v1` 或 `native512_v1` Profile Dataset，然后启动 U-Net 或 Pixel MLP。
-7. 每个 Run 固化 manifest，模型归属当前用户；模型验证默认显示当前用户，也可切换全部用户。
-
-手工重建逻辑 Patch 和训练数据：
+CLI equivalents:
 
 ```bash
-.venv/bin/python scripts/build_logical_patches.py --profile default --region yunnan
-.venv/bin/python scripts/build_training_dataset.py --profile default --region yunnan --config resize256_v1
-.venv/bin/python scripts/build_training_dataset.py --profile default --region yunnan --config native512_v1
-```
+PYTHONPATH=src .venv/bin/python scripts/build_logical_patches.py \
+  --workspace default --region yunnan --sample <sample-id>
 
-重建逻辑目录只处理命令指定用户已经拥有的 Training Sample，不会读取或复制其他用户的 Logical Patch。可用 `--sample <sample_id>` 将一个共享 Training Sample 加入该用户。实际训练数据是只读派生产物，用户的 Patch、来源选择或 Dataset Config 变化后必须重新构建。
+PYTHONPATH=src .venv/bin/python scripts/build_training_dataset.py \
+  --workspace default --region yunnan --config resize256_v1
 
-手工训练 Pixel MLP：
-
-```bash
 PYTHONPATH=src .venv/bin/python scripts/train_model.py \
-  --profile default \
-  --region gansu \
-  --model-type pixel_mlp \
-  --dataset-config resize256_v1 \
-  --epochs 30 \
-  --batch-size 8 \
-  --device cuda
+  --workspace default --region yunnan --model-type unet \
+  --dataset-config resize256_v1 --epochs 30 --batch-size 8 --device cuda
 ```
 
-使用 `--model-type unet` 训练 U-Net；原 `scripts/train_unet.py` 仍作为默认选择 U-Net 的兼容入口。两种模型使用相同的 Patch、BCE、IoU/Dice 和 checkpoint 格式。Pixel MLP 固定为逐像元 `5 -> 32 -> 16 -> 1`，不使用空间邻域；训练和验证按完整 `site_id` 切分，避免同一观测地点同时出现在两侧。
+Logical Patch rebuilds process only Training Samples present in the selected Workspace, plus an explicitly supplied `--sample`. A Patch identity includes its source image, native raster window, window size, label snapshot, and preprocessing inputs; changing the Patch size creates a distinct Patch variant.
 
-## API 约定
+## API Shape
 
-共享目录、影像、标注和 Training Sample 使用全局 API：
+Shared observation APIs:
 
 ```text
-/api/regions
-/api/regions/<region-or-all>/sites
-/api/regions/<region>/sites/<site_id>
-/api/regions/<region>/sites/<site_id>/annotations/<source>
-/api/regions/<region>/sites/<site_id>/local-labels
-/api/regions/<region>/sites/<site_id>/imagery
-/api/regions/<region-or-all>/training-samples
+GET  /api/regions
+GET  /api/regions/<region-or-all>/sites
+GET  /api/regions/<region>/sites/<site_id>
+GET  /api/regions/<region>/sites/<site_id>/annotations/<source>
+GET  /api/regions/<region>/sites/<site_id>/local-labels
 ```
 
-用户管理和用户工作区数据必须显式携带 Profile：
+User APIs:
 
 ```text
-/api/profiles
-/api/profiles/<profile>
-/api/profiles/<profile>/source-conflicts
-/api/profiles/<profile>/regions/<region-or-all>/sites
-/api/profiles/<profile>/regions/<region>/sites/<site_id>/training-samples
-/api/profiles/<profile>/regions/<region-or-all>/logical-patches
-/api/profiles/<profile>/regions/<region-or-all>/training-datasets
-/api/profiles/<profile>/regions/<region-or-all>/training-runs
-/api/profiles/<profile>/regions/<region-or-all>/model-validation/models
-/api/profiles/<profile>/regions/<region-or-all>/model-validation/random
+GET   /api/users
+GET   /api/users/<user_id>
+POST  /api/users
+PATCH /api/users/<user_id>
+POST  /api/users/<user_id>/archive
+POST  /api/users/<user_id>/restore
 ```
 
-单个观测区域的影像、标注、Sentinel 操作和已有 Training Sample 仍是全局共享数据；创建 Training Sample 时因为会自动生成并加入当前用户的 Logical Patch，必须走用户工作区 API。Patch 选择、数据集、训练任务和模型接口也必须携带 Profile。不存在隐式 `default` 用户，旧 Profile 敏感接口返回 `404`。`all` 用于跨区域聚合场景。
+`GET /api/auth/session` returns the current authenticated User and Workspace mapping. User listing, creation, archival, and restoration are admin-only; a regular User can read or rename only itself.
 
-前端根路径 `#/` 是用户选择页，工作区使用 `#/profiles/<profile>/regions/...`。`#/profiles/<profile>` 会进入该用户的默认区域；不带用户的旧 `#/regions/...` 路由不再支持。
+Workspace-owned APIs:
 
-OSM、HydroLAKES、ESA、JRC 和 Local Label 通过统一 annotation provider 读取。标注接口返回：
-
-```json
-{
-  "site_id": "gansu_17407",
-  "source": "jrc",
-  "status": "available",
-  "parameters": {"threshold": 75},
-  "annotation": {}
-}
+```text
+GET /api/workspaces/<workspace>/source-conflicts
+GET /api/workspaces/<workspace>/regions/<region-or-all>/sites
+    /api/workspaces/<workspace>/regions/<region>/training-samples
+    /api/workspaces/<workspace>/regions/<region>/sites/<site_id>/training-samples
+    /api/workspaces/<workspace>/regions/<region-or-all>/logical-patches
+    /api/workspaces/<workspace>/regions/<region-or-all>/training-datasets
+    /api/workspaces/<workspace>/regions/<region-or-all>/training-runs
+    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset
+    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset/patches
+    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset/build-jobs
+    /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/models
+    /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/random
 ```
 
-`status` 为 `available`、`missing`、`empty` 或 `skipped`。JRC 使用 `?threshold=75` 指定阈值；本地标注先通过 `/local-labels` 列举，再使用 `/annotations/local?label_id=<id>` 读取。OSM、HydroLAKES、ESA 和 JRC 分别使用 `osm`、`hydrolakes`、`esa` 和 `jrc` 作为 `<source>`。
+Frontend deep links use `#/users/<user>/workspaces/<workspace>/regions/...` and validate that the Workspace is the User's `default_workspace_id`. Old Profile URLs and APIs are unsupported. Model keys must be fully qualified:
 
-观测区域在 API、CSV 和后端领域模型中统一使用 `site` 与 `site_id`。旧 `/lakes` API 和 `lake_id` 字段不再受支持；已有持久化数据可执行以下命令完成迁移：
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/migrate_site_data.py
+```text
+workspaces/<workspace>/<region-or-all>/<run>/<weight>
 ```
 
-## 数据与 Git
-
-`data/`、`attic/`、`.env` 和虚拟环境均被 Git 忽略。代码仓库不会同步大型影像、元数据库、Patch 或模型权重；这些数据需要通过独立的数据同步方案在机器间传输。
-
-## 检查
+## Verification
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m compileall -q src scripts
@@ -359,3 +277,5 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 (cd frontend && npm run typecheck && npm run build)
 git diff --check
 ```
+
+`data/`, `attic/`, `.env`, virtual environments, generated frontend assets, imagery, Patches, datasets, and model weights are not committed to Git.

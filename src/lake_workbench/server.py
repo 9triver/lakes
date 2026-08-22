@@ -10,6 +10,7 @@ geopandas/rasterio stack.
 from __future__ import annotations
 
 import argparse
+import os
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -19,11 +20,14 @@ from lake_workbench.catalog import SiteCatalog
 from lake_workbench.http_handler import create_site_handler
 from lake_workbench.models.metadata import persisted_training_job
 from lake_workbench.models.validation import ModelInferenceBusy
-from lake_workbench.profiles import ProfileStore
+from lake_workbench.workspaces import WorkspaceStore
 from lake_workbench.regions.config import load_region_configs
 from lake_workbench.regions.service import RegionService
-from lake_workbench.training.datasets import current_profile_training_dataset_summary
-from lake_workbench.training.runner import run_dataset_build, run_patch_export, run_training_job
+from lake_workbench.training.datasets import current_global_training_dataset_summary, current_workspace_training_dataset_summary
+from lake_workbench.training.runner import run_dataset_build, run_global_dataset_build, run_patch_export, run_training_job
+from lake_workbench.training.registry import DatasetRegistry
+from lake_workbench.users import UserStore
+from lake_workbench.auth import AuthenticationService
 from lake_workbench.utils import parse_int_or_default
 
 
@@ -44,38 +48,56 @@ def main() -> None:
     catalogs = {
         key: SiteCatalog(region, DEFAULT_REGION_KEY) for key, region in REGIONS.items()
     }
-    profile_store = ProfileStore(REGIONS, model_root=PROJECT_ROOT / "data" / "models")
-    default_profile = profile_store.ensure_default_profile()
+    workspace_store = WorkspaceStore(REGIONS, model_root=PROJECT_ROOT / "data" / "models")
+    dataset_registry = DatasetRegistry(PROJECT_ROOT / "data" / "global_datasets")
+    default_workspace = workspace_store.ensure_default_workspace()
+    user_store = UserStore(workspace_store)
+    default_user = user_store.ensure_default_user()
+    auth_service = AuthenticationService.from_env()
+    bootstrap_email = os.environ.get("LAKES_BOOTSTRAP_EMAIL", "").strip().lower()
+    admin_emails = {
+        value.strip().lower()
+        for value in os.environ.get("LAKES_ADMIN_EMAILS", "").split(",")
+        if value.strip()
+    }
     downloads_by_region = {
         key: DownloadManager(catalog) for key, catalog in catalogs.items()
     }
     patch_exports_by_region = {
-        key: PatchExportManager(catalog, exporter=lambda region, options: run_patch_export(region, options, profile_store))
+        key: PatchExportManager(catalog, exporter=lambda region, options: run_patch_export(region, options, workspace_store))
         for key, catalog in catalogs.items()
     }
-    all_patch_exports = PatchExportManager(catalogs=catalogs, exporter=lambda region, options: run_patch_export(region, options, profile_store))
+    all_patch_exports = PatchExportManager(catalogs=catalogs, exporter=lambda region, options: run_patch_export(region, options, workspace_store))
     dataset_builds_by_region = {
-        key: PatchExportManager(catalog, exporter=lambda region, options: run_dataset_build(region, options, profile_store))
+        key: PatchExportManager(catalog, exporter=lambda region, options: run_dataset_build(region, options, workspace_store))
         for key, catalog in catalogs.items()
     }
-    all_dataset_builds = PatchExportManager(catalogs=catalogs, exporter=lambda region, options: run_dataset_build(region, options, profile_store))
+    all_dataset_builds = PatchExportManager(catalogs=catalogs, exporter=lambda region, options: run_dataset_build(region, options, workspace_store))
+    global_dataset_builds = PatchExportManager(
+        catalog=catalogs[DEFAULT_REGION_KEY],
+        exporter=lambda _region, options: run_global_dataset_build(options, workspace_store, dataset_registry),
+    )
     training_managers: dict[tuple[str, str], TrainingManager] = {}
 
-    def training_manager(profile_id: str, scope: str) -> TrainingManager:
-        key = (profile_id, scope)
+    def training_manager(workspace_id: str, scope: str) -> TrainingManager:
+        key = (workspace_id, scope)
         if key not in training_managers:
             training_managers[key] = TrainingManager(
                 scope,
-                profile_id=profile_id,
-                model_root=PROJECT_ROOT / "data" / "models" / "profiles" / profile_id,
-                legacy_model_dir=(PROJECT_ROOT / "data" / "models" / scope) if profile_id == "default" else None,
-                dataset_summary=lambda selected_scope, config_id, selected_profile=profile_id: current_profile_training_dataset_summary(profile_store, selected_profile, selected_scope, config_id),
+                workspace_id=workspace_id,
+                model_root=PROJECT_ROOT / "data" / "models" / "workspaces" / workspace_id,
+                dataset_summary=lambda selected_scope, config_id, source, selected_workspace=workspace_id: (
+                    current_global_training_dataset_summary(dataset_registry, selected_scope, config_id)
+                    if source == "global"
+                    else current_workspace_training_dataset_summary(workspace_store, selected_workspace, selected_scope, config_id)
+                ),
                 runner=lambda selected_scope, options, progress_callback=None, cancel_event=None: run_training_job(
                     selected_scope,
                     options,
+                    workspace_store,
+                    dataset_registry,
                     progress_callback=progress_callback,
                     cancel_event=cancel_event,
-                    profile_store=profile_store,
                 ),
                 persisted_job_loader=persisted_training_job,
                 parse_epochs=parse_int_or_default,
@@ -91,12 +113,20 @@ def main() -> None:
         all_dataset_builds=all_dataset_builds,
         default_region_key=DEFAULT_REGION_KEY,
         region_service=RegionService(catalogs, DEFAULT_REGION_KEY, ModelInferenceBusy),
-        profile_store=profile_store,
+        user_store=user_store,
+        workspace_store=workspace_store,
+        auth_service=auth_service,
+        bootstrap_email=bootstrap_email,
+        admin_emails=admin_emails,
         training_manager_factory=training_manager,
+        dataset_registry=dataset_registry,
+        global_dataset_builds=global_dataset_builds,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Lakes Workbench running: http://{args.host}:{args.port}")
-    print(f"Default Profile: {default_profile['name']} ({default_profile['status']}, {default_profile['selected_patch_count']} patches)")
+    print(f"Default Workspace: {default_workspace['name']} ({default_workspace['status']}, {default_workspace['selected_patch_count']} patches)")
+    print(f"Default User: {default_user['name']} -> {default_user['default_workspace_id']}")
+    print(f"Authentication: {auth_service.mode}")
     for key, catalog in catalogs.items():
         status = "ready" if catalog.load_error is None else catalog.load_error
         imagery_summary = catalog.imagery_inventory_summary()

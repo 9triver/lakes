@@ -24,7 +24,7 @@ export function SitePatchReviewPanel({ groups, groupKey, onGroupChange, operatio
 }) {
   return <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: 1.25, display: "grid", gridTemplateColumns: { xs: "1fr", sm: "minmax(280px,1fr) minmax(260px,420px)" }, gap: 1.25, maxHeight: { xs: "42vh", sm: 210 }, overflow: "auto" }}>
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", alignContent: "start" }}>
-      <FormControl size="small" sx={{ minWidth: 250, flex: 1 }}><InputLabel id="patch-group-label">训练样本 / 影像</InputLabel><Select labelId="patch-group-label" label="训练样本 / 影像" value={groupKey} onChange={(event) => onGroupChange(event.target.value)}>{groups.map((group) => <MenuItem key={group.key} value={group.key}>{group.label}</MenuItem>)}</Select></FormControl>
+      <FormControl size="small" sx={{ minWidth: 250, flex: 1 }}><InputLabel id="patch-group-label">来源影像</InputLabel><Select labelId="patch-group-label" label="来源影像" value={groupKey} onChange={(event) => onGroupChange(event.target.value)}>{groups.map((group) => <MenuItem key={group.key} value={group.key}>{group.label}</MenuItem>)}</Select></FormControl>
       <ToggleButtonGroup exclusive size="small" value={operation} onChange={(_, value: PatchOperation | null) => value && onOperationChange(value)} aria-label="Patch 操作">
         <ToggleButton value="exclude"><X size={15} />排除</ToggleButton>
         <ToggleButton value="restore"><RotateCcw size={15} />恢复</ToggleButton>

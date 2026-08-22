@@ -14,16 +14,16 @@ from lake_workbench.training.runner import run_dataset_build
 
 
 class TrainingIdentityTests(unittest.TestCase):
-    def test_profile_dataset_build_skips_region_without_selection(self) -> None:
+    def test_workspace_dataset_build_skips_region_without_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            region = SimpleNamespace(key="test", logical_patch_manifest=Path(directory) / "logical.csv")
+            region = SimpleNamespace(key="test")
             store = SimpleNamespace(
-                members=lambda _profile_id, _region: set(),
-                get=lambda _profile_id: {"status": "active"},
-                profile_dataset_dir=lambda _profile_id, _region, config_id: Path(directory) / config_id,
+                members=lambda _workspace_id, _region: set(),
+                get=lambda _workspace_id: {"status": "active"},
+                workspace_dataset_dir=lambda _workspace_id, _region, config_id: Path(directory) / config_id,
             )
             with patch("lake_workbench.training.runner.REGIONS", {"test": region}):
-                result = run_dataset_build("test", {"profile_id": "profile-1", "config_id": "resize256_v1"}, store)
+                result = run_dataset_build("test", {"workspace_id": "workspace-1", "config_id": "resize256_v1"}, store)
 
         self.assertTrue(result["skipped"])
         self.assertEqual(result["status"], "missing_selection")

@@ -182,13 +182,11 @@ class TrainingManager:
         runner: Callable[..., dict],
         persisted_job_loader: Callable[[str, Path], dict | None],
         parse_epochs: Callable[[Any, int], int],
-        profile_id: str = "",
-        legacy_model_dir: Path | None = None,
+        workspace_id: str = "",
     ) -> None:
         self.scope = scope
-        self.profile_id = profile_id
+        self.workspace_id = workspace_id
         self.model_root = model_root
-        self.legacy_model_dir = legacy_model_dir
         self.dataset_summary = dataset_summary
         self.runner = runner
         self.persisted_job_loader = persisted_job_loader
@@ -203,13 +201,13 @@ class TrainingManager:
         return self.model_root / self.scope
 
     def create(self, options: dict) -> dict:
-        options = {**options, "profile_id": self.profile_id} if self.profile_id else dict(options)
+        options = {**options, "workspace_id": self.workspace_id} if self.workspace_id else dict(options)
         job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
         job = {
             "job_id": job_id,
             "scope": self.scope,
-            "profile_id": self.profile_id,
+            "workspace_id": self.workspace_id,
             "status": "queued",
             "message": "排队中",
             "progress": 0,
@@ -217,7 +215,11 @@ class TrainingManager:
             "epochs": self.parse_epochs(options.get("epochs"), 30),
             "history": [],
             "options": options,
-            "dataset": self.dataset_summary(self.scope, str(options.get("dataset_config_id") or "resize256_v1")),
+            "dataset": self.dataset_summary(
+                self.scope,
+                str(options.get("dataset_config_id") or "resize256_v1"),
+                str(options.get("dataset_source") or "workspace"),
+            ),
             "created_at": _timestamp(),
             "updated_at": _timestamp(),
         }
@@ -232,14 +234,14 @@ class TrainingManager:
             job = self.jobs.get(job_id)
             return dict(job) if job else None
 
-    def list(self, dataset_config_id: str = "resize256_v1") -> dict:
+    def list(self, dataset_config_id: str = "resize256_v1", dataset_source: str = "workspace") -> dict:
         with self._lock:
             jobs = [dict(job) for job in self.jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return {
-            "profile_id": self.profile_id,
+            "workspace_id": self.workspace_id,
             "scope": self.scope,
-            "dataset": self.dataset_summary(self.scope, dataset_config_id),
+            "dataset": self.dataset_summary(self.scope, dataset_config_id, dataset_source),
             "items": jobs,
         }
 
@@ -304,11 +306,9 @@ class TrainingManager:
 
     def _load_persisted_jobs(self) -> None:
         paths = list(self.model_dir.glob("*/config.json")) if self.model_dir.exists() else []
-        if self.legacy_model_dir and self.legacy_model_dir.exists():
-            paths.extend(self.legacy_model_dir.glob("*/config.json"))
         paths = sorted(set(paths), key=lambda path: path.stat().st_mtime, reverse=True)
         for config_path in paths:
             job = self.persisted_job_loader(self.scope, config_path.parent)
             if job:
-                job["profile_id"] = self.profile_id
+                job["workspace_id"] = self.workspace_id
                 self.jobs[job["job_id"]] = job

@@ -142,20 +142,12 @@ class SiteCatalog(
             ]
         filtered = self._apply_filters(filtered, filters or {})
         page = filtered[offset : offset + limit]
-        patch_counts = self.usable_training_patch_counts()
         return {
             "total": len(filtered),
             "offset": offset,
             "limit": limit,
             "facets": self._facets(filtered),
-            "items": [
-                {
-                    **self._summary(site),
-                    "included_logical_patch_count": patch_counts.get(site.site_id, 0),
-                    "usable_training_patch_count": patch_counts.get(site.site_id, 0),
-                }
-                for site in page
-            ],
+            "items": [self._summary(site) for site in page],
         }
 
     def _apply_filters(self, sites: list[SiteRecord], filters: dict) -> list[SiteRecord]:
@@ -252,6 +244,8 @@ class SiteCatalog(
             "image_count": int(site.properties.get("image_count") or 0),
             "label_asset_count": int(site.properties.get("label_asset_count") or 0),
             "label_feature_count": int(site.properties.get("label_feature_count") or 0),
+            "first_acquisition_date": clean_optional(site.properties.get("first_acquisition_date")),
+            "last_acquisition_date": clean_optional(site.properties.get("last_acquisition_date")),
             "external_feature_count": int(site.properties.get("external_feature_count") or 0),
             "has_imagery": int(site.properties.get("image_count") or 0) > 0,
             "has_tci": self._has_tci(site),

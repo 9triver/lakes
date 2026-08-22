@@ -1,21 +1,22 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Box, Button, TextField, Typography } from "@mui/material";
+import { Box, Button, Typography } from "@mui/material";
 import { ScanLine } from "lucide-react";
 import { getJson, postJson } from "../../api/client";
 import type { LocalLabelItem } from "../../api/types";
 import type { SiteMapHandle } from "../map/SiteMap";
-import { profileRegionApi } from "../profiles/api";
+import { workspaceRegionApi } from "../workspaces/api";
 
-interface TrainingCaptureProps {
-  profileId: string;
+export interface TrainingCaptureProps {
+  workspaceId: string;
   region: string;
   siteId: string;
   jrcThreshold: number;
   localLabel?: LocalLabelItem;
-  imagery: { tile: string; product: string };
+  imagery: { assetId?: string; tile: string; product: string };
   mapHandle: React.RefObject<SiteMapHandle | null>;
   modelValidation?: Record<string, unknown> | null;
+  onComplete?: (sampleId: string) => void;
 }
 
 interface SaveResponse {
@@ -23,8 +24,14 @@ interface SaveResponse {
   patch_job?: { job_id?: string };
 }
 
-export function TrainingCapture({ profileId, region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null }: TrainingCaptureProps) {
-  const [notes, setNotes] = useState("");
+export interface TrainingCaptureController {
+  message: string;
+  isPending: boolean;
+  isError: boolean;
+  record: () => void;
+}
+
+export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null, onComplete }: TrainingCaptureProps): TrainingCaptureController {
   const [message, setMessage] = useState("");
   const queryClient = useQueryClient();
   const save = useMutation({
@@ -39,25 +46,25 @@ export function TrainingCapture({ profileId, region, siteId, jrcThreshold, local
         selected_local_label: localLabel ? { id: localLabel.id, name: localLabel.name, path: localLabel.path, date: localLabel.date || "" } : null,
         selected_tile: imagery.tile,
         selected_product: imagery.product,
+        selected_imagery_asset_id: imagery.assetId || imagery.product,
         model_prediction_excluded: true,
         model_validation: modelValidation,
       };
-      const result = await postJson<SaveResponse>(profileRegionApi(profileId, region, `/sites/${encodeURIComponent(siteId)}/training-samples`), {
+      const result = await postJson<SaveResponse>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/training-samples`), {
         label_source: "current_view",
         label_threshold: String(jrcThreshold),
         label_scope: "current_view",
         mask_policy: "current_view",
-        notes,
         buffer_ratio: 0.8,
         auto_patch: true,
         view_state: viewState,
       });
       if (result.patch_job?.job_id) {
-        let job = await getJson<{ status: string; message?: string; result?: { patches?: number } }>(profileRegionApi(profileId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`));
+        let job = await getJson<{ status: string; message?: string; result?: { patches?: number } }>(workspaceRegionApi(workspaceId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`));
         while (!["completed", "failed"].includes(job.status)) {
           setMessage(job.message || "正在生成逻辑 Patch");
           await new Promise((resolve) => setTimeout(resolve, 1500));
-          job = await getJson(profileRegionApi(profileId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job!.job_id!)}`));
+          job = await getJson(workspaceRegionApi(workspaceId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job!.job_id!)}`));
         }
         if (job.status === "failed") throw new Error(job.message || "训练区域已保存，但逻辑 Patch 生成失败");
         return { result, patches: job.result?.patches || 0 };
@@ -74,15 +81,33 @@ export function TrainingCapture({ profileId, region, siteId, jrcThreshold, local
         queryClient.invalidateQueries({ queryKey: ["training-datasets"] }),
         queryClient.invalidateQueries({ queryKey: ["sites"] }),
       ]);
+      onComplete?.(result.sample.sample_id);
     },
     onError: (error) => setMessage(error.message),
   });
 
+  return {
+    message,
+    isPending: save.isPending,
+    isError: save.isError,
+    record: () => { setMessage("保存中"); save.mutate(); },
+  };
+}
+
+export function TrainingCaptureButton({ controller }: { controller: TrainingCaptureController }) {
+  return <Button variant="contained" size="small" title="从当前影像、标注和地图范围生成 Patch" startIcon={<ScanLine size={16} />} disabled={controller.isPending} onClick={controller.record}>{controller.isPending ? "生成中" : "生成训练数据"}</Button>;
+}
+
+export function TrainingCaptureStatus({ controller }: { controller: TrainingCaptureController }) {
+  return <Typography variant="caption" color={controller.isError ? "error" : "text.secondary"}>{controller.message}</Typography>;
+}
+
+export function TrainingCapture(props: TrainingCaptureProps) {
+  const controller = useTrainingCapture(props);
   return (
     <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-      <TextField value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="备注" sx={{ minWidth: 220, flex: 1 }} />
-      <Button variant="contained" startIcon={<ScanLine size={16} />} disabled={save.isPending} onClick={() => { setMessage("保存中"); save.mutate(); }}>{save.isPending ? "处理中" : "记录当前视图为训练区域"}</Button>
-      <Typography variant="caption" color={save.isError ? "error" : "text.secondary"}>{message}</Typography>
+      <TrainingCaptureStatus controller={controller} />
+      <TrainingCaptureButton controller={controller} />
     </Box>
   );
 }

@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
 import type { FeatureCollection, SiteSummary } from "../../api/types";
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
-import { profileRegionApi } from "../profiles/api";
+import { workspaceRegionApi } from "../workspaces/api";
 
 export interface ModelOption {
   key: string;
@@ -25,9 +25,9 @@ export interface ModelOption {
   latest?: TrainingEpoch;
   dataset?: TrainingDataset;
   config?: Record<string, unknown>;
-  profile_id?: string;
-  profile_name?: string;
-  profile_status?: string;
+  workspace_id?: string;
+  workspace_name?: string;
+  workspace_status?: string;
 }
 
 export interface ModelValidationResult {
@@ -53,32 +53,32 @@ function sortedModels(items: ModelOption[]) {
   });
 }
 
-export function useValidationModels(profileId: string, scope: string, visibility: "current" | "all") {
+export function useValidationModels(workspaceId: string, scope: string, visibility: "current" | "all") {
   return useQuery({
-    queryKey: ["validation-models", profileId, scope, visibility],
+    queryKey: ["validation-models", workspaceId, scope, visibility],
     queryFn: async () => {
-      const result = await getJson<{ default: string; items: ModelOption[] }>(profileRegionApi(profileId, scope, `/model-validation/models?visibility=${visibility}`));
+      const result = await getJson<{ default: string; items: ModelOption[] }>(workspaceRegionApi(workspaceId, scope, `/model-validation/models?visibility=${visibility}`));
       return { ...result, items: sortedModels(result.items) };
     },
-    enabled: Boolean(profileId && scope),
+    enabled: Boolean(workspaceId && scope),
   });
 }
 
-export function useRandomModelValidation(profileId: string, scope: string) {
+export function useRandomModelValidation(workspaceId: string, scope: string) {
   return useMutation({ mutationFn: ({ model, threshold }: { model: string; threshold: number }) => {
     const params = new URLSearchParams({ model, threshold: String(threshold) });
-    return getJson<ModelValidationResult>(profileRegionApi(profileId, scope, `/model-validation/random?${params}`));
+    return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, scope, `/model-validation/random?${params}`));
   } });
 }
 
-export function useSiteModelPrediction(profileId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
+export function useSiteModelPrediction(workspaceId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
   return useQuery({
-    queryKey: ["model-prediction", profileId, region, siteId, model, threshold],
+    queryKey: ["model-prediction", workspaceId, region, siteId, model, threshold],
     queryFn: () => {
       const params = new URLSearchParams({ model, threshold: String(threshold) });
-      return getJson<ModelValidationResult>(profileRegionApi(profileId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
+      return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
     },
-    enabled: enabled && Boolean(profileId && region && siteId && model),
+    enabled: enabled && Boolean(workspaceId && region && siteId && model),
     retry: false,
   });
 }

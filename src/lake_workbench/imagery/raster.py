@@ -194,6 +194,7 @@ def image_cache_key(site: Any, size: int, padding: float, tci_rows: list[dict]) 
 
 def tile_cache_key(site: Any, z: int, x: int, y: int, padding: float, tci_rows: list[dict]) -> str:
     payload = {
+        "render_version": 2,
         "site_id": site.site_id,
         "z": int(z),
         "x": int(x),
@@ -278,7 +279,10 @@ def render_tci_xyz_tile(
             filled |= valid
         if np.all(filled):
             break
-    image = Image.fromarray(np.moveaxis(output, 0, -1), "RGB")
+    rgba = np.zeros((tile_size, tile_size, 4), dtype=np.uint8)
+    rgba[:, :, :3] = np.moveaxis(output, 0, -1)
+    rgba[:, :, 3] = np.where(filled, 255, 0).astype(np.uint8)
+    image = Image.fromarray(rgba, "RGBA")
     buf = io.BytesIO()
     image.save(buf, format="PNG", optimize=True)
     return buf.getvalue()

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from pathlib import Path
-from types import SimpleNamespace
 
 from lake_workbench.training.catalog import TrainingCatalogMixin
-from lake_workbench.utils import write_csv_records
 
 
 class TrainingCatalogStub(TrainingCatalogMixin):
@@ -71,39 +67,6 @@ class CurrentViewLabelTests(unittest.TestCase):
         self.assertEqual(len(layer["features"]), 1)
         self.assertEqual(layer["features"][0]["properties"]["label_id"], "label_1")
         self.assertEqual(layer["features"][0]["properties"]["training_layer"], "local_label")
-
-
-class TrainingPatchCountTests(unittest.TestCase):
-    def test_counts_only_included_logical_patches(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            manifest = root_path / "processed" / "logical_patches" / "manifest.csv"
-            write_csv_records(
-                manifest,
-                [
-                    {"logical_patch_id": "included", "site_id": "site-a", "include": "true"},
-                    {"logical_patch_id": "default-included", "site_id": "site-a", "include": ""},
-                    {"logical_patch_id": "excluded", "site_id": "site-a", "include": "false"},
-                    {"logical_patch_id": "included-b", "site_id": "site-b", "include": "true"},
-                ],
-            )
-            catalog = TrainingCatalogStub()
-            catalog.region = SimpleNamespace(logical_patch_manifest=manifest)
-
-            self.assertEqual(catalog.usable_training_patch_counts(), {"site-a": 2, "site-b": 1})
-
-    def test_cache_tracks_logical_manifest_changes(self) -> None:
-        with tempfile.TemporaryDirectory() as root:
-            root_path = Path(root)
-            manifest = root_path / "processed" / "logical_patches" / "manifest.csv"
-            write_csv_records(manifest, [{"logical_patch_id": "old", "site_id": "old-site", "include": "true"}])
-            catalog = TrainingCatalogStub()
-            catalog.region = SimpleNamespace(logical_patch_manifest=manifest)
-
-            self.assertEqual(catalog.usable_training_patch_counts(), {"old-site": 1})
-            write_csv_records(manifest, [{"logical_patch_id": "new", "site_id": "new-site", "include": "true"}])
-            self.assertEqual(catalog.usable_training_patch_counts(), {"new-site": 1})
-
 
 if __name__ == "__main__":
     unittest.main()

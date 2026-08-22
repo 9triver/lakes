@@ -40,7 +40,7 @@ export function useDownloadSentinel(region: string, siteId: string) {
 export function useSetActiveImagery(region: string, siteId: string) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ tile, product }: { tile: string; product: string }) => postJson(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/imagery/active`, { tile, product }),
+    mutationFn: ({ assetId, product }: { assetId: string; product?: string }) => postJson(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/imagery/active`, { asset_id: assetId, product }),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ["imagery", region, siteId] }),

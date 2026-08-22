@@ -4,7 +4,11 @@ After=network-online.target
 
 [Service]
 Type=simple
+UnsetEnvironment=http_proxy https_proxy all_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY
+Environment=NO_PROXY=*
+Environment=no_proxy=*
 WorkingDirectory=%h/lakes
+EnvironmentFile=-%h/lakes/.env
 Environment=PYTHONPATH=%h/lakes/src
 Environment=PYTHONUNBUFFERED=1
 ExecStart=%h/lakes/.venv/bin/python -m lake_workbench.server --host 0.0.0.0 --port 18765

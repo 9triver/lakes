@@ -13,19 +13,10 @@ import rasterio
 
 from lake_workbench.geo import padded_bounds
 from lake_workbench.imagery import mosaic_source_meta, predict_water_geojson
-from lake_workbench.models.metadata import (
-    global_model_key,
-    global_model_path_from_key,
-    iter_global_model_paths,
-    model_sort_key,
-    model_training_metadata,
-)
-from lake_workbench.models.runtime import load_model_checkpoint
 from lake_workbench.paths import PROJECT_ROOT
-from lake_workbench.utils import clean_optional, display_path, safe_filename
+from lake_workbench.utils import display_path, safe_filename
 
 
-GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 MODEL_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(1)
 
 
@@ -39,90 +30,9 @@ class ModelValidationMixin:
     region: Any
     sites: list[Any]
 
-    def model_validation_models(self) -> dict:
-        items = []
-        default_key = ""
-        default_path = self._default_model_path()
-        for path, legacy in self._iter_model_paths():
-            key = self._model_key(path)
-            label = f"{path.parent.name}/{path.name}" if not legacy else f"旧目录 / {path.parent.name}/{path.name}"
-            try:
-                model = load_model_checkpoint(path)
-                item = {
-                    "key": key,
-                    "label": label,
-                    "name": path.parent.name,
-                    "weight": path.name,
-                    "path": display_path(path),
-                    "epoch": model.epoch,
-                    "in_channels": model.in_channels,
-                    "base_channels": model.base_channels,
-                    "model_type": model.model_type,
-                    "model_options": model.model_options,
-                    "architecture_label": model.architecture_label,
-                    "scope": self.region.key,
-                    "legacy": legacy,
-                    "default": path.resolve() == default_path.resolve(),
-                    **model_training_metadata(path, self.region.key),
-                }
-            except Exception as exc:  # noqa: BLE001 - broken checkpoints remain visible in the UI.
-                item = {
-                    "key": key,
-                    "label": label,
-                    "name": path.parent.name,
-                    "weight": path.name,
-                    "path": display_path(path),
-                    "scope": self.region.key,
-                    "legacy": legacy,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "default": path.resolve() == default_path.resolve(),
-                }
-            if item["default"]:
-                default_key = item["key"]
-            items.append(item)
-
-        for path in iter_global_model_paths():
-            key = global_model_key(path)
-            label = f"全部区域 / {path.parent.name}/{path.name}"
-            try:
-                model = load_model_checkpoint(path)
-                item = {
-                    "key": key,
-                    "label": label,
-                    "name": path.parent.name,
-                    "weight": path.name,
-                    "path": display_path(path),
-                    "epoch": model.epoch,
-                    "in_channels": model.in_channels,
-                    "base_channels": model.base_channels,
-                    "model_type": model.model_type,
-                    "model_options": model.model_options,
-                    "architecture_label": model.architecture_label,
-                    "scope": "all",
-                    "legacy": False,
-                    "default": False,
-                    **model_training_metadata(path, "all"),
-                }
-            except Exception as exc:  # noqa: BLE001 - broken checkpoints remain visible in the UI.
-                item = {
-                    "key": key,
-                    "label": label,
-                    "name": path.parent.name,
-                    "weight": path.name,
-                    "path": display_path(path),
-                    "scope": "all",
-                    "legacy": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "default": False,
-                }
-            items.append(item)
-        items.sort(key=model_sort_key)
-        if items:
-            default_key = next((item["key"] for item in items if not item.get("error")), items[0]["key"])
-        return {"region": self.region.key, "default": default_key, "items": items}
-
-    def model_validation_random(self, threshold: float = 0.5, model_key: str = "", model: Any = None) -> dict:
-        model = model or self._load_validation_model(model_key)
+    def model_validation_random(self, threshold: float = 0.5, model: Any = None) -> dict:
+        if model is None:
+            raise ValueError("A loaded workspace model is required")
         candidates = list(self.sites)
         random.shuffle(candidates)
         skipped = []
@@ -158,9 +68,9 @@ class ModelValidationMixin:
         threshold: float = 0.5,
         rows: list[dict] | None = None,
         model: Any = None,
-        model_key: str = "",
     ) -> dict:
-        model = model or self._load_validation_model(model_key)
+        if model is None:
+            raise ValueError("A loaded workspace model is required")
         rows = rows or self._model_validation_rows(site, model.in_channels)
         if not rows:
             raise FileNotFoundError(f"No active imagery matching model bands for site {site.site_id}")
@@ -186,7 +96,7 @@ class ModelValidationMixin:
             "site_id": site.site_id,
             "cached": False,
             "model": {
-                "key": self._model_key(model.path),
+                "key": display_path(model.path),
                 "name": model.path.parent.name,
                 "path": display_path(model.path),
                 "device": str(model.device),
@@ -209,63 +119,6 @@ class ModelValidationMixin:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return payload
-
-    def _load_validation_model(self, model_key: str = "") -> Any:
-        model_path = self._model_path_from_key(model_key)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model not found for {self.region.key}: {display_path(model_path)}")
-        return load_model_checkpoint(model_path)
-
-    def _default_model_path(self) -> Path:
-        preferred = self.region.model_dir / "unet_current_v1" / "best.pt"
-        if preferred.exists():
-            return preferred
-        return self.region.legacy_model_dir / "unet_current_v1" / "best.pt"
-
-    def _iter_model_paths(self) -> list[tuple[Path, bool]]:
-        paths: list[tuple[Path, bool]] = []
-        if self.region.model_dir.exists():
-            paths.extend((path, False) for path in sorted(self.region.model_dir.glob("*/*.pt")))
-        if self.region.legacy_model_dir.exists():
-            paths.extend((path, True) for path in sorted(self.region.legacy_model_dir.glob("*/*.pt")))
-        return paths
-
-    def _model_path_from_key(self, model_key: str = "") -> Path:
-        key = clean_optional(model_key) or ""
-        if not key:
-            default_path = self._default_model_path()
-            if default_path.exists():
-                return default_path
-            candidates = [path for path, _legacy in self._iter_model_paths()]
-            return candidates[0] if candidates else default_path
-        path = Path(key)
-        if path.is_absolute():
-            raise ValueError("absolute model paths are not allowed")
-        parts = path.parts
-        if len(parts) == 3 and parts[0] == "all":
-            return global_model_path_from_key(key)
-        if len(parts) == 3 and parts[0] == "legacy":
-            if parts[1] in {"", ".", ".."} or parts[2] in {"", ".", ".."}:
-                raise ValueError(f"invalid model key: {key}")
-            return self.region.legacy_model_dir / parts[1] / parts[2]
-        if len(parts) != 2 or parts[0] in {"", ".", ".."} or parts[1] in {"", ".", ".."}:
-            raise ValueError(f"invalid model key: {key}")
-        return self.region.model_dir / path
-
-    def _model_key(self, path: Path) -> str:
-        path = path.resolve()
-        try:
-            return f"all/{path.relative_to(GLOBAL_MODEL_DIR.resolve())}"
-        except ValueError:
-            pass
-        try:
-            return str(path.relative_to(self.region.model_dir.resolve()))
-        except ValueError:
-            pass
-        try:
-            return f"legacy/{path.relative_to(self.region.legacy_model_dir.resolve())}"
-        except ValueError:
-            return path.name
 
     def _model_validation_cache_dir(self, model_path: Path) -> Path:
         try:

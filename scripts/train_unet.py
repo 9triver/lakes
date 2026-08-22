@@ -97,7 +97,7 @@ class Normalization:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=sorted(REGIONS) + ["all"], default=DEFAULT_REGION_KEY)
-    parser.add_argument("--profile", dest="profile_id", default="default")
+    parser.add_argument("--workspace", dest="workspace_id", default="default")
     parser.add_argument("--model-type", choices=SUPPORTED_MODEL_TYPES, default="unet")
     parser.add_argument("--dataset-config", dest="dataset_config_id", default="resize256_v1")
     parser.add_argument("--manifest", type=Path, default=None)
@@ -143,9 +143,9 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
         region,
         args.patch_dir,
         getattr(args, "dataset_config_id", "resize256_v1"),
-        getattr(args, "profile_id", "default"),
+        getattr(args, "workspace_id", "default"),
     )
-    output_dir = args.output_dir or MODEL_ROOT / "profiles" / getattr(args, "profile_id", "default") / args.region / f"{selected_model_type}_{time.strftime('%Y%m%d_%H%M%S')}"
+    output_dir = args.output_dir or MODEL_ROOT / "workspaces" / getattr(args, "workspace_id", "default") / args.region / f"{selected_model_type}_{time.strftime('%Y%m%d_%H%M%S')}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = load_manifest_rows(manifest)
@@ -166,7 +166,7 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
 
     config = {
         "format_version": 2,
-        "profile_id": getattr(args, "profile_id", ""),
+        "workspace_id": getattr(args, "workspace_id", ""),
         "model_type": selected_model_type,
         "model_options": selected_model_options,
         "architecture_label": architecture_label(selected_model_type, in_channels, selected_model_options),
@@ -175,6 +175,7 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
         "regions": sorted(REGIONS) if args.region == "all" else [args.region],
         "manifest": display_path(manifest),
         "dataset_config_id": getattr(args, "dataset_config_id", ""),
+        "dataset_source": getattr(args, "dataset_source", "workspace"),
         "output_dir": display_path(output_dir),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
@@ -374,7 +375,7 @@ def load_manifest_rows(path: Path) -> list[dict]:
     return rows
 
 
-def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "resize256_v1", profile_id: str = "default") -> Path:
+def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "resize256_v1", workspace_id: str = "default") -> Path:
     if patch_dir:
         manifest = patch_dir / "manifest.csv" if patch_dir.is_dir() else patch_dir
         if manifest.exists():
@@ -382,7 +383,7 @@ def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "re
         raise SystemExit(f"manifest not found: {manifest}")
     if region is None:
         raise SystemExit("all-scope training requires --manifest or --patch-dir with a combined manifest")
-    manifest = PROJECT_ROOT / "data" / "profiles" / profile_id / "training_datasets" / region.key / dataset_config_id / "manifest.csv"
+    manifest = PROJECT_ROOT / "data" / "workspaces" / workspace_id / "training_datasets" / region.key / dataset_config_id / "manifest.csv"
     if not manifest.exists():
         raise SystemExit(f"training dataset manifest not found: {manifest}; run scripts/build_training_dataset.py first")
     return manifest

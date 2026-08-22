@@ -5,11 +5,11 @@ export interface RegionSummary {
   site_count: number;
 }
 
-export interface TrainingProfile {
+export interface TrainingWorkspace {
   id: string;
   name: string;
   status: "active" | "needs_resolution" | "archived";
-  source_profile_ids: string[];
+  source_workspace_ids: string[];
   selected_patch_count: number;
   site_count: number;
   conflict_count: number;
@@ -17,6 +17,28 @@ export interface TrainingProfile {
   training_defaults?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface WorkbenchUser {
+  id: string;
+  name: string;
+  status: "active" | "archived";
+  role?: "user" | "admin";
+  email?: string;
+  auth_provider?: string;
+  default_workspace_id: string;
+  workspace: TrainingWorkspace;
+  default: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AuthSession {
+  authenticated: true;
+  mode: "development" | "cloudflare";
+  identity: { provider: string; subject: string; email: string; name: string };
+  user: WorkbenchUser;
+  logout_url: string;
 }
 
 export interface SourceVariant {
@@ -31,7 +53,7 @@ export interface SourceVariant {
 export interface SiteSourceConflict {
   site_id: string;
   candidate_variant_ids: string[];
-  source_profile_ids: string[];
+  source_workspace_ids: string[];
   variants: SourceVariant[];
 }
 
@@ -49,13 +71,14 @@ export interface SiteSummary {
   image_count?: number;
   label_asset_count?: number;
   label_feature_count?: number;
+  first_acquisition_date?: string;
+  last_acquisition_date?: string;
   has_tci?: boolean;
   region?: string;
   region_name?: string;
   polygon_quality?: string;
   metadata_quality?: string;
   best_tci_date?: string;
-  usable_training_patch_count?: number;
   included_logical_patch_count?: number;
 }
 
@@ -106,17 +129,23 @@ export interface LocalLabelItem {
 }
 
 export interface ImageryProduct {
+  asset_id?: string;
   product: string;
+  tile?: string;
   date?: string;
   active?: boolean;
   asset_label?: string;
   source?: string;
   valid_ratio?: number;
+  label_id?: string;
+  label?: LocalLabelItem | null;
 }
 
 export interface ImageryResponse {
   site_id: string;
-  tiles: Array<{ tile: string; products: ImageryProduct[] }>;
+  selection_mode?: "site_imagery" | "tile_fallback";
+  assets?: ImageryProduct[];
+  tiles?: Array<{ tile: string; products: ImageryProduct[] }>;
 }
 
 export interface SentinelTile {
@@ -161,6 +190,7 @@ export interface TrainingPatch {
   site_display_name?: string;
   site_name?: string;
   region?: string;
+  region_name?: string;
   included: boolean;
   preview_exists?: boolean;
   preview_url?: string;
@@ -178,6 +208,22 @@ export interface TrainingPatch {
   logical_patch_id?: string;
   image_index?: number | string;
   geometry?: GeoJsonGeometry | null;
-  profile_id?: string;
+  workspace_id?: string;
   source_variants?: SourceVariant[];
+  logical_size?: number | string;
+  window_width?: number | string;
+  window_height?: number | string;
+  image_fingerprint?: string;
+  label_fingerprint?: string;
+  contributed?: boolean;
+  contribution_scopes?: string[];
+}
+
+export interface GlobalDataset {
+  dataset_id: string;
+  scope: string;
+  total: number;
+  manifest?: string;
+  latest_version?: string;
+  items: TrainingPatch[];
 }

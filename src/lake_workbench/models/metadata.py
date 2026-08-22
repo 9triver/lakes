@@ -2,12 +2,8 @@
 
 from pathlib import Path
 
-from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.training.datasets import dataset_summary_from_config, read_json_file, timestamp_for_path
 from lake_workbench.utils import clean_optional, display_path, parse_float, parse_int_or_default
-
-
-GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 
 
 def model_training_metadata(model_path: Path, scope: str) -> dict:
@@ -56,7 +52,7 @@ def model_training_metadata(model_path: Path, scope: str) -> dict:
                 "val_site_count",
                 "split_group",
                 "manifest",
-                "profile_id",
+                "workspace_id",
             )
             if key in config
         },
@@ -81,36 +77,6 @@ def model_sort_key(item: dict) -> tuple:
     )
 
 
-def iter_global_model_paths() -> list[Path]:
-    if not GLOBAL_MODEL_DIR.exists():
-        return []
-    return sorted(GLOBAL_MODEL_DIR.glob("*/*.pt"))
-
-
-def global_model_key(path: Path) -> str:
-    try:
-        return f"all/{path.resolve().relative_to(GLOBAL_MODEL_DIR.resolve())}"
-    except ValueError:
-        return f"all/{path.name}"
-
-
-def global_model_path_from_key(model_key: str) -> Path:
-    key = clean_optional(model_key) or ""
-    path = Path(key)
-    if path.is_absolute():
-        raise ValueError("absolute model paths are not allowed")
-    parts = path.parts
-    if len(parts) == 3 and parts[0] == "all":
-        run_name, weight = parts[1], parts[2]
-    elif len(parts) == 2:
-        run_name, weight = parts
-    else:
-        raise ValueError(f"invalid model key: {key}")
-    if run_name in {"", ".", ".."} or weight in {"", ".", ".."}:
-        raise ValueError(f"invalid model key: {key}")
-    return GLOBAL_MODEL_DIR / run_name / weight
-
-
 def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
     config = read_json_file(run_dir / "config.json", {})
     if not isinstance(config, dict) or not config:
@@ -128,7 +94,7 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
         "last_model": display_path(run_dir / "last.pt") if (run_dir / "last.pt").exists() else "",
         "history": history,
         "config": config,
-        "profile_id": clean_optional(config.get("profile_id")) or "",
+        "workspace_id": clean_optional(config.get("workspace_id")) or "",
     }
     if history:
         result["best_iou"] = max((parse_float((record.get("val") or {}).get("iou")) or 0 for record in history), default=0)
