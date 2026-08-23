@@ -107,4 +107,6 @@ class WorkspaceModelRegistry:
 
     def _paths(self, workspace_id: str, scope: str) -> list[Path]:
         current = self.model_root / "workspaces" / workspace_id / scope
-        return sorted(current.glob("*/*.pt")) if current.exists() else []
+        # Validation exposes the checkpoint selected by training, not the
+        # resumable ``last.pt`` checkpoint from the same experiment.
+        return sorted(current.glob("*/best.pt")) if current.exists() else []

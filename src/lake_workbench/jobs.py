@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import shutil
 import threading
 import time
 import uuid
@@ -11,9 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from lake_workbench.sentinel.download import download_copernicus_product
+from lake_workbench.models.runtime import normalize_model_type
+from lake_workbench.utils import clean_optional, safe_filename
 
 
 JobRunner = Callable[..., dict]
+
+
+class TrainingRunActiveError(RuntimeError):
+    """Raised when a caller tries to remove a job that is still running."""
 
 
 def _timestamp() -> str:
@@ -202,12 +209,18 @@ class TrainingManager:
 
     def create(self, options: dict) -> dict:
         options = {**options, "workspace_id": self.workspace_id} if self.workspace_id else dict(options)
+        run_name = safe_filename(
+            clean_optional(options.get("run_name"))
+            or f"{normalize_model_type(options.get('model_type') or 'unet')}_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+        options["run_name"] = run_name
         job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
         job = {
             "job_id": job_id,
             "scope": self.scope,
             "workspace_id": self.workspace_id,
+            "run_name": run_name,
             "status": "queued",
             "message": "排队中",
             "progress": 0,
@@ -257,6 +270,43 @@ class TrainingManager:
                 job.update(status="cancel_requested", message="正在取消", updated_at=_timestamp())
             return dict(job)
 
+    def delete(self, job_id: str) -> dict | None:
+        """Delete one persisted experiment and forget its in-memory record.
+
+        The manager is scoped to one workspace and one training scope, so the
+        run directory is always resolved below ``self.model_dir``.  Training
+        artifacts are independent of the workspace's patch data and dataset
+        caches, which must remain intact.
+        """
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return None
+            if job.get("status") in {"queued", "configured", "running", "cancel_requested"}:
+                raise TrainingRunActiveError("训练进行中，不能删除")
+
+            run_name = clean_optional(job.get("run_name")) or clean_optional(job_id)
+            run_path = Path(run_name) if run_name else Path()
+            if (
+                not run_name
+                or run_path.name != run_name
+                or any(part in {"", ".", ".."} for part in run_path.parts)
+            ):
+                raise ValueError("invalid training run name")
+
+            model_dir = self.model_dir.resolve()
+            run_dir = (self.model_dir / run_name).resolve()
+            if run_dir.parent != model_dir:
+                raise ValueError("invalid training run path")
+            if run_dir.exists():
+                if not run_dir.is_dir():
+                    raise ValueError("training run path is not a directory")
+                shutil.rmtree(run_dir)
+
+            self.jobs.pop(job_id, None)
+            self.cancel_events.pop(job_id, None)
+            return {"job_id": job_id, "run_name": run_name, "deleted": True}
+
     def _update(self, job_id: str, **updates) -> None:
         with self._lock:
             job = self.jobs[job_id]
@@ -299,6 +349,9 @@ class TrainingManager:
                 self._update(job_id, status="completed", message="训练完成", progress=100, result=result)
         except Exception as exc:  # noqa: BLE001 - surfaced to the local UI.
             self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")
+        except SystemExit as exc:
+            message = str(exc) or "训练在开始前退出"
+            self._update(job_id, status="failed", message=message, progress=100)
         finally:
             _release_cuda_memory()
             with self._lock:

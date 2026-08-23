@@ -15,6 +15,8 @@ import { TrainingCaptureButton, TrainingCaptureStatus, useTrainingCapture } from
 import { PatchReviewView } from "../features/patches/PatchReviewView";
 import { TrainingSiteList } from "../features/patches/TrainingSiteList";
 import { ModelWorkbench, type ModelStage } from "../features/models/ModelWorkbench";
+import { ModelExperimentSidebar } from "../features/models/ModelExperimentSidebar";
+import { useSiteModelPrediction, useValidationModels } from "../features/model-validation/api";
 import { CurrentUserBar } from "../features/users/UserSelector";
 import { UserRouteError } from "../features/users/UserRouteError";
 import { AuthLoading, AuthRequired } from "../features/auth/AuthGate";
@@ -28,7 +30,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const navigate = useNavigate();
   const [jrcThreshold, setJrcThreshold] = useState(75);
   const [basemap, setBasemap] = useState<BasemapType>("satellite");
-  const [layerVisibility, setLayerVisibility] = useState<SiteLayerVisibility>(() => ({ ...DEFAULT_SITE_LAYER_VISIBILITY }));
+  const [layerVisibility, setLayerVisibility] = useState<SiteLayerVisibility>(() => ({ ...DEFAULT_SITE_LAYER_VISIBILITY, prediction: false }));
   const [imagerySelection, setImagerySelection] = useState<ImagerySelection>({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
   const [patchReviewEnabled, setPatchReviewEnabled] = useState(false);
   const [patchGroupKey, setPatchGroupKey] = useState("");
@@ -59,6 +61,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const modelSiteId = modelRoute?.[3] || "";
   const routeParams = new URLSearchParams(location.search);
   const routeModel = routeParams.get("model") || "";
+  const modelRunId = routeParams.get("run") || "";
   const sourceSampleId = routeParams.get("source") || "";
   const modelSiteRegion = routeParams.get("site_region") || (modelRoute?.[1] === "all" ? "" : modelRoute?.[1] || "");
   const isSiteWorkspace = !isTraining && !isModel;
@@ -76,6 +79,21 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const esa = useEsaLayer(selectedRegion, selectedSiteId);
   const jrc = useJrcLayer(selectedRegion, selectedSiteId, jrcThreshold);
   const localLabel = useLocalLabel(selectedRegion, selectedSiteId, imagerySelection.localLabelId);
+  const validationModels = useValidationModels(activeWorkspaceId, selectedRegion, "current");
+  const predictionModel = useMemo(() => {
+    const items = validationModels.data?.items || [];
+    return items.find((item) => !item.error && item.scope === selectedRegion)
+      || items.find((item) => !item.error && item.scope === "all")
+      || null;
+  }, [selectedRegion, validationModels.data?.items]);
+  const modelPrediction = useSiteModelPrediction(
+    activeWorkspaceId,
+    selectedRegion,
+    selectedSiteId,
+    predictionModel?.key || "",
+    0.5,
+    Boolean(selectedSiteId && predictionModel && layerVisibility.prediction),
+  );
   const logicalPatches = useSiteLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
   const updateLogicalPatches = useBatchUpdateLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
   const patchGroups = useMemo<PatchGroup[]>(() => {
@@ -102,6 +120,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
 
   useEffect(() => {
     setImagerySelection({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
+    setLayerVisibility((current) => ({ ...current, prediction: false }));
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setPatchReviewEnabled(false);
@@ -140,16 +159,15 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
       return next;
     });
   }, [patchOperation, visibleLogicalPatches]);
-  const navigateToSite = useCallback((item: Pick<TrainingPatch, "region" | "site_id">) => {
-    navigate(`${workspacePrefix}/regions/${item.region || region}/sites/${item.site_id}`);
-  }, [navigate, workspacePrefix, region]);
-
   const handleRegionChange = (nextRegion: string) => {
     setRegion(nextRegion);
     navigate(isTraining ? `${workspacePrefix}/regions/${nextRegion}/training-data` : isModel ? `${workspacePrefix}/regions/${nextRegion}/models/${modelStage}` : `${workspacePrefix}/regions/${nextRegion}/sites`);
   };
   const handleTrainingSiteSelect = (siteId: string) => {
     navigate(`${workspacePrefix}/regions/${trainingScope}/training-data${siteId ? `/${encodeURIComponent(siteId)}` : ""}`);
+  };
+  const handleModelRunSelect = (runId: string) => {
+    navigate(runId ? `${workspacePrefix}/regions/${region}/models/train?run=${encodeURIComponent(runId)}` : `${workspacePrefix}/regions/${region}/models/train`);
   };
 
   useEffect(() => {
@@ -177,8 +195,8 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   </FormControl>;
 
   return (
-    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: `${sidebarWidth}px minmax(0, 1fr)` }, height: "100vh", bgcolor: "background.default", transition: "grid-template-columns .2s ease" }}>
-      <Box component="aside" sx={{ display: { xs: sidebarHiddenOnMobile ? "none" : "grid", md: "grid" }, gridTemplateRows: sidebarCollapsed ? "auto minmax(0, 1fr)" : "auto minmax(0, 1fr) auto", minWidth: 0, height: "100dvh", maxHeight: "100vh", borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden" }}>
+    <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: `${sidebarWidth}px minmax(0, 1fr)` }, height: "100dvh", minHeight: 0, overflow: "hidden", bgcolor: "background.default", transition: "grid-template-columns .2s ease" }}>
+      <Box component="aside" sx={{ display: { xs: sidebarHiddenOnMobile ? "none" : "grid", md: "grid" }, gridTemplateRows: sidebarCollapsed ? "auto minmax(0, 1fr)" : "auto minmax(0, 1fr) auto", minWidth: 0, minHeight: 0, height: "100%", borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden" }}>
         {sidebarCollapsed ? <>
           <Box sx={{ p: 1, display: "grid", justifyItems: "center", gap: .5, borderBottom: 1, borderColor: "divider" }}>
             <Typography variant="h6" color="primary.main" aria-label="湖泊工作台">湖</Typography>
@@ -216,18 +234,18 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
                 {sites.hasNextPage && <Box sx={{ p: 1.5 }}><Button fullWidth variant="outlined" disabled={sites.isFetchingNextPage} onClick={() => sites.fetchNextPage()}>{sites.isFetchingNextPage ? "加载中" : "加载更多"}</Button></Box>}
               </List>}
             </Box>
-          </Box> : isTraining ? <TrainingSiteList workspaceId={activeWorkspaceId} scope={trainingScope} selectedSiteId={trainingSiteId} regionControl={regionControl} onSelect={handleTrainingSiteSelect} /> : <Box sx={{ minHeight: 0, overflow: "hidden", px: 2, py: 1.25, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", gap: 1.5 }}><Box>{regionControl}</Box><Box sx={{ display: "grid", placeItems: "center", textAlign: "center" }}><Typography variant="body2" color="text.secondary">在右侧训练或验证模型</Typography></Box></Box>}
+          </Box> : isTraining ? <TrainingSiteList workspaceId={activeWorkspaceId} scope={trainingScope} selectedSiteId={trainingSiteId} regionControl={regionControl} onSelect={handleTrainingSiteSelect} /> : <ModelExperimentSidebar workspaceId={activeWorkspaceId} scope={region} regionControl={regionControl} showRegionControl={modelStage !== "train"} selectedRunId={modelRunId} onSelectRun={handleModelRunSelect} />}
           <Box data-testid="sidebar-user" sx={{ minHeight: 80, px: 2, py: 1.25, position: "relative", zIndex: 1, borderTop: 1, borderColor: "divider", bgcolor: "background.paper" }}><CurrentUserBar user={user} logoutUrl={logoutUrl} /></Box>
         </>}
       </Box>
-      <Box component="main" sx={{ minWidth: 0, display: { xs: selectedSiteId || isTraining || isModel ? "grid" : "none", md: "grid" }, gridTemplateRows: { xs: selectedSiteId ? "auto auto minmax(0, 1fr) auto" : isTraining ? "auto minmax(0, 1fr)" : isModel ? "auto minmax(0, 1fr)" : "1fr", md: selectedSiteId ? "auto minmax(0, 1fr) auto" : "1fr" }, color: "text.secondary" }}>
+      <Box component="main" sx={{ minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden", display: { xs: selectedSiteId || isTraining || isModel ? "grid" : "none", md: "grid" }, gridTemplateRows: { xs: selectedSiteId ? "auto auto minmax(0, 1fr) auto" : isTraining ? "auto minmax(0, 1fr)" : isModel ? "auto minmax(0, 1fr)" : "1fr", md: selectedSiteId ? "auto minmax(0, 1fr) auto" : "1fr" }, color: "text.secondary" }}>
         <Box sx={{ display: { xs: "block", md: "none" }, px: 1.5, py: .75, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}><CurrentUserBar compact user={user} logoutUrl={logoutUrl} /></Box>
-        {isModel ? <ModelWorkbench workspaceId={activeWorkspaceId} scope={region} stage={modelStage} defaults={activeWorkspace?.training_defaults} routeSiteId={modelSiteId} routeSiteRegion={modelSiteRegion} routeModel={routeModel} onBack={() => navigate(`${workspacePrefix}/regions/${region}/sites`)} onStageChange={(stage) => navigate(`${workspacePrefix}/regions/${region}/models/${stage}`)} onRouteModel={(model) => navigate(`${workspacePrefix}/regions/${region}/models/validate?model=${encodeURIComponent(model)}`, { replace: true })} onRouteResult={(siteId, siteRegion, model) => navigate(`${workspacePrefix}/regions/${region}/models/validate/${encodeURIComponent(siteId)}?model=${encodeURIComponent(model)}${region === "all" ? `&site_region=${encodeURIComponent(siteRegion)}` : ""}`)} onTrainingDataGenerated={(siteRegion, sampleId, siteId) => navigate(`${workspacePrefix}/regions/${siteRegion}/training-data/${encodeURIComponent(siteId)}?source=${encodeURIComponent(sampleId)}`)} allowForeignModels={user.role === "admin"} /> : isTraining ? <>
+        {isModel ? <ModelWorkbench workspaceId={activeWorkspaceId} scope={region} regionOptions={regions.data?.items || []} onScopeChange={handleRegionChange} stage={modelStage} defaults={activeWorkspace?.training_defaults} selectedRunId={modelRunId} onRunSelect={handleModelRunSelect} routeSiteId={modelSiteId} routeSiteRegion={modelSiteRegion} routeModel={routeModel} onBack={() => navigate(`${workspacePrefix}/regions/${region}/sites`)} onStageChange={(stage) => navigate(`${workspacePrefix}/regions/${region}/models/${stage}`)} onRouteModel={(model) => navigate(`${workspacePrefix}/regions/${region}/models/validate?model=${encodeURIComponent(model)}`, { replace: true })} onRouteResult={(siteId, siteRegion, model) => navigate(`${workspacePrefix}/regions/${region}/models/validate/${encodeURIComponent(siteId)}?model=${encodeURIComponent(model)}${region === "all" ? `&site_region=${encodeURIComponent(siteRegion)}` : ""}`)} onTrainingDataGenerated={(siteRegion, sampleId, siteId) => navigate(`${workspacePrefix}/regions/${siteRegion}/training-data/${encodeURIComponent(siteId)}?source=${encodeURIComponent(sampleId)}`)} allowForeignModels={user.role === "admin"} /> : isTraining ? <>
           <Box sx={{ display: { xs: "flex", md: "none" }, alignItems: "center", gap: 1, px: 1.5, py: .75, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
             <IconButton size="small" onClick={() => navigate(`${workspacePrefix}/regions/${trainingScope}/sites`)} aria-label="返回观测区域"><ArrowLeft size={19} /></IconButton>
-            <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}><InputLabel id="mobile-training-site-label">训练区域</InputLabel><Select labelId="mobile-training-site-label" label="训练区域" value={(trainingSites.data || []).some((item) => item.siteId === trainingSiteId) ? trainingSiteId : ""} onChange={(event) => handleTrainingSiteSelect(event.target.value)}><MenuItem value="">全部训练区域</MenuItem>{(trainingSites.data || []).map((item) => <MenuItem key={item.key} value={item.siteId}>{item.displayName} ({item.patchCount})</MenuItem>)}</Select></FormControl>
+            <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}><InputLabel id="mobile-training-site-label">训练区域</InputLabel><Select labelId="mobile-training-site-label" label="训练区域" value={(trainingSites.data || []).some((item) => item.siteId === trainingSiteId) ? trainingSiteId : ""} onChange={(event) => handleTrainingSiteSelect(event.target.value)}><MenuItem value="">全部训练数据</MenuItem>{(trainingSites.data || []).map((item) => <MenuItem key={item.key} value={item.siteId}>{item.displayName} ({item.patchCount})</MenuItem>)}</Select></FormControl>
           </Box>
-          <PatchReviewView workspaceId={activeWorkspaceId} scope={trainingScope} siteId={trainingSiteId} sourceSampleId={sourceSampleId} onClearSource={() => navigate(`${workspacePrefix}/regions/${trainingScope}/training-data${trainingSiteId ? `/${encodeURIComponent(trainingSiteId)}` : ""}`, { replace: true })} onLocate={navigateToSite} />
+          <PatchReviewView workspaceId={activeWorkspaceId} scope={trainingScope} siteId={trainingSiteId} sourceSampleId={sourceSampleId} onClearSource={() => navigate(`${workspacePrefix}/regions/${trainingScope}/training-data${trainingSiteId ? `/${encodeURIComponent(trainingSiteId)}` : ""}`, { replace: true })} />
         </> : !selectedSiteId ? <Box sx={{ display: "grid", placeItems: "center" }}><Typography>选择一个观测区域</Typography></Box> : site.isLoading ? <Box sx={{ display: "grid", placeItems: "center" }}><CircularProgress size={28} /></Box> : site.data ? <>
           <SiteMapToolbar
             leading={<IconButton sx={{ display: { md: "none" } }} onClick={() => navigate(`${workspacePrefix}/regions/${region}/sites`)} aria-label="返回观测区域列表"><ArrowLeft size={19} /></IconButton>}
@@ -241,6 +259,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             jrcThreshold={jrcThreshold}
             onJrcThresholdChange={setJrcThreshold}
             trainingAction={!patchReviewEnabled ? <TrainingCaptureButton controller={trainingCapture} /> : undefined}
+            showPrediction={Boolean(predictionModel)}
             showPatches={visibleLogicalPatches.length > 0}
             patchReviewEnabled={patchReviewEnabled}
             onPatchReviewEnabledChange={(enabled) => { setPatchReviewEnabled(enabled); setPendingPatchIds(new Set()); setActivePatchId(""); }}
@@ -263,6 +282,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             esa={esa.data}
             jrc={jrc.data}
             localLabel={localLabel.data}
+            modelPrediction={modelPrediction.data?.prediction}
             logicalPatches={visibleLogicalPatches}
             patchReviewEnabled={patchReviewEnabled}
             activePatchId={activePatchId}
@@ -274,6 +294,9 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             {patchReviewEnabled ? <SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updateLogicalPatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updateLogicalPatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /> : <>
               <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                 <TrainingCaptureStatus controller={trainingCapture} />
+                {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}
+                {modelPrediction.isError && layerVisibility.prediction && <Typography variant="caption" color="error">模型预测失败：{modelPrediction.error.message}</Typography>}
+                {predictionModel && layerVisibility.prediction && modelPrediction.data && <Typography variant="caption" color="text.secondary">模型 {predictionModel.name} · 阈值 0.50 · 水体像元 {((modelPrediction.data.stats.predicted_ratio || 0) * 100).toFixed(1)}%</Typography>}
               </Box>
             </>}
           </Box>

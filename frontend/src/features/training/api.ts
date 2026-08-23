@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJson, postJson } from "../../api/client";
+import { deleteJson, getJson, postJson } from "../../api/client";
 import { workspaceRegionApi } from "../workspaces/api";
 import type { GlobalDataset } from "../../api/types";
 
@@ -23,6 +23,7 @@ interface EpochMetrics { loss?: number; iou?: number; dice?: number }
 export interface TrainingEpoch { epoch: number; train?: EpochMetrics; val?: EpochMetrics }
 export interface TrainingRun {
   job_id: string;
+  scope?: string;
   run_name?: string;
   status: string;
   message?: string;
@@ -31,6 +32,7 @@ export interface TrainingRun {
   epochs?: number;
   created_at?: string;
   updated_at?: string;
+  options?: Record<string, unknown>;
   history?: TrainingEpoch[];
   dataset?: TrainingDataset;
   config?: Record<string, unknown>;
@@ -84,6 +86,17 @@ export function useStartTrainingRun(workspaceId: string, scope: string) {
 export function useCancelTrainingRun(workspaceId: string, scope: string) {
   const client = useQueryClient();
   return useMutation({ mutationFn: (jobId: string) => postJson<TrainingRun>(workspaceRegionApi(workspaceId, scope, `/training-runs/${encodeURIComponent(jobId)}/cancel`), {}), onSuccess: () => client.invalidateQueries({ queryKey: ["training-runs", workspaceId, scope] }) });
+}
+
+export function useDeleteTrainingRun(workspaceId: string, scope: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => deleteJson<{ job_id: string; run_name: string; deleted: boolean }>(workspaceRegionApi(workspaceId, scope, `/training-runs/${encodeURIComponent(jobId)}`)),
+    onSuccess: async () => Promise.all([
+      client.invalidateQueries({ queryKey: ["training-runs", workspaceId] }),
+      client.invalidateQueries({ queryKey: ["validation-models", workspaceId] }),
+    ]),
+  });
 }
 
 export function useTrainingDatasetConfigs(workspaceId: string, scope: string) {

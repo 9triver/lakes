@@ -139,10 +139,14 @@ test("training data and model training views load", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.goto("#/users/default/workspaces/default/regions/all/training-data");
   await expect(page.getByRole("heading", { name: "训练数据", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "共享范围", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "共享", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "定位", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /选择/ })).toHaveCount(0);
   await expectSidebarUserVisible(page);
   const sidebar = page.locator("aside");
   await expect(sidebar.getByText(/^\d+ 个训练区域 · \d+ 个 Patch$/)).toBeVisible();
-  await expect(sidebar.getByText("全部训练区域", { exact: true })).toBeVisible();
+  await expect(sidebar.getByText("全部训练数据", { exact: true })).toBeVisible();
   const trainingSite = sidebar.getByRole("button").filter({ hasText: "区域 17407（苏干湖附近）" });
   await expect(trainingSite).toBeVisible();
   const sitePatchCount = Number((await trainingSite.getByText(/^\d+ 个 Patch/).textContent())?.match(/^\d+/)?.[0]);
@@ -150,16 +154,26 @@ test("training data and model training views load", async ({ page }) => {
   await trainingSite.click();
   await expect(page).toHaveURL(/#\/users\/default\/workspaces\/default\/regions\/all\/training-data\/gansu_17407$/);
   await expect(page.getByText(`全部 ${sitePatchCount}`, { exact: true })).toBeVisible();
-  await sidebar.getByText("全部训练区域", { exact: true }).click();
+  await sidebar.getByText("全部训练数据", { exact: true }).click();
   await expect(page).toHaveURL(/#\/users\/default\/workspaces\/default\/regions\/all\/training-data$/);
   await expect(page.getByText(/^全部 [1-9]\d*/)).toBeVisible();
   await expect(page.getByText(/^已纳入 [1-9]\d*/)).toBeVisible();
   await expect(page.locator('img[src*="/logical-patches/"]').first()).toBeVisible();
+  await page.getByRole("button", { name: /查看 .* Patch/ }).first().click();
+  const patchDialog = page.getByRole("dialog");
+  await expect(patchDialog.getByText(/已纳入数据集|已从数据集排除/)).toBeVisible();
+  const labelSwitch = patchDialog.getByRole("switch", { name: "显示水体标注" });
+  await expect(labelSwitch).toBeChecked();
+  await expect(patchDialog.locator("img")).toHaveAttribute("src", /overlay=1/);
+  await labelSwitch.click();
+  await expect(labelSwitch).not.toBeChecked();
+  await expect(patchDialog.locator("img")).toHaveAttribute("src", /overlay=0/);
+  await patchDialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.goto("#/users/default/workspaces/default/regions/all/models/train");
-  await expect(page.getByRole("heading", { name: "模型", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模型实验", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "训练", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("combobox", { name: "数据来源" })).toContainText("当前 Workspace");
-  await expect(page.getByText(/历史任务 \(\d+\)/)).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "数据来源" })).toContainText(/工作区数据集|共享数据集/);
+  await expect(page.getByText(/历史实验 \(\d+\)/)).toBeVisible();
   await expectSidebarUserVisible(page);
   await page.screenshot({ path: `${screenshotDir}/training-desktop.png`, fullPage: true });
   expect(errors).toEqual([]);
@@ -219,7 +233,6 @@ test("remaining mobile workspaces stay usable", async ({ page }) => {
 
   await page.goto("#/users/default/workspaces/default/regions/all/models/train");
   await expect(page.getByRole("tab", { name: "训练", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText(/历史任务 \(\d+\)/)).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/training-mobile.png`, fullPage: true });
 

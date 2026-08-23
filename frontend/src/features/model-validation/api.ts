@@ -58,7 +58,7 @@ export function useValidationModels(workspaceId: string, scope: string, visibili
     queryKey: ["validation-models", workspaceId, scope, visibility],
     queryFn: async () => {
       const result = await getJson<{ default: string; items: ModelOption[] }>(workspaceRegionApi(workspaceId, scope, `/model-validation/models?visibility=${visibility}`));
-      return { ...result, items: sortedModels(result.items) };
+      return { ...result, items: sortedModels(result.items.filter((item) => item.weight === "best.pt")) };
     },
     enabled: Boolean(workspaceId && scope),
   });

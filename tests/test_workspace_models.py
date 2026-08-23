@@ -10,6 +10,27 @@ from lake_workbench.regions.config import RegionConfig
 
 
 class WorkspaceModelRegistryTests(unittest.TestCase):
+    def test_lists_only_best_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            region = RegionConfig(
+                key="test",
+                name="Test",
+                data_dir=root / "raw",
+                processed_dir=root / "processed",
+                cache_dir=root / "cache",
+                shared_data_dir=root / "shared",
+            )
+            store = WorkspaceStore({"test": region}, root=root / "workspaces", model_root=root / "models")
+            store.ensure_default_workspace()
+            registry = WorkspaceModelRegistry(store, {"test": region}, "default")
+            run_dir = root / "models" / "workspaces" / "default" / "test" / "run"
+            run_dir.mkdir(parents=True)
+            (run_dir / "best.pt").touch()
+            (run_dir / "last.pt").touch()
+
+            self.assertEqual(registry._paths("default", "test"), [run_dir / "best.pt"])
+
     def test_resolves_only_workspace_scoped_model_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

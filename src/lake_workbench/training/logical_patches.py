@@ -393,7 +393,9 @@ def build_global_training_dataset(
                     patch_id = logical.get("source_patch_id") or logical.get("logical_patch_id", "")
                     if not _eligible_actual_patch(actual, patch_id, config):
                         continue
-                    cache_path = cache_dir / f"{logical.get('source_workspace_id', 'workspace')}-{patch_id}-{source_signature[:16]}.npz"
+                    cache_name = f"{logical.get('source_workspace_id', 'workspace')}-{patch_id}-{source_signature[:16]}.npz"
+                    cache_path = cache_dir / cache_name
+                    final_cache_path = output_dir / "patch_cache" / cache_name
                     with cache_path.open("wb") as handle:
                         np.savez_compressed(handle, image=actual["image"], mask=actual["mask"], valid=actual["valid"].astype("uint8"))
                     output_rows.append({
@@ -402,7 +404,7 @@ def build_global_training_dataset(
                         "dataset_id": scope,
                         "dataset_config_id": config_id,
                         "source_signature": source_signature,
-                        "npz_path": display_path(cache_path),
+                        "npz_path": display_path(final_cache_path),
                         "patch_size": config["output_size"],
                         "valid_ratio": f"{actual['valid_ratio']:.6f}",
                         "valid_pixels": actual["valid_pixels"],
@@ -503,6 +505,7 @@ def workspace_logical_patch_preview(
     row: dict,
     workspace_store: "WorkspaceStore",
     workspace_id: str,
+    overlay: bool = True,
 ) -> bytes:
     image_path = resolve_data_path(row.get("image_path", ""), region)
     if not image_path.exists():
@@ -516,7 +519,7 @@ def workspace_logical_patch_preview(
         label = _rasterize_label(label_path, src)
         target = np.where(valid, label, 255).astype("uint8")
         actual = _derive_patch(image, target, valid, row, LOGICAL_PATCH_SIZE)
-    preview = _preview_image(actual["image"], actual["mask"], actual["valid"])
+    preview = _preview_image(actual["image"], actual["mask"], actual["valid"], overlay=overlay)
     output = BytesIO()
     preview.save(output, format="PNG")
     return output.getvalue()
@@ -631,7 +634,7 @@ def _write_preview(path: Path, image: np.ndarray, mask: np.ndarray, valid: np.nd
     _preview_image(image, mask, valid).save(path)
 
 
-def _preview_image(image: np.ndarray, mask: np.ndarray, valid: np.ndarray) -> Image.Image:
+def _preview_image(image: np.ndarray, mask: np.ndarray, valid: np.ndarray, overlay: bool = True) -> Image.Image:
     indexes = [2, 1, 0] if image.shape[0] >= 3 else [0, 0, 0]
     rgb = np.stack([image[index] for index in indexes], axis=-1).astype("float32")
     output = np.zeros_like(rgb, dtype="uint8")
@@ -643,8 +646,9 @@ def _preview_image(image: np.ndarray, mask: np.ndarray, valid: np.ndarray) -> Im
             high = low + 1
         output[..., index] = np.clip((values - low) * 255 / (high - low), 0, 255).astype("uint8")
     output[~valid] = [34, 34, 34]
-    water = mask == 1
-    output[water] = (output[water].astype("uint16") * 25 // 100 + np.array([255, 32, 128], dtype="uint16") * 75 // 100).astype("uint8")
+    if overlay:
+        water = mask == 1
+        output[water] = (output[water].astype("uint16") * 25 // 100 + np.array([255, 32, 128], dtype="uint16") * 75 // 100).astype("uint8")
     return Image.fromarray(output)
 
 

@@ -26,7 +26,7 @@ export function TrainingSiteList({ workspaceId, scope, selectedSiteId, regionCon
           : !items.length ? <Box sx={{ p: 3, textAlign: "center" }}><Typography variant="body2">当前区域还没有训练数据</Typography></Box>
             : <List disablePadding>
               <ListItemButton divider selected={!selectedSiteId} onClick={() => onSelect("")}>
-                <ListItemText primary="全部训练区域" secondary={`${patchCount} 个 Patch`} />
+                <ListItemText primary="全部训练数据" secondary={`${patchCount} 个 Patch`} />
               </ListItemButton>
               {items.map((item) => <ListItemButton key={item.key} divider selected={item.siteId === selectedSiteId} onClick={() => onSelect(item.siteId)} sx={{ alignItems: "flex-start", py: 1.25 }}>
                 <ListItemText

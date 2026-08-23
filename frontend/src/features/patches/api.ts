@@ -4,20 +4,6 @@ import type { TrainingPatch } from "../../api/types";
 import type { TileMeta } from "../../api/types";
 import { workspaceRegionApi } from "../workspaces/api";
 
-export interface PatchExportJob {
-  job_id: string;
-  status: "queued" | "running" | "completed" | "failed";
-  message?: string;
-  progress?: number;
-}
-
-export interface PatchExportOptions {
-  patch_size: number;
-  stride: number;
-  preview_scale: number;
-  overwrite: boolean;
-}
-
 export interface GlobalDatasetContribution {
   dataset_id: string;
   added: number;
@@ -92,19 +78,6 @@ export function useUpdateTrainingPatch(workspaceId: string, scope: string, inclu
   });
 }
 
-export function useStartPatchExport(workspaceId: string, scope: string) {
-  return useMutation({ mutationFn: (options: PatchExportOptions) => postJson<PatchExportJob>(workspaceRegionApi(workspaceId, scope, "/logical-patches/build-jobs"), options) });
-}
-
-export function usePatchExportJob(workspaceId: string, scope: string, jobId: string) {
-  return useQuery({
-    queryKey: ["patch-export-job", scope, jobId],
-    queryFn: () => getJson<PatchExportJob>(workspaceRegionApi(workspaceId, scope, `/training-patches/export-jobs/${encodeURIComponent(jobId)}`)),
-    enabled: Boolean(workspaceId && scope && jobId),
-    refetchInterval: (query) => ["completed", "failed"].includes(query.state.data?.status || "") ? false : 1500,
-  });
-}
-
 export function useContributePatches(workspaceId: string, targetScope: string) {
   const client = useQueryClient();
   return useMutation({
@@ -119,43 +92,6 @@ export function useContributePatches(workspaceId: string, targetScope: string) {
         replace,
       });
     },
-    onSuccess: async () => Promise.all([
-      client.invalidateQueries({ queryKey: ["logical-patches"] }),
-      client.invalidateQueries({ queryKey: ["global-dataset"] }),
-      client.invalidateQueries({ queryKey: ["training-datasets"] }),
-    ]),
-  });
-}
-
-export function useBatchManagePatches(workspaceId: string, scope: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: async ({ patches, operation, replace = false }: { patches: TrainingPatch[]; operation: "include" | "exclude"; replace?: boolean }) => {
-      const groups = new Map<string, TrainingPatch[]>();
-      for (const patch of patches) {
-        const region = patch.region || scope;
-        groups.set(region, [...(groups.get(region) || []), patch]);
-      }
-      return Promise.all([...groups.entries()].map(([region, items]) => patchJson(workspaceRegionApi(workspaceId, region, "/logical-patches"), {
-        operation,
-        logical_patch_ids: items.map((patch) => patch.logical_patch_id || patch.patch_id),
-        replace,
-      })));
-    },
-    onSuccess: async () => Promise.all([
-      client.invalidateQueries({ queryKey: ["logical-patches"] }),
-      client.invalidateQueries({ queryKey: ["sites"] }),
-      client.invalidateQueries({ queryKey: ["training-datasets"] }),
-    ]),
-  });
-}
-
-export function useWithdrawPatches(workspaceId: string, targetScope: string) {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: (patches: TrainingPatch[]) => postJson<GlobalDatasetContribution>(workspaceRegionApi(workspaceId, targetScope, "/global-dataset/patches/withdraw"), {
-      patch_ids: patches.map((patch) => patch.logical_patch_id || patch.patch_id),
-    }),
     onSuccess: async () => Promise.all([
       client.invalidateQueries({ queryKey: ["logical-patches"] }),
       client.invalidateQueries({ queryKey: ["global-dataset"] }),

@@ -4,6 +4,7 @@ import re
 from http import HTTPStatus
 from urllib.parse import parse_qs
 
+from lake_workbench.jobs import TrainingRunActiveError
 from lake_workbench.utils import truthy_flag
 from lake_workbench.training.registry import DatasetConflict
 from lake_workbench.workspaces import WorkspacePatchConflict
@@ -193,7 +194,8 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
 
             manifest = store.ensure_workspace_logical_patch_manifest(handler.workspace_id, handler.catalog.region.key)
             patch = handler.catalog.logical_patch_by_id(patch_id, manifest)
-            payload = workspace_logical_patch_preview(handler.catalog.region, patch, store, handler.workspace_id)
+            overlay = truthy_flag(params.get("overlay", ["1"])[0], default=True)
+            payload = workspace_logical_patch_preview(handler.catalog.region, patch, store, handler.workspace_id, overlay=overlay)
             content_type = "image/png"
         except (KeyError, FileNotFoundError, ValueError) as exc:
             handler._error(HTTPStatus.NOT_FOUND, str(exc))
@@ -369,17 +371,35 @@ def handle_training_patch(handler, path: str) -> bool:
 
 
 def handle_training_delete(handler, path: str) -> bool:
-    if not re.fullmatch(r"/api/training-samples/[^/]+", path):
-        return False
-    sample_id = path.rsplit("/", 1)[-1]
-    try:
-        store = _workspace_store(handler)
-        samples_path = store.ensure_workspace_training_samples(handler.workspace_id, handler.catalog.region.key) if store and handler.workspace_id else None
-        result = handler.catalog.delete_training_sample(sample_id, samples_path)
-    except KeyError as exc:
-        handler._error(HTTPStatus.NOT_FOUND, str(exc))
-    else:
-        store = _workspace_store(handler)
-        result["workspace_logical_patches_deleted"] = store.remove_workspace_logical_patches(sample_id)
-        handler._json(result)
-    return True
+    if re.fullmatch(r"/api/(?:all/)?training-runs/[^/]+", path):
+        if not _require_workspace(handler):
+            return True
+        job_id = path.rsplit("/", 1)[-1]
+        try:
+            result = handler.training_runs.delete(job_id)
+        except TrainingRunActiveError as exc:
+            handler._error(HTTPStatus.CONFLICT, str(exc))
+        except ValueError as exc:
+            handler._error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            if result is None:
+                handler._error(HTTPStatus.NOT_FOUND, "Training job not found")
+            else:
+                handler._json(result)
+        return True
+
+    if re.fullmatch(r"/api/training-samples/[^/]+", path):
+        sample_id = path.rsplit("/", 1)[-1]
+        try:
+            store = _workspace_store(handler)
+            samples_path = store.ensure_workspace_training_samples(handler.workspace_id, handler.catalog.region.key) if store and handler.workspace_id else None
+            result = handler.catalog.delete_training_sample(sample_id, samples_path)
+        except KeyError as exc:
+            handler._error(HTTPStatus.NOT_FOUND, str(exc))
+        else:
+            store = _workspace_store(handler)
+            result["workspace_logical_patches_deleted"] = store.remove_workspace_logical_patches(sample_id)
+            handler._json(result)
+        return True
+
+    return False

@@ -13,7 +13,7 @@ export interface TrainingCaptureProps {
   siteId: string;
   jrcThreshold: number;
   localLabel?: LocalLabelItem;
-  imagery: { assetId?: string; tile: string; product: string };
+  imagery: { assetId?: string; tile: string; product: string; localLabel?: LocalLabelItem | null };
   mapHandle: React.RefObject<SiteMapHandle | null>;
   modelValidation?: Record<string, unknown> | null;
   onComplete?: (sampleId: string) => void;
@@ -38,12 +38,13 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
     mutationFn: async () => {
       const captured = mapHandle.current?.captureView();
       if (!captured) throw new Error("地图尚未准备好");
+      const selectedLocalLabel = localLabel || imagery.localLabel || undefined;
       const viewState = {
         region,
         site_id: siteId,
         ...captured,
         jrc_threshold: jrcThreshold,
-        selected_local_label: localLabel ? { id: localLabel.id, name: localLabel.name, path: localLabel.path, date: localLabel.date || "" } : null,
+        selected_local_label: selectedLocalLabel ? { id: selectedLocalLabel.id, name: selectedLocalLabel.name, path: selectedLocalLabel.path, date: selectedLocalLabel.date || "" } : null,
         selected_tile: imagery.tile,
         selected_product: imagery.product,
         selected_imagery_asset_id: imagery.assetId || imagery.product,
