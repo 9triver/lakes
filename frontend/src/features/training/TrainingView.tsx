@@ -22,21 +22,21 @@ function DatasetSummary({ dataset, scope, regionOptions, source, sourcePatchCoun
     {dataset?.error && <Alert severity="info">{dataset.error}</Alert>}
     <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", border: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ px: 1.5, py: 1, borderRight: 1, borderBottom: 1, borderColor: "divider", minWidth: 0 }}>
-        <Typography variant="caption" color="text.secondary" display="block">训练范围</Typography>
-        <Select variant="standard" size="small" fullWidth value={scope} onChange={(event) => onScopeChange(event.target.value)} aria-label="训练范围">
+        <Typography id="training-scope-label" variant="caption" color="text.secondary" display="block">训练范围</Typography>
+        <Select labelId="training-scope-label" variant="standard" size="small" fullWidth value={scope} onChange={(event) => onScopeChange(event.target.value)}>
           <MenuItem value="all">全部区域</MenuItem>
           {regionOptions.map((item) => <MenuItem key={item.key} value={item.key}>{item.name}</MenuItem>)}
         </Select>
       </Box>
       <Box sx={{ px: 1.5, py: 1, borderRight: 1, borderBottom: 1, borderColor: "divider", minWidth: 0 }}>
-        <Typography variant="caption" color="text.secondary" display="block">数据来源</Typography>
+        <Typography id="training-source-label" variant="caption" color="text.secondary" display="block">数据来源</Typography>
         <Select
+          labelId="training-source-label"
           variant="standard"
           size="small"
           fullWidth
           value={source}
           onChange={(event) => onSourceChange(event.target.value as "workspace" | "global")}
-          aria-label="数据来源"
         >
           <MenuItem value="workspace">工作区数据集 ({workspacePatchCount})</MenuItem>
           <MenuItem value="global" disabled={!globalPatchCount}>共享数据集 ({globalPatchCount})</MenuItem>
