@@ -1,31 +1,31 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
-import type { ContextWaterResponse, FeatureCollection, GeoJsonLayer, SiteDetail, SiteFilters, SitesResponse, LocalLabelItem, TileMeta } from "../../api/types";
+import type { ContextWaterResponse, FeatureCollection, GeoJsonLayer, SiteDetail, SitesResponse, TileMeta } from "../../api/types";
+import { workspaceRegionApi } from "../workspaces/api";
 
 const sitePageSize = 200;
 
-export function useSites(region: string, query: string, filters: SiteFilters) {
+export function useSites(workspaceId: string, region: string, query: string) {
   return useInfiniteQuery({
-    queryKey: ["sites", region, query, filters],
+    queryKey: ["sites", workspaceId, region, query],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ q: query, limit: String(sitePageSize), offset: String(pageParam) });
-      Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
-      return getJson<SitesResponse>(`/api/regions/${encodeURIComponent(region)}/sites?${params}`);
+      return getJson<SitesResponse>(workspaceRegionApi(workspaceId, region, `/sites?${params}`));
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage, pages) => {
       const loaded = pages.reduce((total, page) => total + page.items.length, 0);
       return loaded < lastPage.total ? loaded : undefined;
     },
-    enabled: Boolean(region),
+    enabled: Boolean(workspaceId && region),
   });
 }
 
-export function useSite(region: string, siteId: string) {
+export function useSite(region: string, siteId: string, workspaceId: string) {
   return useQuery({
-    queryKey: ["site", region, siteId],
-    queryFn: () => getJson<SiteDetail>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}`),
-    enabled: Boolean(region && siteId),
+    queryKey: ["site", workspaceId, region, siteId],
+    queryFn: () => getJson<SiteDetail>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}`)),
+    enabled: Boolean(workspaceId && region && siteId),
   });
 }
 
@@ -50,7 +50,7 @@ function useAnnotation<T extends GeoJsonLayer | FeatureCollection>(region: strin
         `/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/annotations/${source}${query}`,
       )
     ).annotation,
-    enabled: Boolean(region && siteId && enabled),
+    enabled: enabled && Boolean(region && siteId),
     retry: false,
   });
 }
@@ -69,10 +69,6 @@ export function useEsaLayer(region: string, siteId: string) {
 
 export function useJrcLayer(region: string, siteId: string, threshold: number) {
   return useAnnotation<GeoJsonLayer>(region, siteId, "jrc", `?threshold=${threshold}`);
-}
-
-export function useLocalLabels(region: string, siteId: string) {
-  return useQuery({ queryKey: ["local-labels", region, siteId], queryFn: async () => (await getJson<{ items: LocalLabelItem[] }>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/local-labels`)).items, enabled: Boolean(region && siteId) });
 }
 
 export function useLocalLabel(region: string, siteId: string, labelId: string) {

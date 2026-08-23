@@ -2,12 +2,8 @@
 
 from pathlib import Path
 
-from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.training.datasets import dataset_summary_from_config, read_json_file, timestamp_for_path
 from lake_workbench.utils import clean_optional, display_path, parse_float, parse_int_or_default
-
-
-GLOBAL_MODEL_DIR = PROJECT_ROOT / "data" / "models" / "all"
 
 
 def model_training_metadata(model_path: Path, scope: str) -> dict:
@@ -40,15 +36,23 @@ def model_training_metadata(model_path: Path, scope: str) -> dict:
                 "lr",
                 "weight_decay",
                 "base_channels",
+                "model_type",
+                "model_options",
+                "architecture_label",
                 "val_ratio",
                 "seed",
                 "threshold",
                 "no_augment",
+                "augmentation_enabled",
                 "device",
                 "device_requested",
                 "train_count",
                 "val_count",
+                "train_site_count",
+                "val_site_count",
+                "split_group",
                 "manifest",
+                "workspace_id",
             )
             if key in config
         },
@@ -73,36 +77,6 @@ def model_sort_key(item: dict) -> tuple:
     )
 
 
-def iter_global_model_paths() -> list[Path]:
-    if not GLOBAL_MODEL_DIR.exists():
-        return []
-    return sorted(GLOBAL_MODEL_DIR.glob("*/*.pt"))
-
-
-def global_model_key(path: Path) -> str:
-    try:
-        return f"all/{path.resolve().relative_to(GLOBAL_MODEL_DIR.resolve())}"
-    except ValueError:
-        return f"all/{path.name}"
-
-
-def global_model_path_from_key(model_key: str) -> Path:
-    key = clean_optional(model_key) or ""
-    path = Path(key)
-    if path.is_absolute():
-        raise ValueError("absolute model paths are not allowed")
-    parts = path.parts
-    if len(parts) == 3 and parts[0] == "all":
-        run_name, weight = parts[1], parts[2]
-    elif len(parts) == 2:
-        run_name, weight = parts
-    else:
-        raise ValueError(f"invalid model key: {key}")
-    if run_name in {"", ".", ".."} or weight in {"", ".", ".."}:
-        raise ValueError(f"invalid model key: {key}")
-    return GLOBAL_MODEL_DIR / run_name / weight
-
-
 def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
     config = read_json_file(run_dir / "config.json", {})
     if not isinstance(config, dict) or not config:
@@ -110,18 +84,20 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
     history = read_json_file(run_dir / "history.json", [])
     if not isinstance(history, list):
         history = []
+    completed = (run_dir / "best.pt").exists() or (run_dir / "last.pt").exists() or bool(history)
+    status = "completed" if completed else "failed"
     result = {
-        "status": "completed",
+        "status": status,
         "output_dir": display_path(run_dir),
         "manifest": config.get("manifest") or display_path(run_dir / "manifest.csv"),
         "best_model": display_path(run_dir / "best.pt") if (run_dir / "best.pt").exists() else "",
         "last_model": display_path(run_dir / "last.pt") if (run_dir / "last.pt").exists() else "",
         "history": history,
         "config": config,
+        "workspace_id": clean_optional(config.get("workspace_id")) or "",
     }
     if history:
         result["best_iou"] = max((parse_float((record.get("val") or {}).get("iou")) or 0 for record in history), default=0)
-    status = "completed" if result["best_model"] or result["last_model"] or history else "configured"
     epoch = parse_int_or_default((history[-1] if history else {}).get("epoch"), 0)
     epochs = parse_int_or_default(config.get("epochs"), epoch)
     config_path = run_dir / "config.json"
@@ -130,7 +106,7 @@ def persisted_training_job(scope: str, run_dir: Path) -> dict | None:
         "scope": scope,
         "run_name": run_dir.name,
         "status": status,
-        "message": "历史训练任务",
+        "message": "历史训练任务" if completed else "训练未完成（服务重启或启动失败）",
         "progress": 100 if status == "completed" else 5,
         "epoch": epoch,
         "epochs": epochs,

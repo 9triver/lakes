@@ -21,15 +21,33 @@ def _site(handler, site_key: str):
     return site
 
 
+def _workspace_logical_manifest(handler):
+    workspace_id = getattr(handler, "workspace_id", None)
+    store = getattr(handler.__class__, "workspace_store", None)
+    if not workspace_id or store is None:
+        handler._error(HTTPStatus.NOT_FOUND, "逻辑 Patch 路径必须包含 workspace")
+        return None
+    return store.ensure_workspace_logical_patch_manifest(workspace_id, handler.catalog.region.key)
+
+
 def handle_site_get(handler, path: str, query_string: str) -> bool:
     params = parse_qs(query_string)
     if path == "/api/sites":
         query, limit, offset, filters = site_list_options(query_string)
-        handler._json(handler.catalog.list_sites(query=query, limit=limit, offset=offset, filters=filters))
+        payload = handler.catalog.list_sites(query=query, limit=limit, offset=offset, filters=filters)
+        store = getattr(handler.__class__, "workspace_store", None)
+        if store and getattr(handler, "workspace_id", None):
+            counts = store.patch_counts(handler.workspace_id, handler.catalog.region.key)
+            payload["items"] = [{**item, "included_logical_patch_count": counts.get(item.get("site_id", ""), 0)} for item in payload["items"]]
+        handler._json(payload)
     elif re.fullmatch(r"/api/sites/[^/]+", path):
         site = _site(handler, path.rsplit("/", 1)[-1])
         if site is not None:
-            handler._json(handler.catalog.get_site_detail(site))
+            payload = handler.catalog.get_site_detail(site)
+            store = getattr(handler.__class__, "workspace_store", None)
+            if store and getattr(handler, "workspace_id", None):
+                payload["included_logical_patch_count"] = store.patch_counts(handler.workspace_id, handler.catalog.region.key).get(site.site_id, 0)
+            handler._json(payload)
     elif re.fullmatch(r"/api/sites/[^/]+/image\.png", path):
         site = _site(handler, path.split("/")[-2])
         if site is not None:
@@ -66,6 +84,42 @@ def handle_site_get(handler, path: str, query_string: str) -> bool:
                         padding=float(params.get("padding", ["0.8"])[0]),
                     )
             except FileNotFoundError:
+                payload = blank_png(256)
+            handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")
+    elif re.fullmatch(r"/api/sites/[^/]+/logical-patch-source/meta", path):
+        manifest = _workspace_logical_manifest(handler)
+        if manifest is None:
+            return True
+        site = _site(handler, path.split("/")[-3])
+        patch_id = params.get("patch_id", [""])[0]
+        if site is not None:
+            try:
+                patch = handler.catalog.logical_patch_by_id(patch_id, manifest)
+                if patch.get("site_id") != site.site_id:
+                    raise KeyError(f"logical patch does not belong to site: {patch_id}")
+                payload = handler.catalog.logical_patch_source_meta(patch_id, manifest)
+                payload["tile_url"] = (
+                    f"/api/workspaces/{handler.workspace_id}/regions/{handler.catalog.region.key}"
+                    f"/sites/{site.site_id}/logical-patch-source/tiles/{{z}}/{{x}}/{{y}}.png?patch_id={patch_id}"
+                )
+                handler._json(payload)
+            except (KeyError, FileNotFoundError) as exc:
+                handler._error(HTTPStatus.NOT_FOUND, str(exc))
+    elif re.fullmatch(r"/api/sites/[^/]+/logical-patch-source/tiles/\d+/\d+/\d+\.png", path):
+        manifest = _workspace_logical_manifest(handler)
+        if manifest is None:
+            return True
+        match = re.fullmatch(r"/api/sites/([^/]+)/logical-patch-source/tiles/(\d+)/(\d+)/(\d+)\.png", path)
+        site = _site(handler, match.group(1))
+        patch_id = params.get("patch_id", [""])[0]
+        if site is not None:
+            try:
+                patch = handler.catalog.logical_patch_by_id(patch_id, manifest)
+                if patch.get("site_id") != site.site_id:
+                    raise KeyError(f"logical patch does not belong to site: {patch_id}")
+                with TILE_RENDER_SEMAPHORE:
+                    payload = handler.catalog.logical_patch_source_tile(patch_id, int(match.group(2)), int(match.group(3)), int(match.group(4)), manifest)
+            except (KeyError, FileNotFoundError):
                 payload = blank_png(256)
             handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")
     elif re.fullmatch(r"/api/sites/[^/]+/annotations/[^/]+", path):
@@ -119,6 +173,15 @@ def handle_site_post(handler, path: str) -> bool:
     if site is None:
         return True
     payload = handler._read_json()
+    asset_id = payload.get("asset_id")
+    if asset_id:
+        try:
+            result = handler.catalog.set_active_site_imagery(site, str(asset_id), str(payload.get("product") or ""))
+        except KeyError as exc:
+            handler._error(HTTPStatus.NOT_FOUND, str(exc))
+        else:
+            handler._json(result)
+        return True
     tile = payload.get("tile")
     product = payload.get("product")
     if not tile or not product:

@@ -1,1 +1,1 @@
-"""Model metadata, U-Net inference, and validation operations."""
+"""Registered model architectures, metadata, inference, and validation."""

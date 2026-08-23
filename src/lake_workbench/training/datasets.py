@@ -1,12 +1,13 @@
 """Training patch manifests and dataset summaries."""
 
 import json
+import random
 import time
 from pathlib import Path
 
 import numpy as np
 
-from lake_workbench.regions.config import RegionConfig, load_region_configs
+from lake_workbench.regions.config import load_region_configs
 from lake_workbench.utils import (
     clean_optional,
     display_path,
@@ -20,12 +21,21 @@ from lake_workbench.utils import (
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
 
-def latest_patch_manifest_for_region(region: RegionConfig) -> Path:
-    root = region.processed_dir / "training_patches"
-    manifests = sorted(root.glob("*/manifest.csv"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not manifests:
-        raise FileNotFoundError(f"no patch manifest found under {display_path(root)}")
-    return manifests[0]
+def split_rows_by_site(rows: list[dict], val_ratio: float, seed: int) -> tuple[list[dict], list[dict]]:
+    """Split complete observation sites so related patches cannot cross the boundary."""
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        group_key = row.get("site_id") or row.get("sample_id") or row.get("patch_id") or ""
+        groups.setdefault(group_key, []).append(row)
+    keys = list(groups)
+    random.Random(seed).shuffle(keys)
+    val_group_count = 0 if len(keys) <= 1 else max(1, round(len(keys) * val_ratio))
+    val_keys = set(keys[:val_group_count])
+    train = [row for key in keys if key not in val_keys for row in groups[key]]
+    val = [row for key in keys if key in val_keys for row in groups[key]]
+    if not train and val:
+        train, val = val, []
+    return train, val
 
 
 def read_json_file(path: Path, default):
@@ -146,23 +156,42 @@ def merge_training_dataset_summaries(scope: str, summaries: list[dict]) -> dict:
     return totals
 
 
-def current_training_dataset_summary(scope: str) -> dict:
+def current_workspace_training_dataset_summary(
+    workspace_store,
+    workspace_id: str,
+    scope: str,
+    config_id: str = "resize256_v1",
+) -> dict:
+    """Summarize materialized datasets owned by one Workspace."""
     try:
-        if scope == "all":
-            summaries = []
-            for region in REGIONS.values():
-                try:
-                    summaries.append(summarize_training_manifest(latest_patch_manifest_for_region(region), region.key))
-                except FileNotFoundError:
-                    continue
-            if not summaries:
-                raise FileNotFoundError("no patch manifest found for any region")
-            return merge_training_dataset_summaries(scope, summaries)
-        region = REGIONS.get(scope) or REGIONS[DEFAULT_REGION_KEY]
-        summary = summarize_training_manifest(latest_patch_manifest_for_region(region), region.key)
-        return merge_training_dataset_summaries(scope, [summary])
+        summaries = []
+        selected = REGIONS.values() if scope == "all" else [REGIONS.get(scope) or REGIONS[DEFAULT_REGION_KEY]]
+        for region in selected:
+            manifest = workspace_store.workspace_dataset_dir(workspace_id, region.key, config_id) / "manifest.csv"
+            if manifest.exists():
+                summaries.append(summarize_training_manifest(manifest, region.key))
+        if not summaries:
+            return {
+                "workspace_id": workspace_id,
+                "scope": scope,
+                "manifests": [],
+                "total_patches": 0,
+                "included_patches": 0,
+                "excluded_patches": 0,
+                "usable_patches": 0,
+                "sample_count": 0,
+                "site_count": 0,
+                "lake_count": 0,
+                "regions": [],
+                "status": "missing_selection",
+                "error": "当前配置尚未物化；开始训练时会自动从已纳入的 Workspace Patch 准备数据。",
+            }
+        result = merge_training_dataset_summaries(scope, summaries)
+        result["workspace_id"] = workspace_id
+        return result
     except Exception as exc:
         return {
+            "workspace_id": workspace_id,
             "scope": scope,
             "manifests": [],
             "total_patches": 0,
@@ -170,10 +199,27 @@ def current_training_dataset_summary(scope: str) -> dict:
             "excluded_patches": 0,
             "usable_patches": 0,
             "sample_count": 0,
+            "site_count": 0,
             "lake_count": 0,
             "regions": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+def current_global_training_dataset_summary(dataset_registry, scope: str, config_id: str = "resize256_v1") -> dict:
+    """Summarize one materialized shared Dataset."""
+    manifest = dataset_registry.dataset_dir(scope, config_id) / "manifest.csv"
+    if not manifest.exists():
+        return {
+            "scope": scope,
+            "dataset_source": "global",
+            "total_patches": 0,
+            "usable_patches": 0,
+            "error": "共享 Dataset 尚未构建。开始训练时会自动准备。",
+        }
+    result = summarize_training_manifest(manifest, "" if scope == "all" else scope)
+    result["dataset_source"] = "global"
+    return result
 
 
 def dataset_summary_from_config(config: dict) -> dict:

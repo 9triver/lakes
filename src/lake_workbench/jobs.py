@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import shutil
 import threading
 import time
 import uuid
@@ -10,13 +12,31 @@ from pathlib import Path
 from typing import Any
 
 from lake_workbench.sentinel.download import download_copernicus_product
+from lake_workbench.models.runtime import normalize_model_type
+from lake_workbench.utils import clean_optional, safe_filename
 
 
 JobRunner = Callable[..., dict]
 
 
+class TrainingRunActiveError(RuntimeError):
+    """Raised when a caller tries to remove a job that is still running."""
+
+
 def _timestamp() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def _release_cuda_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+    except Exception:
+        # Cleanup is best-effort and must not mask the training result.
+        pass
 
 
 class DownloadManager:
@@ -55,7 +75,10 @@ class DownloadManager:
             job["updated_at"] = _timestamp()
 
     def _run(self, job_id: str) -> None:
-        product = self.get(job_id)["product"]
+        job = self.get(job_id)
+        if job is None:
+            return
+        product = job["product"]
         try:
             self._update(job_id, status="authenticating", message="连接 Copernicus")
 
@@ -124,7 +147,10 @@ class PatchExportManager:
             job["updated_at"] = _timestamp()
 
     def _run(self, job_id: str) -> None:
-        options = self.get(job_id)["options"]
+        job = self.get(job_id)
+        if job is None:
+            return
+        options = job["options"]
         try:
             self._update(job_id, status="running", message="生成 patch 中", progress=10)
             if self.catalogs:
@@ -140,6 +166,7 @@ class PatchExportManager:
                     "patches": sum(item.get("patches", 0) for item in results),
                 }
             else:
+                assert self.catalog is not None
                 result = self.exporter(self.catalog.region.key, options)
             self._update(
                 job_id,
@@ -158,12 +185,14 @@ class TrainingManager:
         scope: str,
         *,
         model_root: Path,
-        dataset_summary: Callable[[str], dict],
+        dataset_summary: Callable[..., dict],
         runner: Callable[..., dict],
         persisted_job_loader: Callable[[str, Path], dict | None],
         parse_epochs: Callable[[Any, int], int],
+        workspace_id: str = "",
     ) -> None:
         self.scope = scope
+        self.workspace_id = workspace_id
         self.model_root = model_root
         self.dataset_summary = dataset_summary
         self.runner = runner
@@ -179,11 +208,19 @@ class TrainingManager:
         return self.model_root / self.scope
 
     def create(self, options: dict) -> dict:
+        options = {**options, "workspace_id": self.workspace_id} if self.workspace_id else dict(options)
+        run_name = safe_filename(
+            clean_optional(options.get("run_name"))
+            or f"{normalize_model_type(options.get('model_type') or 'unet')}_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+        options["run_name"] = run_name
         job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
         job = {
             "job_id": job_id,
             "scope": self.scope,
+            "workspace_id": self.workspace_id,
+            "run_name": run_name,
             "status": "queued",
             "message": "排队中",
             "progress": 0,
@@ -191,7 +228,11 @@ class TrainingManager:
             "epochs": self.parse_epochs(options.get("epochs"), 30),
             "history": [],
             "options": options,
-            "dataset": self.dataset_summary(self.scope),
+            "dataset": self.dataset_summary(
+                self.scope,
+                str(options.get("dataset_config_id") or "resize256_v1"),
+                str(options.get("dataset_source") or "workspace"),
+            ),
             "created_at": _timestamp(),
             "updated_at": _timestamp(),
         }
@@ -206,11 +247,16 @@ class TrainingManager:
             job = self.jobs.get(job_id)
             return dict(job) if job else None
 
-    def list(self) -> dict:
+    def list(self, dataset_config_id: str = "resize256_v1", dataset_source: str = "workspace") -> dict:
         with self._lock:
             jobs = [dict(job) for job in self.jobs.values()]
         jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-        return {"scope": self.scope, "dataset": self.dataset_summary(self.scope), "items": jobs}
+        return {
+            "workspace_id": self.workspace_id,
+            "scope": self.scope,
+            "dataset": self.dataset_summary(self.scope, dataset_config_id, dataset_source),
+            "items": jobs,
+        }
 
     def cancel(self, job_id: str) -> dict | None:
         with self._lock:
@@ -223,6 +269,43 @@ class TrainingManager:
             if job.get("status") in {"queued", "running", "configured"}:
                 job.update(status="cancel_requested", message="正在取消", updated_at=_timestamp())
             return dict(job)
+
+    def delete(self, job_id: str) -> dict | None:
+        """Delete one persisted experiment and forget its in-memory record.
+
+        The manager is scoped to one workspace and one training scope, so the
+        run directory is always resolved below ``self.model_dir``.  Training
+        artifacts are independent of the workspace's patch data and dataset
+        caches, which must remain intact.
+        """
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                return None
+            if job.get("status") in {"queued", "configured", "running", "cancel_requested"}:
+                raise TrainingRunActiveError("训练进行中，不能删除")
+
+            run_name = clean_optional(job.get("run_name")) or clean_optional(job_id)
+            run_path = Path(run_name) if run_name else Path()
+            if (
+                not run_name
+                or run_path.name != run_name
+                or any(part in {"", ".", ".."} for part in run_path.parts)
+            ):
+                raise ValueError("invalid training run name")
+
+            model_dir = self.model_dir.resolve()
+            run_dir = (self.model_dir / run_name).resolve()
+            if run_dir.parent != model_dir:
+                raise ValueError("invalid training run path")
+            if run_dir.exists():
+                if not run_dir.is_dir():
+                    raise ValueError("training run path is not a directory")
+                shutil.rmtree(run_dir)
+
+            self.jobs.pop(job_id, None)
+            self.cancel_events.pop(job_id, None)
+            return {"job_id": job_id, "run_name": run_name, "deleted": True}
 
     def _update(self, job_id: str, **updates) -> None:
         with self._lock:
@@ -248,6 +331,8 @@ class TrainingManager:
 
     def _run(self, job_id: str) -> None:
         job = self.get(job_id)
+        if job is None:
+            return
         options = job["options"]
         cancel_event = self.cancel_events[job_id]
         try:
@@ -264,15 +349,19 @@ class TrainingManager:
                 self._update(job_id, status="completed", message="训练完成", progress=100, result=result)
         except Exception as exc:  # noqa: BLE001 - surfaced to the local UI.
             self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")
+        except SystemExit as exc:
+            message = str(exc) or "训练在开始前退出"
+            self._update(job_id, status="failed", message=message, progress=100)
         finally:
+            _release_cuda_memory()
             with self._lock:
                 self.cancel_events.pop(job_id, None)
 
     def _load_persisted_jobs(self) -> None:
-        if not self.model_dir.exists():
-            return
-        paths = sorted(self.model_dir.glob("*/config.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        paths = list(self.model_dir.glob("*/config.json")) if self.model_dir.exists() else []
+        paths = sorted(set(paths), key=lambda path: path.stat().st_mtime, reverse=True)
         for config_path in paths:
             job = self.persisted_job_loader(self.scope, config_path.parent)
             if job:
+                job["workspace_id"] = self.workspace_id
                 self.jobs[job["job_id"]] = job

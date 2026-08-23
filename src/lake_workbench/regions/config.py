@@ -125,15 +125,6 @@ class RegionConfig:
     def sentinel_download_dir(self) -> Path:
         return self.data_dir / "sentinel_products" / "products"
 
-    @property
-    def model_dir(self) -> Path:
-        return PROJECT_ROOT / "data" / "models" / self.key
-
-    @property
-    def legacy_model_dir(self) -> Path:
-        return self.processed_dir / "models"
-
-
 def load_region_configs(config_path: Path | None = None) -> tuple[dict[str, RegionConfig], str]:
     path = config_path or project_path(os.environ.get("LAKES_REGIONS_CONFIG", DEFAULT_CONFIG_PATH))
     payload = tomllib.loads(path.read_text(encoding="utf-8"))

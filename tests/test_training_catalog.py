@@ -68,6 +68,5 @@ class CurrentViewLabelTests(unittest.TestCase):
         self.assertEqual(layer["features"][0]["properties"]["label_id"], "label_1")
         self.assertEqual(layer["features"][0]["properties"]["training_layer"], "local_label")
 
-
 if __name__ == "__main__":
     unittest.main()

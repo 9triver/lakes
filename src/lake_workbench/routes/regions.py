@@ -35,6 +35,8 @@ def handle_region_get(handler, path: str, query_string: str) -> bool:
                 limit=limit,
                 offset=offset,
                 filters=filters,
+                workspace_store=getattr(handler.__class__, "workspace_store", None) if getattr(handler, "workspace_id", None) else None,
+                workspace_id=getattr(handler, "workspace_id", None),
             )
         )
     else:

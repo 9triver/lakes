@@ -1,16 +1,20 @@
-"""Patch export and U-Net training job adapters."""
+"""Patch export and registered model training job adapters."""
 
 import argparse
-import contextlib
-import io
 import sys
 import threading
 import time
 from pathlib import Path
 
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.models.runtime import PIXEL_MLP_HIDDEN_CHANNELS, normalize_model_type
 from lake_workbench.regions.config import load_region_configs
-from lake_workbench.training.datasets import latest_patch_manifest_for_region
+from lake_workbench.training.logical_patches import (
+    build_global_training_dataset,
+    build_logical_patches,
+    build_workspace_training_dataset,
+    workspace_training_dataset_status,
+)
 from lake_workbench.utils import (
     clean_optional,
     display_path,
@@ -19,7 +23,6 @@ from lake_workbench.utils import (
     read_csv_records,
     resolve_data_path,
     safe_filename,
-    split_commas,
     truthy_flag,
     write_csv_records,
 )
@@ -28,72 +31,124 @@ from lake_workbench.utils import (
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
 
-def run_patch_export(region_key: str, options: dict) -> dict:
-    scripts_dir = PROJECT_ROOT / "scripts"
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    from export_training_patches import export_training_patches
-
-    patch_size = parse_int_or_default(options.get("patch_size"), 256)
-    stride = parse_int_or_default(options.get("stride"), 128)
-    min_valid_ratio = parse_float_or_default(options.get("min_valid_ratio"), 0.6)
-    min_water_pixels = parse_int_or_default(options.get("min_water_pixels"), 1)
-    negative_ratio = parse_float_or_default(options.get("negative_ratio"), 0.25)
-    preview_scale = parse_int_or_default(options.get("preview_scale"), 2)
-    preview_limit = parse_int_or_default(options.get("preview_limit"), 0)
-    sample_ids = split_commas(options.get("sample_id") or options.get("sample_ids"))
-    output_dir_text = clean_optional(options.get("output_dir")) or ""
-    args = argparse.Namespace(
-        region=region_key,
-        sample_id=sample_ids or None,
+def run_patch_export(region_key: str, options: dict, workspace_store) -> dict:
+    workspace_id = clean_optional(options.get("workspace_id"))
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(workspace_id, region_key)
+    existing_rows = read_csv_records(manifest_path)
+    before = {row.get("logical_patch_id", "") for row in existing_rows}
+    output_dir = manifest_path.parent
+    requested_sample_id = clean_optional(options.get("sample_id"))
+    sample_path = workspace_store.ensure_workspace_training_samples(workspace_id, region_key)
+    samples = read_csv_records(sample_path)
+    sample_ids = {row.get("sample_id", "") for row in samples if row.get("sample_id")}
+    if requested_sample_id:
+        sample_ids.add(requested_sample_id)
+    patch_size = parse_int_or_default(options.get("patch_size"), 512)
+    stride = parse_int_or_default(options.get("stride"), patch_size)
+    result = build_logical_patches(
+        REGIONS[region_key],
+        output_dir=output_dir,
+        sample_ids=sample_ids,
+        samples=samples,
         patch_size=patch_size,
         stride=stride,
-        min_valid_ratio=min_valid_ratio,
-        min_water_pixels=min_water_pixels,
-        negative_ratio=negative_ratio,
-        all_touched=truthy_flag(options.get("all_touched"), default=False),
-        output_dir=resolve_data_path(output_dir_text, REGIONS[region_key]) if output_dir_text else None,
-        overwrite=truthy_flag(options.get("overwrite"), default=False),
-        preview_limit=preview_limit,
-        preview_scale=max(1, preview_scale),
     )
-    with contextlib.redirect_stdout(io.StringIO()):
-        result = export_training_patches(args)
-    return {
-        **result,
-        "manifest": display_path(Path(result["manifest"])),
-        "npz_dir": display_path(Path(result["npz_dir"])),
-        "preview_dir": display_path(Path(result["preview_dir"])),
-        "options": {
-            "patch_size": patch_size,
-            "stride": stride,
-            "min_valid_ratio": min_valid_ratio,
-            "min_water_pixels": min_water_pixels,
-            "negative_ratio": negative_ratio,
-            "preview_scale": max(1, preview_scale),
-            "preview_limit": preview_limit,
-            "all_touched": truthy_flag(options.get("all_touched"), default=False),
-            "overwrite": truthy_flag(options.get("overwrite"), default=False),
-            "sample_ids": sample_ids,
-        },
+    after = {
+        row.get("logical_patch_id", "")
+        for row in read_csv_records(manifest_path)
     }
+    created = sorted(value for value in after - before if value)
+    if created:
+        workspace_store.update_members(workspace_id, region_key, created, "include")
+    result["workspace_id"] = workspace_id
+    result["added_to_workspace"] = len(created)
+    return result
 
 
-def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
+def run_dataset_build(region_key: str, options: dict, workspace_store) -> dict:
+    config_id = clean_optional(options.get("config_id")) or "resize256_v1"
+    workspace_id = clean_optional(options.get("workspace_id"))
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    status = workspace_training_dataset_status(REGIONS[region_key], config_id, workspace_store, workspace_id)
+    if status["status"] == "missing_selection":
+        return {
+            "region": region_key,
+            "workspace_id": workspace_id,
+            "config_id": config_id,
+            "patches": 0,
+            "skipped": True,
+            "status": "missing_selection",
+            "message": "该区域没有已选逻辑 Patch，已跳过",
+        }
+    return build_workspace_training_dataset(REGIONS[region_key], config_id, workspace_store, workspace_id)
+
+
+def run_global_dataset_build(options: dict, workspace_store, dataset_registry) -> dict:
+    scope = clean_optional(options.get("scope")) or "all"
+    config_id = clean_optional(options.get("config_id")) or "resize256_v1"
+    return build_global_training_dataset(scope, config_id, REGIONS, workspace_store, dataset_registry)
+
+
+def prepare_training_args(scope: str, options: dict, workspace_store, dataset_registry=None) -> argparse.Namespace:
     scripts_dir = PROJECT_ROOT / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
     scope = scope if scope == "all" else (scope if scope in REGIONS else DEFAULT_REGION_KEY)
-    run_name = safe_filename(clean_optional(options.get("run_name")) or f"unet_{time.strftime('%Y%m%d_%H%M%S')}")
-    output_dir = PROJECT_ROOT / "data" / "models" / scope / run_name
+    model_type = normalize_model_type(options.get("model_type") or "unet")
+    dataset_config_id = clean_optional(options.get("dataset_config_id")) or "resize256_v1"
+    dataset_source = clean_optional(options.get("dataset_source")) or "workspace"
+    if dataset_source not in {"workspace", "global"}:
+        raise ValueError(f"unknown training dataset source: {dataset_source}")
+    run_name = safe_filename(clean_optional(options.get("run_name")) or f"{model_type}_{time.strftime('%Y%m%d_%H%M%S')}")
+    workspace_id = clean_optional(options.get("workspace_id"))
+    if not workspace_id:
+        raise ValueError("workspace_id is required")
+    output_dir = workspace_store.workspace_model_dir(workspace_id, scope) / run_name
     manifest_text = clean_optional(options.get("manifest")) or ""
     patch_dir_text = clean_optional(options.get("patch_dir")) or ""
     manifest = resolve_data_path(manifest_text, REGIONS[DEFAULT_REGION_KEY]) if manifest_text else None
     patch_dir = resolve_data_path(patch_dir_text, REGIONS[DEFAULT_REGION_KEY]) if patch_dir_text else None
-    if scope == "all" and manifest is None and patch_dir is None:
-        manifest = build_combined_training_manifest(output_dir)
+    if manifest is None and patch_dir is None:
+        if dataset_source == "global":
+            if dataset_registry is None:
+                raise RuntimeError("global Dataset registry is unavailable")
+            build_global_training_dataset(scope, dataset_config_id, REGIONS, workspace_store, dataset_registry)
+            source = dataset_registry.dataset_dir(scope, dataset_config_id) / "manifest.csv"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            manifest = output_dir / "manifest.csv"
+            write_csv_records(manifest, read_csv_records(source))
+        elif scope == "all":
+            workspace_store.assert_trainable(workspace_id)
+            for region in REGIONS.values():
+                status = workspace_training_dataset_status(region, dataset_config_id, workspace_store, workspace_id)
+                if status["status"] not in {"missing_selection", "ready"}:
+                    build_workspace_training_dataset(region, dataset_config_id, workspace_store, workspace_id)
+            manifest = build_combined_workspace_training_manifest(
+                output_dir,
+                dataset_config_id,
+                workspace_store,
+                workspace_id,
+            )
+        else:
+            workspace_store.assert_trainable(workspace_id)
+            status = workspace_training_dataset_status(
+                REGIONS[scope], dataset_config_id, workspace_store, workspace_id
+            )
+            if not status["ready"]:
+                build_workspace_training_dataset(REGIONS[scope], dataset_config_id, workspace_store, workspace_id)
+            source = workspace_store.workspace_dataset_dir(workspace_id, scope, dataset_config_id) / "manifest.csv"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            manifest = output_dir / "manifest.csv"
+            write_csv_records(manifest, read_csv_records(source))
     return argparse.Namespace(
         region=scope,
+        workspace_id=workspace_id,
+        model_type=model_type,
+        dataset_config_id=dataset_config_id,
+        dataset_source=dataset_source,
         manifest=manifest,
         patch_dir=patch_dir,
         output_dir=output_dir,
@@ -102,6 +157,7 @@ def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
         lr=parse_float_or_default(options.get("lr"), 1e-3),
         weight_decay=parse_float_or_default(options.get("weight_decay"), 1e-4),
         base_channels=parse_int_or_default(options.get("base_channels"), 32),
+        hidden_channels=options.get("hidden_channels") or list(PIXEL_MLP_HIDDEN_CHANNELS),
         val_ratio=parse_float_or_default(options.get("val_ratio"), 0.25),
         seed=parse_int_or_default(options.get("seed"), 42),
         num_workers=parse_int_or_default(options.get("num_workers"), 0),
@@ -114,30 +170,50 @@ def prepare_training_args(scope: str, options: dict) -> argparse.Namespace:
     )
 
 
-def build_combined_training_manifest(output_dir: Path) -> Path:
+def build_combined_workspace_training_manifest(
+    output_dir: Path,
+    dataset_config_id: str,
+    workspace_store,
+    workspace_id: str,
+) -> Path:
     rows = []
     for region in REGIONS.values():
-        try:
-            manifest = latest_patch_manifest_for_region(region)
-        except FileNotFoundError:
+        status = workspace_training_dataset_status(region, dataset_config_id, workspace_store, workspace_id)
+        if status["status"] == "missing_selection":
             continue
-        for row in read_csv_records(manifest):
-            include = (row.get("include") or row.get("included") or "true").strip().lower()
-            if include in {"0", "false", "no", "n"}:
-                continue
-            rows.append({**row, "source_region": region.key, "source_manifest": display_path(manifest)})
+        if not status["ready"]:
+            raise RuntimeError(
+                f"Workspace training dataset {dataset_config_id} is {status['status']} "
+                f"for {workspace_id}/{region.key}"
+            )
+        source = workspace_store.workspace_dataset_dir(workspace_id, region.key, dataset_config_id) / "manifest.csv"
+        rows.extend(
+            {**row, "source_region": region.key, "source_manifest": display_path(source)}
+            for row in read_csv_records(source)
+        )
     if not rows:
-        raise FileNotFoundError("no included patch rows found for all-region training")
+        raise FileNotFoundError(f"no Workspace patches found for all-region training: {workspace_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest = output_dir / "manifest.csv"
     write_csv_records(manifest, rows)
     return manifest
 
 
-def run_training_job(scope: str, options: dict, progress_callback=None, cancel_event: threading.Event | None = None) -> dict:
+def run_training_job(
+    scope: str,
+    options: dict,
+    workspace_store,
+    dataset_registry=None,
+    progress_callback=None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
     scripts_dir = PROJECT_ROOT / "scripts"
     if str(scripts_dir) not in sys.path:
         sys.path.insert(0, str(scripts_dir))
-    from train_unet import train_unet
+    from train_unet import train_model  # pyright: ignore[reportMissingImports]
 
-    return train_unet(prepare_training_args(scope, options), progress_callback=progress_callback, cancel_event=cancel_event)
+    return train_model(
+        prepare_training_args(scope, options, workspace_store, dataset_registry),
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )

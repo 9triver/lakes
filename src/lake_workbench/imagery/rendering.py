@@ -65,6 +65,9 @@ class ImageryRenderingMixin:
         return payload, {"cached": False, "bounds": list(bounds_4326)}
 
     def _tci_rows_for_site(self, site) -> list[dict]:
+        local_row = self._active_local_imagery_row(site)
+        if local_row is not None:
+            return [local_row]
         rows = []
         for item in self.sentinel_tiles_for_site(site)["tiles"]:
             row = self._active_imagery_row(item["tile"], site)
@@ -78,8 +81,19 @@ class ImageryRenderingMixin:
         return [self.tci_by_tile[tile] for tile in candidate_tiles]
 
     def imagery_for_site(self, site) -> dict:
+        local_rows = self._local_imagery_rows_for_site(site)
+        active = self._active_local_imagery_row(site)
+        if local_rows:
+            assets = []
+            for row in local_rows:
+                asset = self._imagery_product_payload(row, row.get("tile", ""), f"site:{site.site_id}", site_id=site.site_id)
+                asset["active"] = bool(active and row.get("product") == active.get("product"))
+                assets.append(asset)
+            return {"site_id": site.site_id, "assets": assets, "selection_mode": "site_imagery"}
+
         tiles = self.sentinel_tiles_for_site(site)["tiles"]
         return {
             "site_id": site.site_id,
             "tiles": [{**tile, "products": self.imagery_products_for_tile(tile["tile"], site)} for tile in tiles],
+            "selection_mode": "tile_fallback",
         }

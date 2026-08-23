@@ -1,32 +1,51 @@
-import { useEffect, useMemo, useState } from "react";
-import { Box, Button, FormControl, InputLabel, MenuItem, Select, Typography } from "@mui/material";
-import { Image } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Box, FormControl, InputLabel, MenuItem, Select, Typography } from "@mui/material";
+import type { ImageryProduct } from "../../api/types";
 import { useImagery, useSetActiveImagery } from "./api";
-import { SentinelSearch } from "./SentinelSearch";
 
-export function ImageryPanel({ region, siteId, onSelectionChange }: { region: string; siteId: string; onSelectionChange?: (selection: { tile: string; product: string }) => void }) {
+export interface ImagerySelection {
+  assetId: string;
+  product: string;
+  tile: string;
+  localLabelId: string;
+  localLabel: ImageryProduct["label"];
+}
+
+export function ImageryPanel({ region, siteId, onSelectionChange, compact = false }: { region: string; siteId: string; onSelectionChange?: (selection: ImagerySelection) => void; compact?: boolean }) {
   const imagery = useImagery(region, siteId);
   const setActive = useSetActiveImagery(region, siteId);
-  const [tile, setTile] = useState("");
-  const [product, setProduct] = useState("");
-  const tiles = imagery.data?.tiles || [];
-  const products = useMemo(() => tiles.find((item) => item.tile === tile)?.products || [], [tile, tiles]);
+  const [assetId, setAssetId] = useState("");
+  const assets = imagery.data?.assets || [];
+  const selected = assets.find((item) => (item.asset_id || item.product) === assetId) || assets.find((item) => item.active);
 
   useEffect(() => {
-    if (!tiles.some((item) => item.tile === tile)) setTile(tiles[0]?.tile || "");
-  }, [tile, tiles]);
+    const next = assets.find((item) => item.active) || assets[0];
+    const nextId = next ? (next.asset_id || next.product) : "";
+    if (nextId !== assetId) setAssetId(nextId);
+  }, [assetId, assets]);
   useEffect(() => {
-    if (!products.some((item) => item.product === product)) setProduct(products.find((item) => item.active)?.product || products[0]?.product || "");
-  }, [product, products]);
-  useEffect(() => { onSelectionChange?.({ tile, product }); }, [onSelectionChange, product, tile]);
+    if (!selected) return;
+    onSelectionChange?.({ assetId: selected.asset_id || selected.product, product: selected.product, tile: selected.tile || "", localLabelId: selected.label_id || "", localLabel: selected.label || null });
+  }, [onSelectionChange, selected]);
+
+  const selectAsset = (nextId: string) => {
+    const next = assets.find((item) => (item.asset_id || item.product) === nextId);
+    if (!next) return;
+    setAssetId(nextId);
+    setActive.mutate({ assetId: next.asset_id || next.product, product: next.product });
+  };
 
   return (
-    <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-      <FormControl sx={{ minWidth: 115 }}><InputLabel>Tile</InputLabel><Select label="Tile" value={tile} onChange={(event) => setTile(event.target.value)}>{tiles.map((item) => <MenuItem key={item.tile} value={item.tile}>{item.tile}</MenuItem>)}</Select></FormControl>
-      <FormControl sx={{ minWidth: 280, flex: 1 }}><InputLabel>影像产品</InputLabel><Select label="影像产品" value={product} onChange={(event) => setProduct(event.target.value)}>{products.map((item) => <MenuItem key={item.product} value={item.product}>{item.active ? "当前 · " : ""}{item.asset_label || item.source || "影像"} · {item.date || item.product}</MenuItem>)}</Select></FormControl>
-      <Button variant="contained" startIcon={<Image size={16} />} disabled={!tile || !product || setActive.isPending} onClick={() => setActive.mutate({ tile, product })}>设为影像</Button>
-      <Typography variant="caption" color={setActive.isError ? "error" : "text.secondary"}>{setActive.isPending ? "切换中" : setActive.isSuccess ? "影像已更新" : `${products.length} 个候选`}</Typography>
-      <SentinelSearch region={region} siteId={siteId} />
+    <Box sx={{ px: compact ? 0 : 2, py: compact ? 0 : 1, bgcolor: "background.paper", borderTop: compact ? 0 : 1, borderColor: "divider", display: "flex", alignItems: "center", gap: compact ? .5 : 1, flexWrap: "wrap", minWidth: 0 }}>
+      <FormControl size="small" sx={{ minWidth: compact ? 220 : 280, flex: compact ? "0 1 300px" : 1 }}>
+        <InputLabel>本地影像期次</InputLabel>
+        <Select label="本地影像期次" value={selected ? (selected.asset_id || selected.product) : ""} onChange={(event) => selectAsset(event.target.value)} inputProps={{ "aria-label": "本地影像期次" }}>
+          {assets.map((item: ImageryProduct) => <MenuItem key={item.asset_id || item.product} value={item.asset_id || item.product}>{item.active ? "当前 · " : ""}{item.date || "未知日期"} · {item.label ? "有同期标注" : "无同期标注"}</MenuItem>)}
+        </Select>
+      </FormControl>
+      {setActive.isPending && <Typography variant="caption">切换中</Typography>}
+      {setActive.isError && <Typography variant="caption" color="error">{setActive.error.message}</Typography>}
+      {!assets.length && <Typography variant="caption" color="text.secondary">没有可用的本地影像</Typography>}
     </Box>
   );
 }

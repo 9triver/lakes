@@ -91,6 +91,9 @@ class ImageryInventoryMixin:
         active = {}
         for key, value in payload.items():
             text = str(key)
+            if text.startswith("site:"):
+                active[text] = str(value)
+                continue
             if ":" in text:
                 site_id, tile = text.split(":", 1)
                 active[f"{site_id}:{tile.upper().removeprefix('T')}"] = str(value)
@@ -104,7 +107,9 @@ class ImageryInventoryMixin:
 
     def _rebuild_effective_tci(self) -> None:
         effective = {}
-        tiles = set(self.base_tci_by_tile) | set(self.user_tci_rows) | set(self.active_imagery)
+        tiles = set(self.base_tci_by_tile) | set(self.user_tci_rows) | {
+            key for key in self.active_imagery if not key.startswith("site:")
+        }
         for tile in tiles:
             active_product = self.active_imagery.get(tile)
             selected = None
@@ -163,13 +168,14 @@ class ImageryInventoryMixin:
         }
 
     def _imagery_product_payload(self, row: dict, tile: str, active_key: str, site_id: str = "", preloaded: bool = False) -> dict:
+        source = clean_optional(row.get("source")) or ("preloaded" if preloaded else "user_download")
         payload = {
             "tile": tile,
             "site_id": row.get("site_id", ""),
             "product": row.get("product", ""),
             "product_id": row.get("product_id", ""),
             "date": row.get("date", ""),
-            "source": row.get("source", "preloaded" if preloaded else "user_download"),
+            "source": source,
             "cloud_cover": row.get("cloud_cover", ""),
             "downloaded_at": row.get("downloaded_at", ""),
             "valid_ratio": row.get("valid_ratio"),
@@ -179,8 +185,43 @@ class ImageryInventoryMixin:
             "downloaded": True,
             "preloaded": preloaded,
         }
+        payload["asset_id"] = row.get("product_id") or row.get("product", "")
+        if source == "local_img" and row.get("tci_path"):
+            label_path = Path(row["tci_path"]).with_name(f"{Path(row['tci_path']).stem}_Swater.shp")
+            if label_path.exists() and hasattr(self, "_local_label_item"):
+                label = self._local_label_item(label_path)
+                payload["label"] = label
+                payload["label_id"] = label["id"]
+            else:
+                payload["label"] = None
+                payload["label_id"] = ""
         payload.update(self._imagery_asset_meta(row, site_id=site_id))
         return payload
+
+    def _local_imagery_rows_for_site(self, site) -> list[dict]:
+        site_id = _site_id(site)
+        rows = [
+            row
+            for tile_rows in self.user_tci_rows.values()
+            for row in tile_rows
+            if row.get("source") == "local_img" and row.get("site_id") == site_id
+        ]
+        return sorted(rows, key=lambda item: (str(item.get("date", "")), str(item.get("product", ""))), reverse=True)
+
+    def _active_local_imagery_row(self, site) -> dict | None:
+        rows = self._local_imagery_rows_for_site(site)
+        if not rows:
+            return None
+        active_product = self.active_imagery.get(f"site:{_site_id(site)}")
+        selected = next((row for row in rows if row.get("product") == active_product or row.get("product_id") == active_product), None)
+        if selected is not None:
+            return selected
+        # Preserve selections written by the older site/tile format.
+        selected = next(
+            (row for row in rows if self.active_imagery.get(f"{_site_id(site)}:{row.get('tile', '')}") == row.get("product")),
+            None,
+        )
+        return selected or rows[0]
 
     def _load_tci_footprints(self) -> list[dict]:
         footprints = []
@@ -280,6 +321,28 @@ class ImageryInventoryMixin:
             "active": True,
             "imagery": self.imagery_products_for_tile(tile, site),
         }
+
+    def set_active_site_imagery(self, site, asset_id: str = "", product_name: str = "") -> dict:
+        rows = self._local_imagery_rows_for_site(site)
+        selected = next(
+            (
+                row
+                for row in rows
+                if (asset_id and (row.get("product_id") == asset_id or row.get("product") == asset_id))
+                or (product_name and row.get("product") == product_name)
+            ),
+            None,
+        )
+        if selected is None:
+            raise KeyError(f"Imagery asset not found for site {_site_id(site)}: {asset_id or product_name}")
+        with self._lock:
+            self.active_imagery[f"site:{_site_id(site)}"] = selected["product"]
+            self._save_active_imagery()
+            self._rebuild_effective_tci()
+            self.tci_footprints = self._load_tci_footprints()
+        payload = self._imagery_product_payload(selected, selected.get("tile", ""), f"site:{_site_id(site)}", site_id=_site_id(site))
+        payload["active"] = True
+        return {"site_id": _site_id(site), "asset": payload}
 
     def register_downloaded_product(self, product: dict, safe_dir: Path, tci_path: Path) -> dict:
         tile = product_tile_name(product.get("name", "")) or product_tile_name(str(safe_dir.name))

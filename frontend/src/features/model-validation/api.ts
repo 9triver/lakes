@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
 import type { FeatureCollection, SiteSummary } from "../../api/types";
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
+import { workspaceRegionApi } from "../workspaces/api";
 
 export interface ModelOption {
   key: string;
@@ -14,6 +15,9 @@ export interface ModelOption {
   epoch?: number;
   in_channels?: number;
   base_channels?: number;
+  model_type?: "unet" | "pixel_mlp";
+  model_options?: Record<string, unknown>;
+  architecture_label?: string;
   best_iou?: number;
   best_epoch?: number;
   updated_at?: string;
@@ -21,13 +25,16 @@ export interface ModelOption {
   latest?: TrainingEpoch;
   dataset?: TrainingDataset;
   config?: Record<string, unknown>;
+  workspace_id?: string;
+  workspace_name?: string;
+  workspace_status?: string;
 }
 
 export interface ModelValidationResult {
   region: string;
   site_id: string;
   site?: SiteSummary;
-  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; threshold?: number };
+  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number };
   prediction: FeatureCollection;
   stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
   imagery?: { tile?: string; product?: string; product_name?: string; date?: string; products?: string[]; tiles?: string[] };
@@ -46,33 +53,32 @@ function sortedModels(items: ModelOption[]) {
   });
 }
 
-export function useValidationModels(scope: string) {
+export function useValidationModels(workspaceId: string, scope: string, visibility: "current" | "all") {
   return useQuery({
-    queryKey: ["validation-models", scope],
+    queryKey: ["validation-models", workspaceId, scope, visibility],
     queryFn: async () => {
-      const result = await getJson<{ default: string; items: ModelOption[] }>(`/api/regions/${encodeURIComponent(scope)}/model-validation/models`);
-      return { ...result, items: sortedModels(result.items) };
+      const result = await getJson<{ default: string; items: ModelOption[] }>(workspaceRegionApi(workspaceId, scope, `/model-validation/models?visibility=${visibility}`));
+      return { ...result, items: sortedModels(result.items.filter((item) => item.weight === "best.pt")) };
     },
-    enabled: Boolean(scope),
+    enabled: Boolean(workspaceId && scope),
   });
 }
 
-export function useRandomModelValidation(scope: string) {
+export function useRandomModelValidation(workspaceId: string, scope: string) {
   return useMutation({ mutationFn: ({ model, threshold }: { model: string; threshold: number }) => {
     const params = new URLSearchParams({ model, threshold: String(threshold) });
-    return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(scope)}/model-validation/random?${params}`);
+    return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, scope, `/model-validation/random?${params}`));
   } });
 }
 
-export function useSiteModelPrediction(region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
+export function useSiteModelPrediction(workspaceId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
   return useQuery({
-    queryKey: ["model-prediction", region, siteId, model, threshold],
+    queryKey: ["model-prediction", workspaceId, region, siteId, model, threshold],
     queryFn: () => {
-      const localModel = model.startsWith(`${region}/`) ? model.slice(region.length + 1) : model;
-      const params = new URLSearchParams({ model: localModel, threshold: String(threshold) });
-      return getJson<ModelValidationResult>(`/api/regions/${encodeURIComponent(region)}/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`);
+      const params = new URLSearchParams({ model, threshold: String(threshold) });
+      return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
     },
-    enabled: enabled && Boolean(region && siteId && model),
+    enabled: enabled && Boolean(workspaceId && region && siteId && model),
     retry: false,
   });
 }

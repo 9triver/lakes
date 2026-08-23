@@ -30,9 +30,10 @@ def write_training_label(
     sample_id: str,
     layer: dict,
     extra_properties: dict | None = None,
+    output_dir: Path | None = None,
 ) -> Path:
     safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_id)
-    path = region.training_label_dir / f"{safe_id}.geojson"
+    path = (output_dir or region.training_label_dir) / f"{safe_id}.geojson"
     properties = {**(layer.get("properties") or {}), **(extra_properties or {})}
     if layer.get("type") == "FeatureCollection":
         payload = {
@@ -224,4 +225,4 @@ def is_frontend_route(path: str) -> bool:
     if path == "/":
         return True
     first = path.strip("/").split("/", 1)[0]
-    return first in {"regions", "sites", "training", "model"}
+    return first in {"users", "workspaces", "regions", "sites", "training", "model"}
