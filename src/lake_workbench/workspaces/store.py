@@ -27,8 +27,9 @@ class WorkspaceError(ValueError):
 
 
 class WorkspacePatchConflict(WorkspaceError):
-    def __init__(self, conflicts: list[dict]):
+    def __init__(self, conflicts: list[dict], patch_ids: Iterable[str] | None = None):
         self.conflicts = conflicts
+        self.patch_ids = list(patch_ids or [])
         super().__init__("当前 Workspace Dataset 中存在重复或空间重叠 Patch")
 
 
@@ -360,6 +361,7 @@ class WorkspaceStore:
                         **row,
                         "include": "true" if patch_id in selected else "false",
                         "review_status": "included" if patch_id in selected else "excluded",
+                        "exclude_reason": "" if operation in {"include", "restore"} else row.get("exclude_reason", ""),
                     }
                     for patch_id, row in canonical.items()
                 ],
@@ -732,6 +734,7 @@ class WorkspaceStore:
             {
                 **row,
                 "preview_path": str(logical_dir / "preview" / f"{row.get('logical_patch_id', '')}.png"),
+                "preview_base_path": str(logical_dir / "preview" / f"{row.get('logical_patch_id', '')}.base.png"),
             }
             for row in rows
         ]

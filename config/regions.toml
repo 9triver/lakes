@@ -11,7 +11,7 @@ metadata_source = "img_bounds"
 uid_prefix = "gansu"
 geofabrik = "https://download.geofabrik.de/asia/china/gansu-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/gansu/raw/local_imagery"
+local_imagery_root = "data/regions/gansu/raw/local_imagery"
 esa_tiles = [
   "N30E090",
   "N30E093",
@@ -61,7 +61,7 @@ metadata_source = "img_bounds"
 uid_prefix = "shaanxi"
 geofabrik = "https://download.geofabrik.de/asia/china/shaanxi-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/shaanxi/raw/local_imagery"
+local_imagery_root = "data/regions/shaanxi/raw/local_imagery"
 esa_tiles = [
   "N30E105",
   "N30E108",
@@ -88,7 +88,7 @@ metadata_source = "img_bounds"
 uid_prefix = "yunnan"
 geofabrik = "https://download.geofabrik.de/asia/china/yunnan-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/yunnan/raw/local_imagery"
+local_imagery_root = "data/regions/yunnan/raw/local_imagery"
 esa_tiles = [
   "N21E096",
   "N21E099",
@@ -109,7 +109,7 @@ metadata_source = "img_bounds"
 uid_prefix = "guangdong"
 geofabrik = "https://download.geofabrik.de/asia/china/guangdong-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/guangdong/raw/local_imagery"
+local_imagery_root = "data/regions/guangdong/raw/local_imagery"
 esa_tiles = [
   "N18E108",
   "N18E111",
@@ -135,7 +135,7 @@ metadata_source = "img_bounds"
 uid_prefix = "guangxi"
 geofabrik = "https://download.geofabrik.de/asia/china/guangxi-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/guangxi/raw/local_imagery"
+local_imagery_root = "data/regions/guangxi/raw/local_imagery"
 esa_tiles = [
   "N18E102",
   "N18E105",
@@ -152,6 +152,24 @@ esa_tiles = [
 ]
 jrc_tiles = ["100E_20N", "110E_20N"]
 
+[regions.hunan]
+name = "湖南省"
+data_dir = "data/regions/hunan/raw"
+processed_dir = "data/regions/hunan/processed"
+cache_dir = "data/cache/hunan"
+bounds = [108.5, 24.5, 114.5, 30.3]
+metadata_source = "img_bounds"
+uid_prefix = "hunan"
+geofabrik = "https://download.geofabrik.de/asia/china/hunan-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/hunan/raw/local_imagery"
+esa_tiles = [
+  "N24E108", "N24E111", "N24E114",
+  "N27E108", "N27E111", "N27E114",
+  "N30E108", "N30E111", "N30E114",
+]
+jrc_tiles = ["100E_30N", "110E_30N"]
+
 [regions.shandong]
 name = "山东省"
 data_dir = "data/regions/shandong/raw"
@@ -162,7 +180,7 @@ metadata_source = "img_bounds"
 uid_prefix = "shandong"
 geofabrik = "https://download.geofabrik.de/asia/china/shandong-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/shandong/raw/local_imagery"
+local_imagery_root = "data/regions/shandong/raw/local_imagery"
 esa_tiles = [
   "N33E114",
   "N33E117",
@@ -183,7 +201,7 @@ metadata_source = "img_bounds"
 uid_prefix = "sichuan"
 geofabrik = "https://download.geofabrik.de/asia/china/sichuan-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/sichuan/raw/local_imagery"
+local_imagery_root = "data/regions/sichuan/raw/local_imagery"
 esa_tiles = [
   "N24E096",
   "N24E099",
@@ -218,7 +236,7 @@ metadata_source = "img_bounds"
 uid_prefix = "xizang"
 geofabrik = "https://download.geofabrik.de/asia/china/tibet-latest-free.gpkg.zip"
 external_raster_mode = "tiles"
-source_img_root = "data/regions/xizang/raw/local_imagery"
+local_imagery_root = "data/regions/xizang/raw/local_imagery"
 esa_tiles = [
   "N24E078",
   "N24E081",
@@ -262,3 +280,144 @@ esa_tiles = [
   "N36E099",
 ]
 jrc_tiles = ["70E_20N", "80E_20N", "90E_20N", "70E_30N", "80E_30N", "90E_30N"]
+
+[regions.qinghai]
+name = "青海省"
+data_dir = "data/regions/qinghai/raw"
+processed_dir = "data/regions/qinghai/processed"
+cache_dir = "data/cache/qinghai"
+bounds = [89.4, 31.5, 103.0, 39.2]
+metadata_source = "img_bounds"
+uid_prefix = "qinghai"
+geofabrik = "https://download.geofabrik.de/asia/china/qinghai-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/qinghai/raw/local_imagery"
+esa_tiles = [
+  "N30E090", "N30E093", "N30E096", "N30E099", "N30E102",
+  "N33E090", "N33E093", "N33E096", "N33E099", "N33E102",
+  "N36E090", "N36E093", "N36E096", "N36E099", "N36E102",
+  "N39E090", "N39E093", "N39E096", "N39E099", "N39E102",
+]
+jrc_tiles = ["80E_30N", "90E_30N", "100E_30N", "80E_40N", "90E_40N", "100E_40N"]
+
+[regions.hubei]
+name = "湖北省"
+data_dir = "data/regions/hubei/raw"
+processed_dir = "data/regions/hubei/processed"
+cache_dir = "data/cache/hubei"
+bounds = [108.3, 29.0, 116.1, 33.3]
+metadata_source = "img_bounds"
+uid_prefix = "hubei"
+geofabrik = "https://download.geofabrik.de/asia/china/hubei-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/hubei/raw/local_imagery"
+esa_tiles = [
+  "N27E108", "N27E111", "N27E114",
+  "N30E108", "N30E111", "N30E114",
+  "N33E108", "N33E111", "N33E114",
+]
+jrc_tiles = ["100E_20N", "110E_20N", "100E_30N", "110E_30N"]
+
+[regions.jiangsu]
+name = "江苏省"
+data_dir = "data/regions/jiangsu/raw"
+processed_dir = "data/regions/jiangsu/processed"
+cache_dir = "data/cache/jiangsu"
+bounds = [116.3, 30.7, 122.0, 35.2]
+metadata_source = "img_bounds"
+uid_prefix = "jiangsu"
+geofabrik = "https://download.geofabrik.de/asia/china/jiangsu-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/jiangsu/raw/local_imagery"
+esa_tiles = [
+  "N30E114", "N30E117", "N30E120",
+  "N33E114", "N33E117", "N33E120",
+]
+jrc_tiles = ["110E_30N", "120E_30N"]
+
+[regions.jiangxi]
+name = "江西省"
+data_dir = "data/regions/jiangxi/raw"
+processed_dir = "data/regions/jiangxi/processed"
+cache_dir = "data/cache/jiangxi"
+bounds = [113.6, 24.5, 116.0, 30.1]
+metadata_source = "img_bounds"
+uid_prefix = "jiangxi"
+geofabrik = "https://download.geofabrik.de/asia/china/jiangxi-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/jiangxi/raw/local_imagery"
+esa_tiles = [
+  "N24E111", "N24E114",
+  "N27E111", "N27E114",
+  "N30E111", "N30E114",
+]
+jrc_tiles = ["110E_20N", "110E_30N"]
+
+[regions.henan]
+name = "河南省"
+data_dir = "data/regions/henan/raw"
+processed_dir = "data/regions/henan/processed"
+cache_dir = "data/cache/henan"
+bounds = [110.3, 31.4, 116.7, 36.4]
+metadata_source = "img_bounds"
+uid_prefix = "henan"
+geofabrik = "https://download.geofabrik.de/asia/china/henan-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/henan/raw/local_imagery"
+esa_tiles = [
+  "N30E108", "N30E111", "N30E114",
+  "N33E108", "N33E111", "N33E114",
+  "N36E108", "N36E111", "N36E114",
+]
+jrc_tiles = ["100E_30N", "110E_30N", "100E_40N", "110E_40N"]
+
+[regions.zhejiang]
+name = "浙江省"
+data_dir = "data/regions/zhejiang/raw"
+processed_dir = "data/regions/zhejiang/processed"
+cache_dir = "data/cache/zhejiang"
+bounds = [118.0, 27.1, 123.0, 31.2]
+metadata_source = "img_bounds"
+uid_prefix = "zhejiang"
+geofabrik = "https://download.geofabrik.de/asia/china/zhejiang-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/zhejiang/raw/local_imagery"
+esa_tiles = [
+  "N27E117", "N27E120",
+  "N30E117", "N30E120",
+]
+jrc_tiles = ["110E_20N", "110E_30N", "120E_20N", "120E_30N"]
+
+[regions.guizhou]
+name = "贵州省"
+data_dir = "data/regions/guizhou/raw"
+processed_dir = "data/regions/guizhou/processed"
+cache_dir = "data/cache/guizhou"
+bounds = [103.6, 24.6, 109.6, 29.3]
+metadata_source = "img_bounds"
+uid_prefix = "guizhou"
+geofabrik = "https://download.geofabrik.de/asia/china/guizhou-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/guizhou/raw/local_imagery"
+esa_tiles = [
+  "N24E102", "N24E105", "N24E108",
+  "N27E102", "N27E105", "N27E108",
+]
+jrc_tiles = ["100E_20N", "100E_30N"]
+
+[regions.chongqing]
+name = "重庆市"
+data_dir = "data/regions/chongqing/raw"
+processed_dir = "data/regions/chongqing/processed"
+cache_dir = "data/cache/chongqing"
+bounds = [105.3, 28.1, 110.2, 32.2]
+metadata_source = "img_bounds"
+uid_prefix = "chongqing"
+geofabrik = "https://download.geofabrik.de/asia/china/chongqing-latest-free.gpkg.zip"
+external_raster_mode = "tiles"
+local_imagery_root = "data/regions/chongqing/raw/local_imagery"
+esa_tiles = [
+  "N27E105", "N27E108",
+  "N30E105", "N30E108",
+]
+jrc_tiles = ["100E_20N", "100E_30N", "110E_20N", "110E_30N"]

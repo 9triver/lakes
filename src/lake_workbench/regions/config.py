@@ -34,7 +34,7 @@ class RegionConfig:
     uid_prefix: str = ""
     geofabrik: str = ""
     external_raster_mode: str = "clip"
-    source_img_root: Path | None = None
+    local_imagery_root: Path | None = None
     esa_tiles: tuple[str, ...] = field(default_factory=tuple)
     jrc_tiles: tuple[str, ...] = field(default_factory=tuple)
 
@@ -129,9 +129,11 @@ def load_region_configs(config_path: Path | None = None) -> tuple[dict[str, Regi
     path = config_path or project_path(os.environ.get("LAKES_REGIONS_CONFIG", DEFAULT_CONFIG_PATH))
     payload = tomllib.loads(path.read_text(encoding="utf-8"))
     shared_data_dir = project_path(payload.get("shared_data_dir", "data/shared"))
+    data_root_value = os.environ.get("LAKES_REGION_DATA_ROOT", "").strip()
+    data_root = project_path(data_root_value) if data_root_value else None
     regions_payload: dict[str, Any] = payload.get("regions", {})
     regions = {
-        key: region_from_mapping(key, value, shared_data_dir)
+        key: region_from_mapping(key, value, shared_data_dir, data_root=data_root)
         for key, value in regions_payload.items()
     }
     default_key = os.environ.get("LAKES_DEFAULT_REGION") or payload.get("default") or next(iter(regions), "")
@@ -140,14 +142,29 @@ def load_region_configs(config_path: Path | None = None) -> tuple[dict[str, Regi
     return regions, default_key
 
 
-def region_from_mapping(key: str, value: dict[str, Any], shared_data_dir: Path | None = None) -> RegionConfig:
+def region_from_mapping(
+    key: str,
+    value: dict[str, Any],
+    shared_data_dir: Path | None = None,
+    *,
+    data_root: Path | None = None,
+) -> RegionConfig:
     bounds = value.get("bounds")
-    source_img_root = value.get("source_img_root")
+    local_imagery_root = value.get("local_imagery_root")
+    if data_root is not None:
+        region_root = data_root / key
+        data_dir = region_root
+        processed_dir = region_root / "processed"
+        local_imagery_root = region_root / "raw" / "local_imagery"
+    else:
+        data_dir = project_path(value["data_dir"])
+        processed_dir = project_path(value["processed_dir"])
+        local_imagery_root = project_path(local_imagery_root) if local_imagery_root else data_dir / "local_imagery"
     return RegionConfig(
         key=key,
         name=str(value["name"]),
-        data_dir=project_path(value["data_dir"]),
-        processed_dir=project_path(value["processed_dir"]),
+        data_dir=data_dir,
+        processed_dir=processed_dir,
         cache_dir=project_path(value.get("cache_dir", f"data/cache/{key}")),
         shared_data_dir=shared_data_dir or project_path("data/shared"),
         bounds=tuple(float(item) for item in bounds) if bounds else None,
@@ -155,7 +172,13 @@ def region_from_mapping(key: str, value: dict[str, Any], shared_data_dir: Path |
         uid_prefix=str(value.get("uid_prefix", key)),
         geofabrik=str(value.get("geofabrik", "")),
         external_raster_mode=str(value.get("external_raster_mode", "clip")),
-        source_img_root=project_path(source_img_root) if source_img_root else None,
+        local_imagery_root=(
+            Path(local_imagery_root)
+            if isinstance(local_imagery_root, Path)
+            else project_path(local_imagery_root)
+        )
+        if local_imagery_root
+        else None,
         esa_tiles=tuple(str(item) for item in value.get("esa_tiles", [])),
         jrc_tiles=tuple(str(item) for item in value.get("jrc_tiles", [])),
     )

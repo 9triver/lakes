@@ -9,6 +9,7 @@ from shapely.geometry import mapping
 from shapely.validation import make_valid
 
 from lake_workbench.utils import display_path, jsonable, resolve_data_path
+from lake_workbench.imagery.formats import is_local_imagery_source
 
 
 class LocalLabelCatalogMixin:
@@ -61,19 +62,21 @@ class LocalLabelCatalogMixin:
         seen = set()
         for rows in self.user_tci_rows.values():
             for row in rows:
-                if row.get("source") != "local_img" or row.get("site_id") != site.site_id:
+                if not is_local_imagery_source(row.get("source")) or row.get("site_id") != site.site_id:
                     continue
-                directory = row.get("safe_path")
-                if not directory:
-                    continue
-                directory = Path(directory)
-                if not directory.exists() or not directory.is_dir():
-                    continue
-                key = str(directory.resolve())
-                if key in seen:
-                    continue
-                seen.add(key)
-                directories.append(directory)
+                candidates = []
+                if row.get("safe_path"):
+                    candidates.append(resolve_data_path(row["safe_path"], self.region))
+                if row.get("tci_path"):
+                    candidates.append(resolve_data_path(row["tci_path"], self.region).parent)
+                for directory in candidates:
+                    if not directory.exists() or not directory.is_dir():
+                        continue
+                    key = str(directory.resolve())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    directories.append(directory)
         return directories
 
     def _local_label_item(self, path: Path) -> dict:

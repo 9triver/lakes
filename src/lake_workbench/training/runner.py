@@ -26,6 +26,7 @@ from lake_workbench.utils import (
     truthy_flag,
     write_csv_records,
 )
+from lake_workbench.workspaces import WorkspacePatchConflict
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
@@ -60,10 +61,45 @@ def run_patch_export(region_key: str, options: dict, workspace_store) -> dict:
         for row in read_csv_records(manifest_path)
     }
     created = sorted(value for value in after - before if value)
-    if created:
-        workspace_store.update_members(workspace_id, region_key, created, "include")
+    rows_by_id = {
+        row.get("logical_patch_id", ""): row
+        for row in read_csv_records(manifest_path)
+    }
+    created = [
+        patch_id
+        for patch_id in created
+        if rows_by_id.get(patch_id, {}).get("review_status") != "excluded"
+        and truthy_flag(rows_by_id.get(patch_id, {}).get("include"), default=True)
+    ]
+    requested_patch_ids = [
+        clean_optional(value)
+        for value in options.get("patch_ids") or []
+        if clean_optional(value)
+    ]
+    candidates = requested_patch_ids or created
+    auto_excluded = [
+        patch_id
+        for patch_id, row in rows_by_id.items()
+        if row.get("exclude_reason") == "no_water"
+        and row.get("review_status") == "excluded"
+    ]
+    if auto_excluded:
+        workspace_store.update_members(workspace_id, region_key, auto_excluded, "exclude")
+    if candidates:
+        try:
+            workspace_store.update_members(
+                workspace_id,
+                region_key,
+                candidates,
+                "include",
+                replace=truthy_flag(options.get("overwrite"), default=False)
+                or truthy_flag(options.get("replace"), default=False),
+            )
+        except WorkspacePatchConflict as exc:
+            exc.patch_ids = candidates
+            raise
     result["workspace_id"] = workspace_id
-    result["added_to_workspace"] = len(created)
+    result["added_to_workspace"] = len(candidates)
     return result
 
 
@@ -81,7 +117,7 @@ def run_dataset_build(region_key: str, options: dict, workspace_store) -> dict:
             "patches": 0,
             "skipped": True,
             "status": "missing_selection",
-            "message": "该区域没有已选逻辑 Patch，已跳过",
+            "message": "该区域没有已选 Patch，已跳过",
         }
     return build_workspace_training_dataset(REGIONS[region_key], config_id, workspace_store, workspace_id)
 

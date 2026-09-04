@@ -4,7 +4,8 @@ import unittest
 
 from shapely.geometry import box
 
-from scripts.build_site_metadata import site_display_name, suggested_site_name
+from scripts.build_site_metadata import geo_frame, site_display_name, suggested_site_name
+from scripts.site_metadata_sources import image_date
 from lake_workbench.catalog import SiteCatalog, SiteRecord
 
 
@@ -74,6 +75,16 @@ class SiteDisplayNameTests(unittest.TestCase):
             }
         ]
         self.assertEqual(suggested_site_name(candidates), "苏干湖")
+
+    def test_empty_external_layer_can_be_written(self) -> None:
+        frame = geo_frame([])
+        self.assertTrue(frame.empty)
+        self.assertEqual(str(frame.crs), "EPSG:4326")
+
+    def test_image_date_supports_all_local_product_prefixes(self) -> None:
+        self.assertEqual(image_date("S2A_MSIL2A_20210411.img"), "2021-04-11")
+        self.assertEqual(image_date("S1_GRD_20160105.img"), "2016-01-05")
+        self.assertEqual(image_date("S2GM_MOSAIC_20250716.img"), "2025-07-16")
 
 
 if __name__ == "__main__":

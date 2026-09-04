@@ -25,6 +25,7 @@ from shapely.ops import unary_union
 from shapely.validation import make_valid
 
 from lake_workbench.geo import boxes_intersect, transform_geom
+from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.models.runtime import predict_array
 from lake_workbench.paths import PROJECT_ROOT
 
@@ -83,12 +84,15 @@ def predict_water_geojson(
             out_width = max(1, int(round(read_width * scale)))
             out_shape = (model.in_channels, out_height, out_width)
             transform_scale = Affine.scale(read_width / out_width, read_height / out_height)
-        image = src.read(
-            indexes=list(range(1, model.in_channels + 1)),
-            window=window,
-            out_shape=out_shape,
-            resampling=Resampling.bilinear,
-        ).astype(np.float32)
+        indexes = list(range(1, model.in_channels + 1))
+        read_kwargs = {"indexes": indexes, "window": window, "resampling": Resampling.bilinear}
+        if out_shape is not None:
+            read_kwargs["out_shape"] = out_shape
+        image = src.read(**read_kwargs).astype(np.float32)
+        mask_kwargs = {"indexes": indexes, "window": window, "resampling": Resampling.nearest}
+        if out_shape is not None:
+            mask_kwargs["out_shape"] = (model.in_channels, image.shape[1], image.shape[2])
+        masks = src.read_masks(**mask_kwargs)
         if image.shape[1] == 0 or image.shape[2] == 0:
             stats = {
                 "threshold": threshold,
@@ -101,10 +105,8 @@ def predict_water_geojson(
                 "max_probability": 0.0,
             }
             return {"type": "FeatureCollection", "features": []}, stats
-        finite = np.all(np.isfinite(image), axis=0)
-        valid = finite & np.any(image != 0, axis=0)
-        if src.nodata is not None:
-            valid &= np.any(image != float(src.nodata), axis=0)
+        nodata = tuple(src.nodatavals[index - 1] for index in indexes)
+        valid = valid_pixel_mask(image, nodata, masks)
         probability = predict_array(model, image, valid=valid)
         predicted = (probability >= threshold) & valid
         transform = window_transform(window, src.transform) if window is not None else src.transform
@@ -261,9 +263,10 @@ def render_tci_xyz_tile(
             raster_bounds_3857 = transform_bounds(src.crs, "EPSG:3857", *src.bounds, densify_pts=21)
             if not boxes_intersect(bounds_3857, raster_bounds_3857):
                 continue
+            indexes = display_band_indexes(src, row)
             raw = np.zeros((3, tile_size, tile_size), dtype=np.float32)
             reproject(
-                source=rasterio.band(src, display_band_indexes(src, row)),
+                source=rasterio.band(src, indexes),
                 destination=raw,
                 src_transform=src.transform,
                 src_crs=src.crs,
@@ -272,8 +275,22 @@ def render_tci_xyz_tile(
                 dst_nodata=0,
                 resampling=Resampling.bilinear,
             )
+            masks = np.zeros((3, tile_size, tile_size), dtype=np.uint8)
+            for mask_index, source_index in enumerate(indexes):
+                source_mask = src.read_masks(indexes=[source_index])[0]
+                reproject(
+                    source=source_mask,
+                    destination=masks[mask_index],
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=dst_transform,
+                    dst_crs="EPSG:3857",
+                    dst_nodata=0,
+                    resampling=Resampling.nearest,
+                )
+            nodata = tuple(src.nodatavals[index - 1] for index in indexes)
             data = to_display_rgb(raw)
-        valid = np.any(data != 0, axis=0) & ~filled
+        valid = valid_pixel_mask(raw, nodata, masks) & ~filled
         if np.any(valid):
             output[:, valid] = data[:, valid]
             filled |= valid
@@ -296,7 +313,22 @@ def blank_png(tile_size: int = 256) -> bytes:
 
 
 def display_band_indexes(src: Any, row: dict) -> list[int]:
-    if row.get("source") == "local_img" and src.count >= 3:
+    if src.count < 3:
+        raise ValueError(f"Raster must contain at least three display bands: {src.name}")
+    descriptions = [str(value or "").lower() for value in (src.descriptions or ())]
+
+    def find_band(*tokens: str) -> int | None:
+        for index, description in enumerate(descriptions, start=1):
+            if any(token in description for token in tokens):
+                return index
+        return None
+
+    blue = find_band("rhot_492", "b02", "blue")
+    green = find_band("rhot_560", "b03", "green")
+    red = find_band("rhot_665", "b04", "red")
+    if blue and green and red and len({blue, green, red}) == 3:
+        return [red, green, blue]
+    if row.get("source") in {"local_img", "local_imagery"}:
         return [3, 2, 1]
     return [1, 2, 3]
 
@@ -338,7 +370,13 @@ def render_tci_mosaic_png(
             srcs.append(src)
             crs_values.add(str(src.crs))
         if len(crs_values) != 1:
-            png, meta = render_tci_png(ordered_rows[0]["tci_path"], bounds_wgs84, size=size, padding=0)
+            png, meta = render_tci_png(
+                ordered_rows[0]["tci_path"],
+                bounds_wgs84,
+                size=size,
+                padding=0,
+                row=ordered_rows[0],
+            )
             meta.update(mosaic_fallback_meta(ordered_rows))
             return png, meta
 
@@ -381,7 +419,7 @@ def render_tci_mosaic_png(
     inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     west, south = inv.transform(left, bottom)
     east, north = inv.transform(right, top)
-    filled = np.any(display != 0, axis=0)
+    filled = valid_pixel_mask(mosaic, nodata=0)
     return buf.getvalue(), {
         "bounds": [west, south, east, north],
         "width": width,
@@ -422,6 +460,7 @@ def render_tci_png(
     bbox_wgs84: tuple[float, float, float, float],
     size: int,
     padding: float,
+    row: dict | None = None,
 ) -> tuple[bytes, dict]:
     with rasterio.open(tci_path) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
@@ -450,14 +489,25 @@ def render_tci_png(
         if out_height > size:
             out_height = size
             out_width = max(240, min(1200, round(size * aspect)))
+        indexes = display_band_indexes(src, row or {})
         data = src.read(
-            display_band_indexes(src, {"source": ""}),
+            indexes,
             window=window,
             out_shape=(3, out_height, out_width),
             resampling=Resampling.bilinear,
             boundless=True,
             fill_value=0,
         )
+        masks = src.read_masks(
+            indexes,
+            window=window,
+            out_shape=(3, out_height, out_width),
+            resampling=Resampling.nearest,
+            boundless=True,
+        )
+        nodata = tuple(src.nodatavals[index - 1] for index in indexes)
+        valid = valid_pixel_mask(data, nodata, masks)
+        data = np.where(valid[None, :, :], data, 0)
         image = Image.fromarray(np.moveaxis(to_display_rgb(data), 0, -1), "RGB")
         buf = io.BytesIO()
         image.save(buf, format="PNG", optimize=True)

@@ -57,6 +57,7 @@ class SiteCatalog(
         self.tci_by_tile = dict(self.base_tci_by_tile)
         self.user_tci_rows = self._load_user_tci_rows()
         self.active_imagery = self._load_active_imagery()
+        self.prune_active_imagery()
         self._rebuild_effective_tci()
         self.tci_footprints = self._load_tci_footprints()
         self.sentinel_tile_index = self._load_sentinel_tile_index()

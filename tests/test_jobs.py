@@ -3,13 +3,33 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
-from lake_workbench.jobs import TrainingManager, TrainingRunActiveError, _release_cuda_memory
+from lake_workbench.jobs import PatchExportManager, TrainingManager, TrainingRunActiveError, _release_cuda_memory
+from lake_workbench.workspaces import WorkspacePatchConflict
 
 
 class TrainingManagerTests(unittest.TestCase):
+    def test_patch_conflict_job_exposes_retry_details(self) -> None:
+        def fail(_region, _options):
+            raise WorkspacePatchConflict([{"patch_id": "existing"}], ["incoming"])
+
+        manager = PatchExportManager(
+            catalog=SimpleNamespace(region=SimpleNamespace(key="gansu")),
+            exporter=fail,
+        )
+        manager.jobs["job"] = {"job_id": "job", "options": {}}
+
+        manager._run("job")
+
+        job = manager.get("job")
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["error_code"], "workspace_patch_conflict")
+        self.assertEqual(job["pending_patch_ids"], ["incoming"])
+        self.assertEqual(job["conflicts"], [{"patch_id": "existing"}])
+
     def test_auto_run_name_is_recorded_on_job_and_options(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch(
             "lake_workbench.jobs.time.strftime", return_value="20260823_162605"

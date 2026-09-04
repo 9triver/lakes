@@ -21,6 +21,10 @@ class FrontendRouteTests(unittest.TestCase):
         self.assertTrue(handle_frontend_get(self.handler, "/assets/index.js", self.static_dir))
         self.assertEqual(self.handler.served_path, self.static_dir / "assets" / "index.js")
 
+    def test_service_worker_is_served_from_static_root(self) -> None:
+        self.assertTrue(handle_frontend_get(self.handler, "/sw.js", self.static_dir))
+        self.assertEqual(self.handler.served_path, self.static_dir / "sw.js")
+
     def test_old_static_dist_url_is_not_a_frontend_asset_route(self) -> None:
         self.assertFalse(handle_frontend_get(self.handler, "/static/dist/index.html", self.static_dir))
 

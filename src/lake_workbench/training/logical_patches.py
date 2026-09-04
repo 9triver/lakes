@@ -24,6 +24,7 @@ from shapely.ops import transform as shapely_transform
 from shapely.validation import make_valid
 
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.utils import display_path, read_csv_records, resolve_data_path, truthy_flag
 
@@ -102,9 +103,10 @@ def build_logical_patches(
             generated.extend(_build_sample_logical_patches(region, sample, previous, preview_dir, logical_dir, patch_size, stride))
         retained_ids = {row.get("logical_patch_id", "") for row in retained}
         for row in retained:
-            preview_path = resolve_data_path(row.get("preview_path", ""), region) if row.get("preview_path") else None
-            if preview_path and preview_path.is_file():
-                shutil.copy2(preview_path, preview_dir / preview_path.name)
+            for field in ("preview_path", "preview_base_path"):
+                preview_path = resolve_data_path(row.get(field, ""), region) if row.get(field) else None
+                if preview_path and preview_path.is_file():
+                    shutil.copy2(preview_path, preview_dir / preview_path.name)
         rows = retained + [row for row in generated if row.get("logical_patch_id", "") not in retained_ids]
         rows.sort(key=lambda row: (row["sample_id"], int(row["image_index"]), int(row["row_off"]), int(row["col_off"]), int(row["logical_size"])))
         _write_csv(temp_dir / "manifest.csv", rows)
@@ -145,7 +147,7 @@ def _build_sample_logical_patches(
         with rasterio.open(image_path) as src:
             image = src.read()
             image_fingerprint = _image_fingerprint(image_path, src)
-            valid = _valid_mask(image, src.nodata)
+            valid = _valid_mask(image, src.nodatavals, src.read_masks())
             label = _rasterize_label(label_path, src)
             target = np.where(valid, label, 255).astype("uint8")
             for row_off in grid_offsets(src.height, patch_size, stride):
@@ -157,13 +159,23 @@ def _build_sample_logical_patches(
                     mask_patch = _padded_crop(target, row_off, col_off, fill=255, patch_size=patch_size)
                     patch_id = logical_patch_id(sample_id, image_index, row_off, col_off, patch_size, image_fingerprint, label_fingerprint)
                     preview_path = preview_dir / f"{patch_id}.png"
-                    _write_preview(preview_path, image_patch, mask_patch, valid_patch)
+                    preview_base_path = preview_dir / f"{patch_id}.base.png"
+                    _write_preview(preview_path, image_patch, mask_patch, valid_patch, overlay=True)
+                    _write_preview(preview_base_path, image_patch, mask_patch, valid_patch, overlay=False)
                     bounds = _grid_cell_bounds(src.transform, row_off, col_off, patch_size)
                     valid_pixels = int(valid_patch.sum())
                     water_pixels = int(np.count_nonzero(mask_patch == 1))
                     old = previous.get(patch_id, {})
                     old_status = str(old.get("review_status") or "")
                     old_included = truthy_flag(old.get("include"), default=True) if "include" in old else old_status == "included"
+                    # Negative patches stay available for review but do not enter the workspace by default.
+                    is_new = not old
+                    has_review_metadata = "exclude_reason" in old
+                    auto_excluded = water_pixels == 0 and (is_new or not has_review_metadata)
+                    included = False if auto_excluded else (old_included if not is_new else True)
+                    exclude_reason = old.get("exclude_reason", "")
+                    if auto_excluded:
+                        exclude_reason = "no_water"
                     result.append(
                         {
                             "logical_patch_id": patch_id,
@@ -175,6 +187,7 @@ def _build_sample_logical_patches(
                             "image_path": display_path(image_path),
                             "label_path": display_path(label_path),
                             "preview_path": display_path(logical_dir / "preview" / preview_path.name),
+                            "preview_base_path": display_path(logical_dir / "preview" / preview_base_path.name),
                             "row_off": row_off,
                             "col_off": col_off,
                             "logical_size": patch_size,
@@ -199,8 +212,9 @@ def _build_sample_logical_patches(
                             "label_sources": sample.get("context_sources") or sample.get("label_source", ""),
                             "label_scope": sample.get("label_scope", ""),
                             "mask_policy": sample.get("mask_policy", ""),
-                            "include": "true" if old_included else "false",
-                            "review_status": "included" if old_included else "excluded",
+                            "include": "true" if included else "false",
+                            "review_status": "included" if included else "excluded",
+                            "exclude_reason": exclude_reason,
                             "patch_notes": old.get("patch_notes", ""),
                         }
                     )
@@ -261,7 +275,7 @@ def build_workspace_training_dataset(
                 continue
             with rasterio.open(image_path) as src:
                 image = src.read()
-                valid = _valid_mask(image, src.nodata)
+                valid = _valid_mask(image, src.nodatavals, src.read_masks())
                 for logical in rows:
                     label_path = resolve_data_path(logical.get("label_path", ""), region)
                     if label_path.is_file():
@@ -378,7 +392,7 @@ def build_global_training_dataset(
                 continue
             with rasterio.open(image_path) as src:
                 image = src.read()
-                valid = _valid_mask(image, src.nodata)
+                valid = _valid_mask(image, src.nodatavals, src.read_masks())
                 variants = group[0]["_variants"]
                 label_snapshot = group[0].get("label_snapshot_json") or ""
                 if label_snapshot:
@@ -507,14 +521,28 @@ def workspace_logical_patch_preview(
     workspace_id: str,
     overlay: bool = True,
 ) -> bytes:
+    preview_path = resolve_data_path(row.get("preview_path", ""), region) if row.get("preview_path") else None
+    preview_base_path = resolve_data_path(row.get("preview_base_path", ""), region) if row.get("preview_base_path") else None
     image_path = resolve_data_path(row.get("image_path", ""), region)
     if not image_path.exists():
+        fallback = preview_path if overlay else preview_base_path
+        if fallback and fallback.is_file():
+            return fallback.read_bytes()
+        if preview_path and preview_path.is_file():
+            return preview_path.read_bytes()
         raise FileNotFoundError(f"logical patch source image not found: {row.get('logical_patch_id', '')}")
     with rasterio.open(image_path) as src:
         image = src.read()
-        valid = _valid_mask(image, src.nodata)
+        valid = _valid_mask(image, src.nodatavals, src.read_masks())
         label_path = resolve_data_path(row.get("label_path", ""), region)
         if not label_path.exists():
+            if not overlay:
+                actual = _derive_patch(image, np.zeros((src.height, src.width), dtype="uint8"), valid, row, LOGICAL_PATCH_SIZE)
+                output = BytesIO()
+                _preview_image(actual["image"], actual["mask"], actual["valid"], overlay=False).save(output, format="PNG")
+                return output.getvalue()
+            if preview_path and preview_path.is_file():
+                return preview_path.read_bytes()
             raise FileNotFoundError(f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}")
         label = _rasterize_label(label_path, src)
         target = np.where(valid, label, 255).astype("uint8")
@@ -602,11 +630,8 @@ def _image_fingerprint(path: Path, src: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def _valid_mask(image: np.ndarray, nodata: Any) -> np.ndarray:
-    valid = np.any(image != 0, axis=0)
-    if nodata is not None:
-        valid &= np.all(image != nodata, axis=0)
-    return valid
+def _valid_mask(image: np.ndarray, nodata: Any, masks: np.ndarray | None = None) -> np.ndarray:
+    return valid_pixel_mask(image, nodata, masks)
 
 
 def _rasterize_label(path: Path, src: Any) -> np.ndarray:
@@ -630,8 +655,8 @@ def _rasterize_label_payload(payload: dict, src: Any) -> np.ndarray:
     return rasterize(geometries, out_shape=(src.height, src.width), transform=src.transform, fill=0, dtype="uint8") if geometries else np.zeros((src.height, src.width), dtype="uint8")
 
 
-def _write_preview(path: Path, image: np.ndarray, mask: np.ndarray, valid: np.ndarray) -> None:
-    _preview_image(image, mask, valid).save(path)
+def _write_preview(path: Path, image: np.ndarray, mask: np.ndarray, valid: np.ndarray, overlay: bool = True) -> None:
+    _preview_image(image, mask, valid, overlay=overlay).save(path)
 
 
 def _preview_image(image: np.ndarray, mask: np.ndarray, valid: np.ndarray, overlay: bool = True) -> Image.Image:

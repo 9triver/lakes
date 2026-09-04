@@ -205,9 +205,24 @@ def resolve_data_path(value: Any, region: RegionConfig) -> Path:
     if path.is_absolute():
         return path
     parts = path.parts
+    if parts and parts[0] == "raw":
+        return region.data_dir.joinpath(*parts[1:])
+    if parts and parts[0] == "processed":
+        return region.processed_dir.joinpath(*parts[1:])
     if len(parts) >= 3 and parts[0] == "data_download" and parts[1] == "downloads":
         return region.data_dir.joinpath(*parts[2:])
     return PROJECT_ROOT / path
+
+
+def display_region_path(path: Path, region: RegionConfig) -> str:
+    """Store a path relative to a region so indexes remain portable."""
+    path = path.resolve()
+    for root, prefix in ((region.data_dir, "raw"), (region.processed_dir, "processed")):
+        try:
+            return (Path(prefix) / path.relative_to(root.resolve())).as_posix()
+        except ValueError:
+            continue
+    return display_path(path)
 
 
 def display_path(path: Path) -> str:

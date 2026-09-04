@@ -9,6 +9,7 @@ import json
 import re
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,16 +26,23 @@ from rasterio.features import rasterize, shapes
 from rasterio.transform import from_bounds
 from rasterio.warp import transform_geom as rasterio_transform_geom
 from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, mapping, shape
+from shapely.ops import transform as shapely_transform
 from shapely.ops import unary_union
 from shapely.validation import make_valid
+from pyproj import Transformer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from lake_workbench.geo import transform_geom  # noqa: E402
 from lake_workbench.regions.config import RegionConfig, load_region_configs  # noqa: E402
+from lake_workbench.imagery.validity import valid_pixel_mask  # noqa: E402
+from lake_workbench.utils import display_region_path, resolve_data_path  # noqa: E402
+from lake_workbench.imagery.formats import (  # noqa: E402
+    local_imagery_paths_from_roots,
+    local_label_path,
+)
 from lake_workbench.water.layers import (  # noqa: E402
     build_esa_smoothed_layer,
     build_jrc_occurrence_layer,
@@ -50,11 +58,13 @@ from site_metadata_sources import (  # noqa: E402
     load_external_hydrolakes,
     load_external_osm_water,
     load_sentinel_tile_index,
+    spatial_intersections,
 )
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 DATE_RE = re.compile(r"(19\d{2}|20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)")
+_METRIC_TRANSFORMER = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
 
 
 @dataclass
@@ -62,12 +72,11 @@ class BuildResult:
     sites: gpd.GeoDataFrame
     cores: gpd.GeoDataFrame
     imagery: gpd.GeoDataFrame
-    labels: gpd.GeoDataFrame
+    labels: gpd.GeoDataFrame | None
     external: gpd.GeoDataFrame
     product_rows: list[dict]
     default_imagery: dict[str, str]
-    esa_cache: list[tuple[str, dict]]
-    jrc_cache: list[tuple[str, int, dict]]
+    label_cache: Path | None = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,6 +86,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--footprint-size", type=int, default=256)
     parser.add_argument("--jrc-threshold", type=int, default=75)
     parser.add_argument("--skip-raster-water", action="store_true")
+    parser.add_argument("--workers", type=int, default=4, help="parallel workers for local imagery scanning")
+    parser.add_argument(
+        "--reuse-label-cache",
+        action="store_true",
+        help="reuse a completed temporary local-label GPKG from an interrupted build",
+    )
     return parser.parse_args()
 
 
@@ -90,6 +105,9 @@ def main() -> None:
         footprint_size=max(64, min(1024, args.footprint_size)),
         jrc_threshold=max(1, min(100, args.jrc_threshold)),
         include_raster_water=not args.skip_raster_water,
+        workers=max(1, min(16, args.workers)),
+        label_output=output_dir / ".local_labels.building.gpkg",
+        reuse_label_cache=args.reuse_label_cache,
     )
     write_result(region, output_dir, result)
 
@@ -99,60 +117,84 @@ def build_site_metadata(
     footprint_size: int = 256,
     jrc_threshold: int = 75,
     include_raster_water: bool = True,
+    workers: int = 4,
+    label_output: Path | None = None,
+    reuse_label_cache: bool = False,
 ) -> BuildResult:
-    if region.source_img_root is None or not region.source_img_root.exists():
-        raise FileNotFoundError(f"local imagery root not found for {region.key}: {region.source_img_root}")
+    image_root = region.local_imagery_root
+    if image_root is None or not image_root.exists():
+        raise FileNotFoundError(f"local imagery root not found for {region.key}: {image_root}")
     sentinel_index = load_sentinel_tile_index(region.sentinel_tile_index_paths)
-    site_dirs = sorted(path for path in region.source_img_root.iterdir() if path.is_dir())
-    if not site_dirs:
-        raise RuntimeError(f"no site directories under {region.source_img_root}")
+    if sentinel_index is not None and not sentinel_index.empty:
+        # Build the shared STRtree before worker threads start querying it.
+        sentinel_index.sindex
+    site_names = sorted(
+        {
+            path.name
+            for path in image_root.iterdir()
+            if path.is_dir()
+        }
+    )
+    if not site_names:
+        raise RuntimeError(f"no site directories under {image_root}")
+    site_dirs = [image_root / name for name in site_names]
 
     site_work: list[dict] = []
     imagery_rows: list[dict] = []
     product_rows: list[dict] = []
     default_imagery: dict[str, str] = {}
-    for index, site_dir in enumerate(site_dirs, start=1):
-        site_id = f"{region.key}_{site_dir.name}"
-        paths = sorted(site_dir.glob("*.img"))
-        assets = []
-        for path in paths:
-            if path.stat().st_size == 0:
-                print(f"[{region.key}] skip empty imagery {site_id}/{path.name}")
+    def scan(site_dir: Path):
+        return scan_site_imagery(region, site_dir, sentinel_index, footprint_size)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        scanned_sites = executor.map(scan, site_dirs)
+        for index, scanned in enumerate(scanned_sites, start=1):
+            if scanned is None:
                 continue
-            try:
-                assets.append(inspect_imagery_asset(site_id, path, sentinel_index, footprint_size))
-            except (OSError, rasterio.errors.RasterioIOError) as exc:
-                print(f"[{region.key}] skip unreadable imagery {site_id}/{path.name}: {exc}")
-        if not assets:
-            continue
-        assets.sort(key=lambda item: (item["acquisition_date"], item["filename"]))
-        default_asset = assets[-1]
-        default_asset["is_default"] = 1
-        union = polygonal_geometry(unary_union([item["geometry"] for item in assets]))
-        core = majority_coverage_geometry([item["geometry"] for item in assets], union)
-        tiles = sentinel_tiles_for_geometry(union, sentinel_index)
-        if not tiles:
-            tiles = sorted({item["mgrs_tile"] for item in assets if item["mgrs_tile"]})
-        for asset in assets:
-            imagery_rows.append(asset)
-            product_rows.append(asset_product_row(site_id, site_dir, asset))
-        if default_asset["mgrs_tile"]:
-            default_imagery[f"{site_id}:{default_asset['mgrs_tile']}"] = default_asset["asset_id"]
-        site_work.append(
-            {
-                "site_id": site_id,
-                "local_directory_id": site_dir.name,
-                "source_path": display_path(site_dir),
-                "geometry": union,
-                "core_geometry": core,
-                "imagery": assets,
-                "sentinel_tiles": tiles,
-            }
-        )
-        print(f"[{region.key}] imagery {index}/{len(site_dirs)} {site_id}: {len(assets)} assets")
+            site_dir, site_id, assets = scanned
+            if not assets:
+                continue
+            assets.sort(key=lambda item: (item["acquisition_date"], item["filename"]))
+            default_asset = assets[-1]
+            default_asset["is_default"] = 1
+            union = polygonal_geometry(unary_union([item["geometry"] for item in assets]))
+            core = majority_coverage_geometry([item["geometry"] for item in assets], union)
+            tiles = sentinel_tiles_for_geometry(union, sentinel_index)
+            if not tiles:
+                tiles = sorted({item["mgrs_tile"] for item in assets if item["mgrs_tile"]})
+            for asset in assets:
+                imagery_rows.append(asset)
+                product_rows.append(asset_product_row(site_id, site_dir, asset))
+            if default_asset["mgrs_tile"]:
+                default_imagery[f"site:{site_id}"] = default_asset["asset_id"]
+            site_work.append(
+                {
+                    "site_id": site_id,
+                    "local_directory_id": site_dir.name,
+                    "source_path": display_region_path(site_dir, region),
+                    "geometry": union,
+                    "core_geometry": core,
+                    "imagery": assets,
+                    "sentinel_tiles": tiles,
+                }
+            )
+            print(f"[{region.key}] imagery {index}/{len(site_dirs)} {site_id}: {len(assets)} assets")
 
-    labels, label_asset_counts, label_feature_counts = load_local_label_features(site_work)
-    total_bounds = unary_union([item["geometry"] for item in site_work]).bounds
+    if not site_work:
+        raise RuntimeError(f"no readable imagery under {region.local_imagery_root}")
+
+    labels, label_asset_counts, label_feature_counts = load_local_label_features(
+        region, site_work, label_output, reuse_existing=reuse_label_cache
+    )
+    # Only the enclosing bbox is needed by the external readers.  Unioning all
+    # site footprints here creates a very large temporary geometry for regions
+    # with thousands of sites.
+    bounds = [item["geometry"].bounds for item in site_work]
+    total_bounds = (
+        min(item[0] for item in bounds),
+        min(item[1] for item in bounds),
+        max(item[2] for item in bounds),
+        max(item[3] for item in bounds),
+    )
     osm = load_external_osm_water(region.osm_water, total_bounds)
     hydro = load_external_hydrolakes(region.hydrolakes, total_bounds)
     external_rows: list[dict] = []
@@ -166,25 +208,19 @@ def build_site_metadata(
         site_candidate_counts[site_id] = Counter(row["source"] for row in candidates)
         suggested_names[site_id] = suggested_site_name(candidates)
 
-    esa_cache: list[tuple[str, dict]] = []
-    jrc_cache: list[tuple[str, int, dict]] = []
     if include_raster_water:
         for index, item in enumerate(site_work, start=1):
             site_id = item["site_id"]
             site_like = site_object(site_id, item["geometry"])
             esa = build_esa_smoothed_layer(region, site_like)
             if esa is not None:
-                esa_cache.append((site_id, esa))
-                candidate = raster_candidate(site_id, item["geometry"], "esa", esa)
-                if candidate is not None:
-                    external_rows.append(candidate)
+                write_esa_polygon_cache(region, site_id, esa)
+                if esa.get("geometry"):
                     site_candidate_counts[site_id]["esa"] += 1
             jrc = build_jrc_occurrence_layer(region, site_like, jrc_threshold)
             if jrc is not None:
-                jrc_cache.append((site_id, jrc_threshold, jrc))
-                candidate = raster_candidate(site_id, item["geometry"], "jrc", jrc, threshold=jrc_threshold)
-                if candidate is not None:
-                    external_rows.append(candidate)
+                write_jrc_polygon_cache(region, site_id, jrc_threshold, jrc)
+                if jrc.get("geometry"):
                     site_candidate_counts[site_id]["jrc"] += 1
             print(f"[{region.key}] raster water {index}/{len(site_work)} {site_id}")
 
@@ -242,21 +278,43 @@ def build_site_metadata(
         sites=geo_frame(site_rows),
         cores=geo_frame(core_rows),
         imagery=geo_frame(imagery_rows),
-        labels=geo_frame(labels),
+        labels=geo_frame(labels) if label_output is None else None,
         external=geo_frame(external_rows),
         product_rows=product_rows,
         default_imagery=default_imagery,
-        esa_cache=esa_cache,
-        jrc_cache=jrc_cache,
+        label_cache=label_output if label_output and label_output.exists() else None,
     )
 
 
-def inspect_imagery_asset(site_id: str, path: Path, sentinel_index, footprint_size: int) -> dict:
+def inspect_imagery_asset(
+    region: RegionConfig,
+    site_id: str,
+    path: Path,
+    sentinel_index,
+    footprint_size: int,
+    footprint_cache: dict[tuple, tuple[Any, float]] | None = None,
+    tile_cache: dict[tuple, str] | None = None,
+    label_dirs: list[Path] | None = None,
+) -> dict:
     with rasterio.open(path) as src:
-        geometry, valid_ratio = valid_footprint(src, footprint_size)
-        tile = image_tile_name(path.name, geometry, sentinel_index)
+        signature = raster_signature(src, footprint_size)
+        if footprint_cache is not None and signature in footprint_cache:
+            geometry, valid_ratio = footprint_cache[signature]
+        else:
+            geometry, valid_ratio = valid_footprint(src, footprint_size)
+            if footprint_cache is not None:
+                footprint_cache[signature] = (geometry, valid_ratio)
+        tile_hint = re.search(r"_T([0-9A-Z]{5})_", path.name)
+        tile_key = (signature, tile_hint.group(1) if tile_hint else None)
+        if tile_cache is not None and tile_key in tile_cache:
+            tile = tile_cache[tile_key]
+        else:
+            tile = image_tile_name(path.name, geometry, sentinel_index)
+            if tile_cache is not None:
+                tile_cache[tile_key] = tile
         resolution_x = abs(float(src.transform.a))
         resolution_y = abs(float(src.transform.e))
+        label = local_label_path(path, label_dirs)
         return {
             "asset_id": f"{site_id}_{path.stem}",
             "site_id": site_id,
@@ -264,7 +322,7 @@ def inspect_imagery_asset(site_id: str, path: Path, sentinel_index, footprint_si
             "product_name": path.stem,
             "acquisition_date": image_date(path.name) or None,
             "mgrs_tile": tile or None,
-            "path": display_path(path),
+            "path": display_region_path(path, region),
             "width": int(src.width),
             "height": int(src.height),
             "band_count": int(src.count),
@@ -272,25 +330,76 @@ def inspect_imagery_asset(site_id: str, path: Path, sentinel_index, footprint_si
             "resolution_x": resolution_x,
             "resolution_y": resolution_y,
             "nodata": float(src.nodata) if src.nodata is not None else None,
+            "storage_format": path.suffix.lower().lstrip("."),
+            "label_path": display_region_path(label, region) if label.exists() else "",
             "valid_ratio": valid_ratio,
             "is_default": 0,
             "geometry": geometry,
         }
 
 
+def scan_site_imagery(
+    region: RegionConfig,
+    site_dir: Path,
+    sentinel_index,
+    footprint_size: int,
+):
+    site_id = f"{region.key}_{site_dir.name}"
+    paths = local_imagery_paths_from_roots([site_dir])
+    assets = []
+    footprint_cache: dict[tuple, tuple[Any, float]] = {}
+    tile_cache: dict[tuple, str] = {}
+    for path in paths:
+        try:
+            if path.stat().st_size == 0:
+                print(f"[{region.key}] skip empty imagery {site_id}/{path.name}")
+                continue
+            assets.append(
+                inspect_imagery_asset(
+                    region,
+                    site_id,
+                    path,
+                    sentinel_index,
+                    footprint_size,
+                    footprint_cache,
+                    tile_cache,
+                    [site_dir],
+                )
+            )
+        except (OSError, rasterio.errors.RasterioIOError, ValueError) as exc:
+            print(f"[{region.key}] skip unreadable imagery {site_id}/{path.name}: {exc}")
+    return site_dir, site_id, assets
+
+
+def raster_signature(src, footprint_size: int) -> tuple:
+    """Identify rasters likely to share the same valid-data footprint."""
+    return (
+        int(src.width),
+        int(src.height),
+        tuple(src.transform),
+        str(src.crs or ""),
+        float(src.nodata) if src.nodata is not None else None,
+        int(src.count),
+        int(footprint_size),
+    )
+
+
 def valid_footprint(src, max_size: int) -> tuple[Any, float]:
     scale = max(src.width / max_size, src.height / max_size, 1.0)
     width = max(1, int(round(src.width / scale)))
     height = max(1, int(round(src.height / scale)))
-    count = min(src.count, 3)
+    count = src.count
     data = src.read(
         list(range(1, count + 1)),
         out_shape=(count, height, width),
         resampling=Resampling.nearest,
     )
-    valid = np.any(data != 0, axis=0)
-    if src.nodata is not None:
-        valid &= np.any(data != src.nodata, axis=0)
+    masks = src.read_masks(
+        list(range(1, count + 1)),
+        out_shape=(count, height, width),
+        resampling=Resampling.nearest,
+    )
+    valid = valid_pixel_mask(data, src.nodatavals, masks)
     valid_ratio = float(np.count_nonzero(valid) / valid.size) if valid.size else 0.0
     transform = src.transform * Affine.scale(src.width / width, src.height / height)
     geometries = [
@@ -311,12 +420,12 @@ def valid_footprint(src, max_size: int) -> tuple[Any, float]:
 def sentinel_tiles_for_geometry(geometry, sentinel_index) -> list[str]:
     if sentinel_index is None or sentinel_index.empty:
         return []
-    candidates = sentinel_index[sentinel_index.geometry.intersects(geometry)].copy()
+    candidates = spatial_intersections(sentinel_index, geometry).copy()
     if candidates.empty:
         return []
-    site_m = transform_geom(geometry, "EPSG:4326", "EPSG:3857")
+    site_m = metric_geometry(geometry)
     candidates["overlap"] = [
-        transform_geom(tile, "EPSG:4326", "EPSG:3857").intersection(site_m).area
+        metric_geometry(tile).intersection(site_m).area
         for tile in candidates.geometry
     ]
     candidates = candidates[candidates["overlap"] > 0].sort_values(["overlap", "Name"], ascending=[False, True])
@@ -355,52 +464,139 @@ def majority_coverage_geometry(geometries: list[Any], union, fraction: float = 0
     return polygonal_geometry(unary_union(parts).intersection(union)) if parts else union
 
 
-def load_local_label_features(site_work: list[dict]) -> tuple[list[dict], dict[str, int], dict[str, int]]:
+def load_local_label_features(
+    region: RegionConfig,
+    site_work: list[dict],
+    output_path: Path | None = None,
+    *,
+    reuse_existing: bool = False,
+) -> tuple[list[dict], dict[str, int], dict[str, int]]:
     rows: list[dict] = []
     asset_counts: dict[str, int] = {}
-    feature_counts: dict[str, int] = {}
+    feature_counts: dict[str, int] = {site["site_id"]: 0 for site in site_work}
+
+    def label_directories(site: dict) -> list[Path]:
+        paths = [site["source_path"]]
+        directories = []
+        seen = set()
+        for path in paths:
+            directory = resolve_data_path(path, region)
+            key = str(directory.resolve())
+            if directory.is_dir() and key not in seen:
+                seen.add(key)
+                directories.append(directory)
+        return directories
+
+    def label_paths(site: dict) -> list[Path]:
+        paths = []
+        seen = set()
+        for directory in label_directories(site):
+            for path in sorted(directory.glob("*.shp")):
+                key = str(path.resolve())
+                if path.stat().st_size > 0 and key not in seen:
+                    seen.add(key)
+                    paths.append(path)
+        return paths
+
+    if output_path is not None and output_path.exists() and reuse_existing:
+        try:
+            info = pyogrio.read_info(output_path, layer="local_label_features")
+        except Exception as exc:  # noqa: BLE001 - fall back to rebuilding the cache.
+            print(f"warning: cannot reuse local-label cache {output_path}: {exc}")
+        else:
+            label_ids = pyogrio.read_dataframe(
+                output_path,
+                layer="local_label_features",
+                columns=["site_id"],
+                read_geometry=False,
+            )["site_id"].value_counts()
+            for site in site_work:
+                site_id = site["site_id"]
+                asset_counts[site_id] = len(label_paths(site))
+                feature_counts[site_id] = int(label_ids.get(site_id, 0))
+            print(f"reusing local-label cache {output_path}: {info['features']} features")
+            return rows, asset_counts, feature_counts
+    if output_path is not None and output_path.exists():
+        output_path.unlink()
+    batch: list[dict] = []
+    append = False
+
+    def flush_batch() -> None:
+        nonlocal append
+        if not batch or output_path is None:
+            return
+        frame = geo_frame(batch)
+        pyogrio.write_dataframe(
+            frame,
+            output_path,
+            layer="local_label_features",
+            driver="GPKG",
+            promote_to_multi=True,
+            append=append,
+        )
+        append = True
+        batch.clear()
+
     for site in site_work:
         site_id = site["site_id"]
-        directory = PROJECT_ROOT / site["source_path"]
-        paths = sorted(directory.glob("*.shp"))
+        paths = label_paths(site)
         asset_counts[site_id] = len(paths)
         for path in paths:
-            label_path = display_path(path)
-            label_asset_id = hashlib.sha1(label_path.encode("utf-8")).hexdigest()[:16]
-            date = date_from_text(path.stem)
-            try:
-                frame = pyogrio.read_dataframe(path)
-            except Exception as exc:  # noqa: BLE001 - preserve the rest of a batch.
-                print(f"warning: failed local label {path}: {exc}")
+            pending_rows, error = read_local_label_asset((site_id, path))
+            if error is not None:
+                print(f"warning: failed local label {path}: {error}")
                 continue
-            if frame.crs is not None:
-                frame = frame.to_crs("EPSG:4326")
-            for feature_index, row in frame.iterrows():
-                geometry = polygonal_geometry(row.geometry)
-                if geometry.is_empty:
-                    continue
-                properties = {
-                    key: json_value(row.get(key))
-                    for key in frame.columns
-                    if key != "geometry"
-                }
-                rows.append(
-                    {
-                        "label_feature_id": f"{label_asset_id}_{feature_index}",
-                        "label_asset_id": label_asset_id,
-                        "site_id": site_id,
-                        "source": "local_shapefile",
-                        "source_path": label_path,
-                        "source_filename": path.name,
-                        "acquisition_date": date or None,
-                        "source_feature_id": str(feature_index),
-                        "area_km2": geometry_area_km2(geometry),
-                        "properties_json": json.dumps(properties, ensure_ascii=False, sort_keys=True),
-                        "geometry": geometry,
-                    }
-                )
-        feature_counts[site_id] = sum(row["site_id"] == site_id for row in rows)
+            feature_counts[site_id] += len(pending_rows)
+            if output_path is None:
+                rows.extend(pending_rows)
+            else:
+                batch.extend(pending_rows)
+                if len(batch) >= 5000:
+                    flush_batch()
+    flush_batch()
     return rows, asset_counts, feature_counts
+
+
+def read_local_label_asset(task: tuple[str, Path]) -> tuple[list[dict], str | None]:
+    site_id, path = task
+    label_path = display_path(path)
+    label_asset_id = hashlib.sha1(label_path.encode("utf-8")).hexdigest()[:16]
+    date = date_from_text(path.stem)
+    try:
+        frame = pyogrio.read_dataframe(path)
+    except Exception as exc:  # noqa: BLE001 - preserve the rest of a batch.
+        return [], str(exc)
+    if frame.crs is not None:
+        frame = frame.to_crs("EPSG:4326")
+    pending_rows = []
+    for feature_index, row in frame.iterrows():
+        geometry = polygonal_geometry(row.geometry)
+        if geometry.is_empty:
+            continue
+        properties = {
+            key: json_value(row.get(key))
+            for key in frame.columns
+            if key != "geometry"
+        }
+        pending_rows.append(
+            {
+                "label_feature_id": f"{label_asset_id}_{feature_index}",
+                "label_asset_id": label_asset_id,
+                "site_id": site_id,
+                "source": "local_shapefile",
+                "source_path": label_path,
+                "source_filename": path.name,
+                "acquisition_date": date or None,
+                "source_feature_id": str(feature_index),
+                "area_km2": 0.0,
+                "properties_json": json.dumps(properties, ensure_ascii=False, sort_keys=True),
+                "geometry": geometry,
+            }
+        )
+    areas = geometry_areas_km2([row["geometry"] for row in pending_rows])
+    for pending, area in zip(pending_rows, areas, strict=True):
+        pending["area_km2"] = float(area)
+    return pending_rows, None
 
 
 def build_vector_candidates(site_id: str, site_geometry, osm, hydro) -> list[dict]:
@@ -408,7 +604,8 @@ def build_vector_candidates(site_id: str, site_geometry, osm, hydro) -> list[dic
     for source, frame in (("osm", osm), ("hydrolakes", hydro)):
         if frame.empty:
             continue
-        selected = frame[frame.geometry.intersects(site_geometry)]
+        selected = spatial_intersections(frame, site_geometry)
+        site_area = geometry_area_km2(site_geometry)
         for row in selected.itertuples():
             geometry = polygonal_geometry(row.geometry)
             overlap = polygonal_geometry(geometry.intersection(site_geometry))
@@ -417,9 +614,8 @@ def build_vector_candidates(site_id: str, site_geometry, osm, hydro) -> list[dic
             values = row._asdict()
             source_id = clean_text(values.get("source_feature_id")) or str(row.Index)
             name = candidate_name(values)
-            feature_area = geometry_area_km2(geometry)
+            feature_area = numeric_area(values.get("area_km2")) or geometry_area_km2(geometry)
             overlap_area = geometry_area_km2(overlap)
-            site_area = geometry_area_km2(site_geometry)
             properties = {
                 key: json_value(value)
                 for key, value in values.items()
@@ -493,38 +689,6 @@ def site_object(site_id: str, geometry) -> Any:
     )
 
 
-def raster_candidate(site_id: str, site_geometry, source: str, layer: dict, threshold: int | None = None) -> dict | None:
-    geometry_json = layer.get("geometry")
-    if not geometry_json:
-        return None
-    geometry = polygonal_geometry(shape(geometry_json))
-    if geometry.is_empty:
-        return None
-    overlap = polygonal_geometry(geometry.intersection(site_geometry))
-    if overlap.is_empty:
-        return None
-    properties = dict(layer.get("properties") or {})
-    source_id = f"{source}_{site_id}" + (f"_{threshold}" if threshold is not None else "")
-    area = geometry_area_km2(geometry)
-    overlap_area = geometry_area_km2(overlap)
-    site_area = geometry_area_km2(site_geometry)
-    return {
-        "candidate_id": source_id,
-        "site_id": site_id,
-        "source": source,
-        "source_feature_id": source_id,
-        "name": None,
-        "water_type": "water",
-        "area_km2": area,
-        "intersection_area_km2": overlap_area,
-        "site_coverage_ratio": overlap_area / site_area if site_area else 0.0,
-        "feature_coverage_ratio": overlap_area / area if area else 0.0,
-        "is_suggested_primary": 0,
-        "properties_json": json.dumps(properties, ensure_ascii=False, sort_keys=True),
-        "geometry": geometry,
-    }
-
-
 def asset_product_row(site_id: str, site_dir: Path, asset: dict) -> dict:
     return {
         "site_id": site_id,
@@ -533,10 +697,11 @@ def asset_product_row(site_id: str, site_dir: Path, asset: dict) -> dict:
         "tile": asset["mgrs_tile"] or "",
         "date": asset["acquisition_date"] or "",
         "cloud_cover": "",
-        "product_type": "MSIL1C_IMG",
-        "source": "local_img",
-        "safe_path": display_path(site_dir),
+        "product_type": f"MSIL1C_{asset['storage_format'].upper()}",
+        "source": "local_imagery",
+        "safe_path": asset["path"].rsplit("/", 1)[0] if "/" in asset["path"] else "",
         "tci_path": asset["path"],
+        "label_path": asset.get("label_path", ""),
         "download_status": "downloaded",
         "downloaded_at": "",
         "valid_ratio": asset["valid_ratio"],
@@ -553,20 +718,37 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
         ("sites", result.sites),
         ("site_coverage_core", result.cores),
         ("imagery_assets", result.imagery),
-        ("local_label_features", result.labels),
         ("external_water_features", result.external),
     ]
     for layer_name, frame in layers:
         pyogrio.write_dataframe(frame, tmp_path, layer=layer_name, driver="GPKG", promote_to_multi=True)
-    validate_written_layers(tmp_path, layers)
+    expected_counts = [(layer_name, len(frame)) for layer_name, frame in layers]
+    if result.label_cache is not None:
+        copy_gpkg_layer(result.label_cache, tmp_path, "local_label_features")
+        label_count = pyogrio.read_info(result.label_cache, layer="local_label_features")["features"]
+        expected_counts.append(("local_label_features", label_count))
+    else:
+        if result.labels is None:
+            raise RuntimeError("local label rows are unavailable")
+        pyogrio.write_dataframe(
+            result.labels,
+            tmp_path,
+            layer="local_label_features",
+            driver="GPKG",
+            promote_to_multi=True,
+        )
+        expected_counts.append(("local_label_features", len(result.labels)))
+    validate_written_layers(tmp_path, expected_counts)
     tmp_path.replace(gpkg_path)
+    if result.label_cache is not None and result.label_cache.exists():
+        result.label_cache.unlink()
     result.sites.drop(columns=["geometry"]).to_csv(csv_path, index=False)
 
     products_path = output_dir / "sentinel_products.csv"
     generated = pd.DataFrame(result.product_rows)
     if products_path.exists():
         existing = pd.read_csv(products_path)
-        preserved = existing[existing.get("source", "").fillna("") != "local_img"].copy()
+        preserved = existing[~existing.get("source", "").fillna("").isin(["local_img", "local_imagery"])].copy()
         if not preserved.empty:
             generated = pd.concat([generated, preserved], ignore_index=True, sort=False)
     generated.to_csv(products_path, index=False)
@@ -577,7 +759,16 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
         try:
             payload = json.loads(active_path.read_text(encoding="utf-8"))
             if isinstance(payload, dict):
-                existing_active = {str(key): str(value) for key, value in payload.items()}
+                valid_products = {
+                    str(row.get("product_name") or "")
+                    for row in generated.to_dict("records")
+                    if row.get("product_name")
+                }
+                existing_active = {
+                    str(key): str(value)
+                    for key, value in payload.items()
+                    if str(value) in valid_products
+                }
         except json.JSONDecodeError:
             pass
     active_path.write_text(
@@ -585,15 +776,11 @@ def write_result(region: RegionConfig, output_dir: Path, result: BuildResult) ->
         encoding="utf-8",
     )
 
-    for site_id, layer in result.esa_cache:
-        write_esa_polygon_cache(region, site_id, layer)
-    for site_id, threshold, layer in result.jrc_cache:
-        write_jrc_polygon_cache(region, site_id, threshold, layer)
     normalize_site_identity_files(output_dir, result.sites)
 
     print(f"wrote {gpkg_path}")
-    for layer_name, frame in layers:
-        print(f"  {layer_name}: {len(frame)}")
+    for layer_name, count in expected_counts:
+        print(f"  {layer_name}: {count}")
     print(f"wrote {csv_path}")
     print(f"wrote {products_path}")
     print(f"wrote {active_path}")
@@ -606,7 +793,11 @@ def normalize_site_identity_files(output_dir: Path, sites: gpd.GeoDataFrame) -> 
     for path in paths:
         if not path.exists():
             continue
-        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        try:
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        except pd.errors.EmptyDataError:
+            # A newly created workspace may legitimately have no samples yet.
+            continue
         if "site_id" not in frame:
             raise ValueError(f"missing site_id in {path}")
         if "site_name" not in frame:
@@ -617,20 +808,41 @@ def normalize_site_identity_files(output_dir: Path, sites: gpd.GeoDataFrame) -> 
         frame.to_csv(path, index=False)
 
 
-def validate_written_layers(path: Path, layers: list[tuple[str, gpd.GeoDataFrame]]) -> None:
+def copy_gpkg_layer(source: Path, destination: Path, layer_name: str, batch_size: int = 5000) -> None:
+    """Copy a temporary layer without materializing all features in memory."""
+    info = pyogrio.read_info(source, layer=layer_name)
+    total = int(info["features"])
+    for offset in range(0, total, batch_size):
+        frame = pyogrio.read_dataframe(
+            source,
+            layer=layer_name,
+            skip_features=offset,
+            max_features=batch_size,
+        )
+        pyogrio.write_dataframe(
+            frame,
+            destination,
+            layer=layer_name,
+            driver="GPKG",
+            promote_to_multi=True,
+            append=offset > 0,
+        )
+
+
+def validate_written_layers(path: Path, layers: list[tuple[str, int]]) -> None:
     actual = {name for name, _geometry_type in pyogrio.list_layers(path)}
-    expected = {name for name, _frame in layers}
+    expected = {name for name, _count in layers}
     if actual != expected:
         raise RuntimeError(f"site metadata layers differ: expected={expected}, actual={actual}")
-    for layer_name, frame in layers:
+    for layer_name, count in layers:
         info = pyogrio.read_info(path, layer=layer_name)
-        if info["features"] != len(frame):
-            raise RuntimeError(f"wrong feature count for {layer_name}: {info['features']} != {len(frame)}")
+        if info["features"] != count:
+            raise RuntimeError(f"wrong feature count for {layer_name}: {info['features']} != {count}")
 
 
 def geo_frame(rows: list[dict]) -> gpd.GeoDataFrame:
     if not rows:
-        raise RuntimeError("metadata layer unexpectedly has no features")
+        return gpd.GeoDataFrame({"geometry": gpd.GeoSeries([], crs="EPSG:4326")}, geometry="geometry", crs="EPSG:4326")
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
@@ -656,7 +868,24 @@ def polygonal_geometry(geometry) -> Any:
 def geometry_area_km2(geometry) -> float:
     if geometry is None or geometry.is_empty:
         return 0.0
-    return float(transform_geom(geometry, "EPSG:4326", "EPSG:3857").area / 1_000_000)
+    return float(metric_geometry(geometry).area / 1_000_000)
+
+
+def metric_geometry(geometry):
+    return shapely_transform(_METRIC_TRANSFORMER.transform, geometry)
+
+
+def geometry_areas_km2(geometries) -> pd.Series:
+    """Calculate many WGS84 geometry areas with one vectorized reprojection."""
+    series = gpd.GeoSeries(geometries, crs="EPSG:4326")
+    return series.to_crs("EPSG:3857").area / 1_000_000
+
+
+def numeric_area(value) -> float:
+    try:
+        return float(value) if pd.notna(value) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def date_from_text(value: str) -> str:

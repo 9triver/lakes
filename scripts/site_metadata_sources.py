@@ -8,10 +8,29 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import pyogrio
+from pyproj import Transformer
+from shapely.ops import transform as shapely_transform
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TAG_RE = re.compile(r'"([^"]+)"=>"([^"]*)"')
+_METRIC_TRANSFORMER = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+
+
+def spatial_intersections(frame: gpd.GeoDataFrame, geometry) -> gpd.GeoDataFrame:
+    """Return intersecting features using the frame's spatial index."""
+    if frame.empty:
+        return frame
+    try:
+        indexes = frame.sindex.query(geometry, predicate="intersects")
+    except (AttributeError, ImportError, NotImplementedError):
+        # Keep the builder usable with older GeoPandas installations.
+        return frame[frame.geometry.intersects(geometry)]
+    return frame.iloc[indexes]
+
+
+def metric_geometry(geometry):
+    return shapely_transform(_METRIC_TRANSFORMER.transform, geometry)
 
 
 def image_tile_name(name: str, geometry, sentinel_tile_index: gpd.GeoDataFrame | None) -> str:
@@ -20,16 +39,19 @@ def image_tile_name(name: str, geometry, sentinel_tile_index: gpd.GeoDataFrame |
         return match.group(1)
     if sentinel_tile_index is None or sentinel_tile_index.empty:
         return ""
-    candidates = sentinel_tile_index[sentinel_tile_index.geometry.intersects(geometry)].copy()
+    candidates = spatial_intersections(sentinel_tile_index, geometry).copy()
     if candidates.empty:
         return ""
-    candidates["overlap"] = [geometry_area_km2(tile.intersection(geometry)) for tile in candidates.geometry]
+    geometry_m = metric_geometry(geometry)
+    candidates["overlap"] = [metric_geometry(tile).intersection(geometry_m).area / 1_000_000 for tile in candidates.geometry]
     candidates = candidates[candidates["overlap"] > 0].sort_values(["overlap", "Name"], ascending=[False, True])
     return str(candidates.iloc[0]["Name"]) if not candidates.empty else ""
 
 
 def image_date(name: str) -> str:
-    match = re.search(r"MSIL\d[AC]?_(\d{8})", name)
+    # Local imagery also contains Sentinel-1 and mosaic products whose
+    # prefixes differ from MSIL1C/MSIL2A, but all use an 8-digit date.
+    match = re.search(r"(?:^|[_-])(\d{8})(?:[_.-]|$)", name)
     if not match:
         return ""
     value = match.group(1)
@@ -53,7 +75,7 @@ def load_external_osm_water(osm_path: Path, bbox: tuple[float, float, float, flo
         return empty_external_water()
     tag_records = data["other_tags"].map(parse_other_tags)
     data["source"] = "osm"
-    data["area_km2"] = [geometry_area_km2(geometry) for geometry in data.geometry]
+    data["area_km2"] = geometry_areas_km2(data.geometry)
     data["osm_id_text"] = data["osm_id"].map(clean_id)
     data["osm_way_id_text"] = data["osm_way_id"].map(clean_id)
     data["source_feature_id"] = [
@@ -82,6 +104,7 @@ def load_external_hydrolakes(hydrolakes_path: Path, bbox: tuple[float, float, fl
         return empty_external_water()
     data["source"] = "hydrolakes"
     data["source_feature_id"] = data["Hylak_id"].map(clean_id)
+    data["area_km2"] = geometry_areas_km2(data.geometry)
     data["display_name"] = data["Lake_name"].map(clean_text)
     data["name"] = data["display_name"]
     data["name_zh"] = None
@@ -118,7 +141,13 @@ def empty_external_water() -> gpd.GeoDataFrame:
 def geometry_area_km2(geometry) -> float:
     if geometry is None or geometry.is_empty:
         return 0.0
-    return float(gpd.GeoSeries([geometry], crs="EPSG:4326").to_crs("EPSG:3857").area.iloc[0] / 1_000_000)
+    return float(metric_geometry(geometry).area / 1_000_000)
+
+
+def geometry_areas_km2(geometries) -> pd.Series:
+    """Calculate many WGS84 geometry areas with one vectorized reprojection."""
+    series = gpd.GeoSeries(geometries, crs="EPSG:4326")
+    return series.to_crs("EPSG:3857").area / 1_000_000
 
 
 def display_path(path: Path) -> str:

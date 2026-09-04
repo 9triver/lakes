@@ -14,6 +14,7 @@ from typing import Any
 from lake_workbench.sentinel.download import download_copernicus_product
 from lake_workbench.models.runtime import normalize_model_type
 from lake_workbench.utils import clean_optional, safe_filename
+from lake_workbench.workspaces import WorkspacePatchConflict
 
 
 JobRunner = Callable[..., dict]
@@ -174,6 +175,15 @@ class PatchExportManager:
                 message=f"生成完成：{result.get('patches', 0)} 个 patch",
                 progress=100,
                 result=result,
+            )
+        except WorkspacePatchConflict as exc:
+            self._update(
+                job_id,
+                status="failed",
+                message="当前 Patch 与 Workspace 中已有 Patch 重复或空间重叠",
+                error_code="workspace_patch_conflict",
+                conflicts=exc.conflicts,
+                pending_patch_ids=exc.patch_ids,
             )
         except Exception as exc:  # noqa: BLE001 - surfaced to the local UI.
             self._update(job_id, status="failed", message=f"{type(exc).__name__}: {exc}")

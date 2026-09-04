@@ -108,7 +108,7 @@ export function PatchReviewView({ workspaceId, scope, siteId = "", sourceSampleI
         <Box sx={{ minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0,1fr)", gap: 1 }}>
           <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
             <Typography variant="subtitle2" color="text.primary">影像预览</Typography>
-            <FormControlLabel sx={{ mr: 0 }} control={<Switch size="small" checked={showLabelOverlay} onChange={(_, checked) => setShowLabelOverlay(checked)} />} label="显示水体标注" />
+            <FormControlLabel sx={{ mr: 0 }} control={<Switch size="small" checked={showLabelOverlay} disabled={active?.overlay_available === false} onChange={(_, checked) => setShowLabelOverlay(checked)} />} label="显示水体标注" />
           </Box>
           <Box sx={{ minHeight: { xs: 280, md: 500 }, display: "grid", placeItems: "center", border: 1, borderColor: "divider", bgcolor: "#111", overflow: "hidden" }}>
             {activePreviewUrl ? <Box component="img" src={activePreviewUrl} alt="" sx={{ display: "block", width: "100%", height: "100%", maxHeight: "62vh", objectFit: "contain" }} /> : <Typography color="grey.400">暂无预览</Typography>}

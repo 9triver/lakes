@@ -22,6 +22,7 @@ from lake_workbench.utils import (
     parse_float_or_default,
     resolve_data_path,
 )
+from lake_workbench.imagery.formats import is_local_imagery_source, local_label_path
 
 
 def _site_id(value) -> str:
@@ -34,17 +35,20 @@ class ImageryInventoryMixin:
             return {}
         rows = {}
         for row in pd.read_csv(self.region.tci_index).to_dict("records"):
-            path = resolve_data_path(row["tci_path"], self.region)
-            if not path.exists():
+            path_text = clean_optional(row.get("tci_path"))
+            path = resolve_data_path(path_text, self.region) if path_text else None
+            tile = clean_optional(row.get("tile"))
+            if not tile or not path:
                 continue
-            rows[str(row["tile"]).upper()] = {
-                "tile": str(row["tile"]).upper(),
+            rows[tile.upper().removeprefix("T")] = {
+                "tile": tile.upper().removeprefix("T"),
                 "date": str(row["date"]),
                 "source": row.get("source", ""),
-                "valid_ratio": float(row.get("valid_ratio", 0) or 0),
+                "valid_ratio": parse_float_or_default(row.get("valid_ratio"), 0.0),
                 "product": row.get("product", ""),
                 "cloud_cover": row.get("cloud_cover", ""),
                 "tci_path": path,
+                "missing": not path or not path.exists(),
             }
         return rows
 
@@ -53,9 +57,8 @@ class ImageryInventoryMixin:
         if not self.region.user_sentinel_index.exists():
             return rows
         for row in pd.read_csv(self.region.user_sentinel_index).to_dict("records"):
-            path = resolve_data_path(row.get("tci_path", ""), self.region)
-            if not path.exists():
-                continue
+            path_text = clean_optional(row.get("tci_path"))
+            path = resolve_data_path(path_text, self.region) if path_text else None
             safe_path_text = clean_optional(row.get("safe_path")) or ""
             tile = str(row.get("tile", "")).upper().removeprefix("T")
             if not tile:
@@ -72,7 +75,13 @@ class ImageryInventoryMixin:
                 "cloud_cover": clean_optional(row.get("cloud_cover")) or "",
                 "downloaded_at": clean_optional(row.get("downloaded_at")) or "",
                 "safe_path": resolve_data_path(safe_path_text, self.region) if safe_path_text else None,
+                "label_path": (
+                    resolve_data_path(clean_optional(row.get("label_path")), self.region)
+                    if clean_optional(row.get("label_path"))
+                    else None
+                ),
                 "tci_path": path,
+                "missing": not path or not path.exists(),
             }
             rows.setdefault(tile, []).append(item)
         for tile in rows:
@@ -114,10 +123,19 @@ class ImageryInventoryMixin:
             active_product = self.active_imagery.get(tile)
             selected = None
             base = self.base_tci_by_tile.get(tile)
-            if base and base.get("product") == active_product:
+            if base and base.get("product") == active_product and base.get("tci_path") and base["tci_path"].exists():
                 selected = base
             if selected is None:
-                selected = next((row for row in self.user_tci_rows.get(tile, []) if row.get("product") == active_product), None)
+                selected = next(
+                    (
+                        row
+                        for row in self.user_tci_rows.get(tile, [])
+                        if row.get("product") == active_product
+                        and row.get("tci_path")
+                        and row["tci_path"].exists()
+                    ),
+                    None,
+                )
             if selected is not None:
                 effective[tile] = selected
         self.tci_by_tile = effective
@@ -133,10 +151,26 @@ class ImageryInventoryMixin:
         tile = str(tile).upper().removeprefix("T")
         active_key = self._active_imagery_key(tile, site)
         active_product = self.active_imagery.get(active_key)
+        site_id = _site_id(site)
+        site_product = self.active_imagery.get(f"site:{site_id}") if site_id else None
+        if site_product:
+            selected = next(
+                (
+                    row
+                    for row in self.user_tci_rows.get(tile, [])
+                    if row.get("product") == site_product
+                    and (not row.get("site_id") or row.get("site_id") == site_id)
+                    and row.get("tci_path")
+                    and row["tci_path"].exists()
+                ),
+                None,
+            )
+            if selected is not None:
+                return selected
         if not active_product:
             return None
         base = self.base_tci_by_tile.get(tile)
-        if active_key == tile and base and base.get("product") == active_product:
+        if active_key == tile and base and base.get("product") == active_product and base.get("tci_path") and base["tci_path"].exists():
             return base
         site_id = active_key.split(":", 1)[0] if ":" in active_key else ""
         return next(
@@ -145,6 +179,8 @@ class ImageryInventoryMixin:
                 for row in self.user_tci_rows.get(tile, [])
                 if row.get("product") == active_product
                 and (not site_id or not row.get("site_id") or row.get("site_id") == site_id)
+                and row.get("tci_path")
+                and row["tci_path"].exists()
             ),
             None,
         )
@@ -152,7 +188,7 @@ class ImageryInventoryMixin:
     def _imagery_asset_meta(self, row: dict, site_id: str = "") -> dict:
         source = clean_optional(row.get("source")) or "preloaded"
         row_site_id = clean_optional(row.get("site_id")) or ""
-        if source == "local_img":
+        if is_local_imagery_source(source):
             asset_type, asset_scope, asset_label = "site_native", "site", "区域影像"
         elif source == "preloaded":
             asset_type, asset_scope, asset_label = "preloaded_tile", "tile", "预置 Sentinel tile"
@@ -169,6 +205,8 @@ class ImageryInventoryMixin:
 
     def _imagery_product_payload(self, row: dict, tile: str, active_key: str, site_id: str = "", preloaded: bool = False) -> dict:
         source = clean_optional(row.get("source")) or ("preloaded" if preloaded else "user_download")
+        path = row.get("tci_path")
+        available = bool(path and path.exists())
         payload = {
             "tile": tile,
             "site_id": row.get("site_id", ""),
@@ -180,15 +218,17 @@ class ImageryInventoryMixin:
             "downloaded_at": row.get("downloaded_at", ""),
             "valid_ratio": row.get("valid_ratio"),
             "safe_path": display_path(row["safe_path"]) if row.get("safe_path") else "",
-            "tci_path": display_path(row["tci_path"]),
+            "tci_path": display_path(path) if path else "",
             "active": self.active_imagery.get(active_key) == row.get("product"),
-            "downloaded": True,
+            "downloaded": available,
+            "missing": bool(path) and not available,
+            "missing_reason": "影像文件不存在" if path and not available else "",
             "preloaded": preloaded,
         }
         payload["asset_id"] = row.get("product_id") or row.get("product", "")
-        if source == "local_img" and row.get("tci_path"):
-            label_path = Path(row["tci_path"]).with_name(f"{Path(row['tci_path']).stem}_Swater.shp")
-            if label_path.exists() and hasattr(self, "_local_label_item"):
+        if is_local_imagery_source(source) and path:
+            label_path = row.get("label_path") or self._local_label_path(Path(path))
+            if available and label_path.exists() and hasattr(self, "_local_label_item"):
                 label = self._local_label_item(label_path)
                 payload["label"] = label
                 payload["label_id"] = label["id"]
@@ -198,18 +238,23 @@ class ImageryInventoryMixin:
         payload.update(self._imagery_asset_meta(row, site_id=site_id))
         return payload
 
+    @staticmethod
+    def _local_label_path(image_path: Path) -> Path:
+        """Find the label file for an IMG, including legacy suffix styles."""
+        return local_label_path(image_path)
+
     def _local_imagery_rows_for_site(self, site) -> list[dict]:
         site_id = _site_id(site)
         rows = [
             row
             for tile_rows in self.user_tci_rows.values()
             for row in tile_rows
-            if row.get("source") == "local_img" and row.get("site_id") == site_id
+            if is_local_imagery_source(row.get("source")) and row.get("site_id") == site_id
         ]
         return sorted(rows, key=lambda item: (str(item.get("date", "")), str(item.get("product", ""))), reverse=True)
 
     def _active_local_imagery_row(self, site) -> dict | None:
-        rows = self._local_imagery_rows_for_site(site)
+        rows = [row for row in self._local_imagery_rows_for_site(site) if row.get("tci_path") and row["tci_path"].exists()]
         if not rows:
             return None
         active_product = self.active_imagery.get(f"site:{_site_id(site)}")
@@ -270,20 +315,24 @@ class ImageryInventoryMixin:
                 if (product_id and clean_optional(row.get("product_id")) == product_id) or (
                     product_name and clean_optional(row.get("product")) == product_name
                 ):
+                    available = bool(row.get("tci_path") and row["tci_path"].exists())
                     return {
-                        "downloaded": True,
+                        "downloaded": available,
+                        "missing": not available,
                         "source": "user_download",
-                        "tci_path": display_path(row["tci_path"]),
-                        "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]),
+                        "tci_path": display_path(row["tci_path"]) if row.get("tci_path") else "",
+                        "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]) if available else 0.0,
                         "coverage_basis": "pixels",
                     }
         for row in self.base_tci_by_tile.values():
             if product_name and clean_optional(row.get("product")) == product_name:
+                available = bool(row.get("tci_path") and row["tci_path"].exists())
                 return {
-                    "downloaded": True,
+                    "downloaded": available,
+                    "missing": not available,
                     "source": "preloaded",
-                    "tci_path": display_path(row["tci_path"]),
-                    "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]),
+                    "tci_path": display_path(row["tci_path"]) if row.get("tci_path") else "",
+                    "coverage_ratio": self.valid_ratio_for_tci(row["tci_path"]) if available else 0.0,
                     "coverage_basis": "pixels",
                 }
         return {"downloaded": False}
@@ -293,6 +342,52 @@ class ImageryInventoryMixin:
         if key not in self._valid_ratio_cache:
             self._valid_ratio_cache[key] = calculate_valid_ratio_for_tci(tci_path)
         return self._valid_ratio_cache[key]
+
+    def prune_active_imagery(self) -> bool:
+        """Drop active selections whose indexed product is no longer available."""
+        valid = {}
+        for key, product in self.active_imagery.items():
+            if key.startswith("site:"):
+                site_id = key.removeprefix("site:")
+                found = any(
+                    row.get("site_id") == site_id
+                    and (row.get("product") == product or row.get("product_id") == product)
+                    and row.get("tci_path")
+                    and row["tci_path"].exists()
+                    for rows in self.user_tci_rows.values()
+                    for row in rows
+                )
+            elif ":" in key:
+                site_id, tile = key.split(":", 1)
+                found = any(
+                    str(row.get("product")) == product
+                    and (not site_id or not row.get("site_id") or row.get("site_id") == site_id)
+                    and row.get("tci_path")
+                    and row["tci_path"].exists()
+                    for row in self.user_tci_rows.get(tile, [])
+                ) or (
+                    not site_id
+                    and self.base_tci_by_tile.get(tile, {}).get("tci_path")
+                    and self.base_tci_by_tile.get(tile, {})["tci_path"].exists()
+                    and self.base_tci_by_tile.get(tile, {}).get("product") == product
+                )
+            else:
+                base = self.base_tci_by_tile.get(key, {})
+                found = (
+                    base.get("product") == product
+                    and base.get("tci_path")
+                    and base["tci_path"].exists()
+                ) or any(
+                    row.get("product") == product and row.get("tci_path") and row["tci_path"].exists()
+                    for row in self.user_tci_rows.get(key, [])
+                )
+            if found:
+                valid[key] = product
+        changed = valid != self.active_imagery
+        if changed:
+            self.active_imagery = valid
+            self._save_active_imagery()
+        return changed
 
     def set_active_imagery(self, tile: str, product_name: str, site=None) -> dict:
         tile = str(tile).upper().removeprefix("T")

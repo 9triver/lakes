@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
+from lake_workbench.imagery.validity import valid_pixel_mask  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs(DEFAULT_CONFIG_PATH)
@@ -175,7 +176,7 @@ def export_sample_image(
     sample_id = row.get("sample_id") or ""
     with rasterio.open(image_path) as src:
         image = src.read()
-        valid = valid_mask(image, src.nodata)
+        valid = valid_mask(image, src.nodatavals, src.read_masks())
         label = rasterize_label(label_path, src, all_touched=args.all_touched)
         target = np.where(valid, label, 255).astype("uint8")
         windows = patch_windows(src.width, src.height, args.patch_size, args.stride)
@@ -254,11 +255,8 @@ def export_sample_image(
         return rows
 
 
-def valid_mask(image: np.ndarray, nodata) -> np.ndarray:
-    valid = np.any(image != 0, axis=0)
-    if nodata is not None:
-        valid &= np.all(image != nodata, axis=0)
-    return valid
+def valid_mask(image: np.ndarray, nodata, masks: np.ndarray | None = None) -> np.ndarray:
+    return valid_pixel_mask(image, nodata, masks)
 
 
 def rasterize_label(label_path: Path, src, all_touched: bool = False) -> np.ndarray:

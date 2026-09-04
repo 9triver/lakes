@@ -4,7 +4,7 @@ Lakes is a local Web GIS for multi-region satellite observation, water annotatio
 
 ## Capabilities
 
-- Browse observation Sites defined by local imagery directories across Gansu, Shaanxi, and Yunnan.
+- Browse observation Sites defined by local imagery directories across all configured regions. The current configuration includes Gansu, Shaanxi, Yunnan, Guangdong, Guangxi, Shandong, Sichuan, and Xizang.
 - Display OSM, HydroLAKES, ESA WorldCover, JRC GSW, and local Shapefile annotations independently.
 - Query and download Sentinel-2 SAFE/TCI products and select active imagery per Site.
 - Generate Workspace-owned Patches directly from the current map extent, imagery, and visible annotations.
@@ -59,7 +59,7 @@ data/                               Large local data, ignored by Git
 
 ## Data Layout
 
-Region data contains shared observations only:
+Region data contains shared observation inputs and generated regional metadata. A local-imagery directory represents an observation area of interest; it is not required to be a formally named lake:
 
 ```text
 data/shared/
@@ -68,18 +68,18 @@ data/shared/
 
 data/regions/<region>/
   raw/
-    local_imagery/<directory-id>/
+    local_imagery/<directory-id>/       .img or lossless tiled .tif/.tiff
     external_water/{osm,esa_worldcover,jrc_gsw}/
     sentinel_products/
   processed/
     site_metadata.gpkg
     site_metadata.csv
-    esa_polygons/
-    jrc_polygons/
     sentinel_products.csv
     active_imagery.json
     training_samples.csv
     training_labels/
+    esa_polygons/
+    jrc_polygons/
 ```
 
 User and Workspace state is separate:
@@ -100,7 +100,7 @@ data/global_datasets/<scope>/
 data/models/workspaces/<workspace>/<region-or-all>/<run>/
 ```
 
-A model run normally contains `config.json`, `history.json`, `manifest.csv`, `best.pt`, and `last.pt`.
+A model run normally contains `config.json`, `history.json`, `manifest.csv`, `best.pt`, and `last.pt`. The validation UI lists only `best.pt` and orders available models by validation IoU.
 
 ## Install And Run
 
@@ -113,9 +113,9 @@ cd frontend && npm install && npm run build && cd ..
 PYTHONPATH=src .venv/bin/python -m lake_workbench.server --host 0.0.0.0 --port 18765
 ```
 
-Open `http://127.0.0.1:18765`. The Python server serves the built React application and API.
+Open `http://127.0.0.1:18765`. The Python server serves the built React application and API. The production frontend caches only basemap tiles actually requested while browsing: Service Worker Cache Storage is used on HTTPS, `localhost`, and `127.0.0.1`; an IndexedDB fallback is used for HTTP access through a machine IP such as `192.168.30.134`. Neither path caches Lakes API responses, local imagery tiles, or training data. The basemap cache is limited to 5,000 tiles and evicts the least recently used entries.
 
-Local startup defaults to development authentication and provisions the fixed local identity. Its values can be overridden with `LAKES_DEV_USER_SUBJECT`, `LAKES_DEV_USER_EMAIL`, and `LAKES_DEV_USER_NAME`.
+When no authentication variables are supplied, local startup defaults to development authentication and provisions a fixed local identity. The installed user service may instead load Cloudflare settings from `.env`. Development identity values can be overridden with `LAKES_DEV_USER_SUBJECT`, `LAKES_DEV_USER_EMAIL`, and `LAKES_DEV_USER_NAME`.
 
 ### Production authentication
 
@@ -189,10 +189,40 @@ COPERNICUS_PASSWORD=...
 Rebuild one Site catalog manually with:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/build_site_metadata.py --region gansu
+PYTHONPATH=src .venv/bin/python scripts/build_site_metadata.py --region gansu --workers 4
 ```
 
 `site_metadata.gpkg` contains `sites`, `site_coverage_core`, `imagery_assets`, `local_label_features`, and `external_water_features`. Site identity is directory-based: `site_id = <region>_<directory-id>`, for example `gansu_17407`.
+
+`build_site_metadata.py` scans local imagery with four workers by default. Label files are read sequentially because concurrent reads contend on typical data disks. Use `--workers 1` on slower disks or to minimize resource usage; the option is limited to 16 workers.
+
+The preparation scripts have separate responsibilities:
+
+| Script | Purpose |
+| --- | --- |
+| `prepare_data.py` | Run regional public-data preparation and metadata stages. |
+| `download_sentinel_tile_index.py` | Download the global Sentinel-2 MGRS tile grid. |
+| `download_sentinel.py` | Query Copernicus products or download a selected SAFE/TCI product. |
+| `build_site_metadata.py` | Match local imagery bounds with external water sources and write the regional Site catalog. |
+| `convert_local_imagery.py` | Convert local `.img` rasters to lossless tiled BigTIFF with ZSTD; source files are retained. |
+| `precompute_esa_polygons.py`, `precompute_jrc_polygons.py` | Precompute vector annotation layers from regional raster inputs. |
+| `build_logical_patches.py` | Build Workspace-owned Logical Patches from recorded samples. |
+| `build_training_dataset.py` | Materialize a Workspace training dataset for a selected configuration. |
+| `train_model.py` | Start a model experiment from the command line. |
+
+For a new region, add its paths, bounds, source imagery root, external-data tiles, and Geofabrik URL to `config/regions.toml`, place local imagery under the configured `raw/local_imagery/`, then run `prepare_data.py` and build the metadata. Large inputs and generated outputs remain under `data/` and are intentionally ignored by Git.
+
+Local imagery can be stored as the original ENVI `.img` product or as a lossless tiled GeoTIFF. When both files have the same product stem, metadata construction uses the GeoTIFF and does not create a duplicate asset; without a GeoTIFF it falls back to `.img`.
+
+To convert a region without cropping, resampling, or deleting the source files:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/convert_local_imagery.py \
+  --region-root /mnt/sda1/lakes-data/seasonal_3period_v1/regions/gansu
+PYTHONPATH=src .venv/bin/python scripts/build_site_metadata.py --region gansu
+```
+
+The converter writes lossless TIFF files alongside the source files in `raw/local_imagery/` by default, using `Tiled + BigTIFF + ZSTD + PREDICTOR=2`. It preserves dimensions, CRS, transform, dtype, bands, NoData, band descriptions, and tags. Both `.img` and `.tif/.tiff` may coexist in the directory; when they have the same product stem, the TIFF is selected. This compression is lossless and is suitable for patch generation, training, inference, and map rendering.
 
 ## Training Workflow
 
@@ -230,6 +260,7 @@ GET  /api/regions/<region-or-all>/sites
 GET  /api/regions/<region>/sites/<site_id>
 GET  /api/regions/<region>/sites/<site_id>/annotations/<source>
 GET  /api/regions/<region>/sites/<site_id>/local-labels
+GET  /api/regions/<region>/sites/<site_id>/imagery
 ```
 
 User APIs:
@@ -250,16 +281,16 @@ Workspace-owned APIs:
 ```text
 GET /api/workspaces/<workspace>/source-conflicts
 GET /api/workspaces/<workspace>/regions/<region-or-all>/sites
-    /api/workspaces/<workspace>/regions/<region>/training-samples
-    /api/workspaces/<workspace>/regions/<region>/sites/<site_id>/training-samples
-    /api/workspaces/<workspace>/regions/<region-or-all>/logical-patches
-    /api/workspaces/<workspace>/regions/<region-or-all>/training-datasets
-    /api/workspaces/<workspace>/regions/<region-or-all>/training-runs
-    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset
-    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset/patches
-    /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset/build-jobs
-    /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/models
-    /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/random
+GET /api/workspaces/<workspace>/regions/<region>/training-samples
+GET /api/workspaces/<workspace>/regions/<region>/sites/<site_id>/training-samples
+GET /api/workspaces/<workspace>/regions/<region-or-all>/logical-patches
+GET /api/workspaces/<workspace>/regions/<region-or-all>/training-datasets
+GET /api/workspaces/<workspace>/regions/<region-or-all>/training-runs
+GET /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset
+GET /api/workspaces/<workspace>/regions/<region-or-all>/global-dataset/patches
+GET /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/models
+GET /api/workspaces/<workspace>/regions/<region-or-all>/model-validation/random
+POST /api/workspaces/<workspace>/regions/<region>/sites/<site_id>/training-samples
 ```
 
 Frontend deep links use `#/users/<user>/workspaces/<workspace>/regions/...` and validate that the Workspace is the User's `default_workspace_id`. Old Profile URLs and APIs are unsupported. Model keys must be fully qualified:
@@ -272,9 +303,10 @@ workspaces/<workspace>/<region-or-all>/<run>/<weight>
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m compileall -q src scripts
-PYTHONPATH=src .venv/bin/python -m pyflakes src scripts tests
+PYTHONPATH=src .venv/bin/ruff check src scripts tests
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 (cd frontend && npm run typecheck && npm run build)
+(cd frontend && LAKES_E2E_BASE_URL=http://127.0.0.1:18765/ npm run test:e2e)
 git diff --check
 ```
 

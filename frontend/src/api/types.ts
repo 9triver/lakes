@@ -193,6 +193,7 @@ export interface TrainingPatch {
   region_name?: string;
   included: boolean;
   preview_exists?: boolean;
+  overlay_available?: boolean;
   preview_url?: string;
   water_pixels?: number;
   water_ratio_valid?: number;

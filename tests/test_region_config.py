@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from lake_workbench.regions.config import load_region_configs
 
@@ -21,3 +23,17 @@ class RegionConfigTests(unittest.TestCase):
         for region in regions.values():
             self.assertTrue(region.osm_water.is_relative_to(region.data_dir))
             self.assertFalse(region.hydrolakes.is_relative_to(region.data_dir))
+
+    def test_region_data_root_redirects_region_owned_paths(self) -> None:
+        root = Path("/tmp/lakes-seasonal-regions")
+        with patch.dict("os.environ", {"LAKES_REGION_DATA_ROOT": str(root)}):
+            regions, _ = load_region_configs()
+
+        gansu = regions["gansu"]
+        self.assertEqual(gansu.data_dir, root / "gansu")
+        self.assertEqual(gansu.processed_dir, root / "gansu" / "processed")
+        self.assertEqual(
+            gansu.local_imagery_root,
+            root / "gansu" / "raw" / "local_imagery",
+        )
+        self.assertFalse(gansu.shared_data_dir.is_relative_to(root))

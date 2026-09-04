@@ -155,6 +155,13 @@ class ModelValidationMixin:
         return self._model_validation_cache_dir(model_path) / f"{safe_filename(site.site_id)}_{digest}.geojson"
 
     def _model_validation_rows(self, site: Any, in_channels: int) -> list[dict]:
+        local = self._active_local_imagery_row(site)
+        if local is not None:
+            try:
+                with rasterio.open(local["tci_path"]) as src:
+                    return [local] if src.count >= in_channels else []
+            except Exception:
+                return []
         rows = []
         for tile in self._model_validation_tiles_for_site(site):
             row = self._active_imagery_row(tile, site)

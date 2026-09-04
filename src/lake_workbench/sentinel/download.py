@@ -19,6 +19,7 @@ from rasterio.enums import Resampling
 from shapely.geometry import shape
 
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.imagery.validity import valid_pixel_mask
 
 
 COPERNICUS_CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
@@ -270,12 +271,19 @@ def valid_ratio_for_tci(tci_path: Path) -> float:
         scale = max(src.width / 1024, src.height / 1024, 1)
         out_width = max(1, int(src.width / scale))
         out_height = max(1, int(src.height / scale))
+        indexes = [1, 2, 3]
         data = src.read(
-            [1, 2, 3],
+            indexes,
             out_shape=(3, out_height, out_width),
             resampling=Resampling.nearest,
         )
-    valid = np.any(data != 0, axis=0)
+        masks = src.read_masks(
+            indexes,
+            out_shape=(3, out_height, out_width),
+            resampling=Resampling.nearest,
+        )
+        nodata = src.nodatavals
+    valid = valid_pixel_mask(data, nodata, masks)
     return float(np.count_nonzero(valid) / valid.size) if valid.size else 0.0
 
 

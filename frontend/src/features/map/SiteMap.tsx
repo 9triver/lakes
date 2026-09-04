@@ -12,6 +12,7 @@ import VectorSource from "ol/source/Vector";
 import { Fill, Stroke, Style, Text as TextStyle } from "ol/style";
 import { toLonLat, transformExtent } from "ol/proj";
 import type { FeatureCollection, GeoJsonLayer, SiteDetail, SentinelTile, TileMeta, TrainingPatch } from "../../api/types";
+import { createBasemapTileLoadFunction } from "./basemapCache";
 
 export type BasemapType = "osm" | "satellite" | "none";
 
@@ -78,13 +79,15 @@ function vectorStyle(stroke: string, fill: string) {
 export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, modelPrediction, logicalPatches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onLogicalPatchClick, patchSourceMeta }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
-  const osmBasemapLayerRef = useRef(new TileLayer({ source: new OSM(), visible: true }));
+  const basemapTileLoadFunction = createBasemapTileLoadFunction();
+  const osmBasemapLayerRef = useRef(new TileLayer({ source: new OSM({ crossOrigin: "anonymous", tileLoadFunction: basemapTileLoadFunction }), visible: true }));
   const satelliteBasemapLayerRef = useRef(new TileLayer({
     source: new XYZ({
       url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       attributions: "Tiles © Esri",
       crossOrigin: "anonymous",
       maxZoom: 19,
+      tileLoadFunction: basemapTileLoadFunction,
     }),
     visible: false,
   }));

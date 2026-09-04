@@ -326,6 +326,9 @@ class TrainingCatalogMixin:
     def _logical_patch_summary(self, row: dict, manifest_path: Path) -> dict:
         patch_id = row.get("logical_patch_id", "")
         preview_path = resolve_data_path(row.get("preview_path", ""), self.region) if row.get("preview_path") else None
+        preview_base_path = resolve_data_path(row.get("preview_base_path", ""), self.region) if row.get("preview_base_path") else None
+        image_path = resolve_data_path(row.get("image_path", ""), self.region) if row.get("image_path") else None
+        label_path = resolve_data_path(row.get("label_path", ""), self.region) if row.get("label_path") else None
         review_status = clean_optional(row.get("review_status"))
         include_value = "true" if review_status == "included" else ("false" if review_status == "excluded" else clean_optional(row.get("include") or row.get("included")))
         included = True if include_value is None else truthy_flag(include_value, default=True)
@@ -354,6 +357,10 @@ class TrainingCatalogMixin:
             "manifest_path": display_path(manifest_path),
             "geometry": geometry,
             "preview_exists": bool(preview_path and preview_path.exists()),
+            "overlay_available": bool(
+                (preview_path and preview_base_path and preview_path.exists() and preview_base_path.exists())
+                or (image_path and label_path and image_path.exists() and label_path.exists())
+            ),
             "preview_url": "",
         }
 
@@ -380,7 +387,7 @@ class TrainingCatalogMixin:
             source_bounds = transform_bounds(src.crs, "EPSG:3857", *src.bounds, densify_pts=21)
         if not box(*source_bounds).intersects(box(*bounds_3857)):
             return blank_png(256)
-        return render_tci_xyz_tile([{"tci_path": str(path), "source": "local_img", "valid_ratio": 1}], bounds_3857)
+        return render_tci_xyz_tile([{"tci_path": path, "source": "local_imagery", "valid_ratio": 1}], bounds_3857)
 
     def _training_sample_summary(self, row: dict) -> dict:
         site_id = row.get("site_id", "")
