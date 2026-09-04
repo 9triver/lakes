@@ -5,16 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-
-import numpy as np
-import pandas as pd
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -29,25 +23,38 @@ from lake_workbench.models.runtime import (  # noqa: E402
     normalize_model_type,
 )
 from lake_workbench.training.datasets import split_rows_by_site  # noqa: E402
+from lake_workbench.training.unet.data import (  # noqa: E402
+    compute_normalization,
+    compute_pos_weight,
+    load_manifest_rows,
+    make_patch_dataset,
+    patch_channels,
+)
+from lake_workbench.training.unet.engine import (  # noqa: E402
+    choose_device,
+    emit_progress,
+    format_epoch,
+    run_epoch,
+    save_checkpoint,
+    seed_everything,
+)
+from lake_workbench.utils import display_path  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs(DEFAULT_CONFIG_PATH)
 MODEL_ROOT = PROJECT_ROOT / "data" / "models"
-IGNORE_INDEX = 255
 torch = None
-F = None
 DataLoader = None
 Dataset = object
 PatchDataset = None
 
 
 def init_torch() -> None:
-    global torch, F, DataLoader, Dataset, PatchDataset
+    global torch, DataLoader, Dataset, PatchDataset
     if torch is not None:
         return
     try:
         import torch
-        import torch.nn.functional as F
         from torch.utils.data import DataLoader, Dataset
     except ImportError as exc:
         raise SystemExit(
@@ -57,41 +64,10 @@ def init_torch() -> None:
             "Then rerun this script."
         ) from exc
 
-    class _PatchDataset(Dataset):
-        def __init__(self, rows: list[dict], normalization: Normalization, augment: bool = False) -> None:
-            self.rows = rows
-            self.normalization = normalization
-            self.augment = augment
+    def patch_dataset(rows, normalization, augment=False):
+        return make_patch_dataset(torch, Dataset, rows, normalization, augment=augment)
 
-        def __len__(self) -> int:
-            return len(self.rows)
-
-        def __getitem__(self, index: int):
-            row = self.rows[index]
-            with np.load(resolve_project_path(row["npz_path"])) as data:
-                image = data["image"].astype("float32")
-                mask = data["mask"].astype("uint8")
-                valid = data["valid"].astype("uint8")
-            image = (image - self.normalization.mean[:, None, None]) / self.normalization.std[:, None, None]
-            if self.augment:
-                image, mask, valid = augment_patch(image, mask, valid)
-            return {
-                "image": torch.from_numpy(np.ascontiguousarray(image)),
-                "mask": torch.from_numpy(np.ascontiguousarray(mask)).long(),
-                "valid": torch.from_numpy(np.ascontiguousarray(valid)).bool(),
-                "patch_id": row.get("patch_id", ""),
-            }
-
-    PatchDataset = _PatchDataset
-
-
-@dataclass
-class Normalization:
-    mean: np.ndarray
-    std: np.ndarray
-
-    def to_json(self) -> dict:
-        return {"mean": self.mean.tolist(), "std": self.std.tolist()}
+    PatchDataset = patch_dataset
 
 
 def parse_args() -> argparse.Namespace:
@@ -302,79 +278,6 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
     return result
 
 
-def emit_progress(callback, status: str, **payload) -> None:
-    if callback is None:
-        message = payload.get("message")
-        if message:
-            print(message)
-        return
-    callback({"status": status, **payload})
-
-
-def run_epoch(model, loader, device, optimizer, pos_weight, threshold: float, cancel_event: threading.Event | None = None) -> dict:
-    training = optimizer is not None
-    model.train(training)
-    totals = {"loss": 0.0, "valid": 0, "tp": 0, "fp": 0, "fn": 0}
-    for batch in loader:
-        if cancel_event is not None and cancel_event.is_set():
-            raise KeyboardInterrupt("training cancelled")
-        image = batch["image"].to(device, non_blocking=True)
-        mask = batch["mask"].to(device, non_blocking=True)
-        valid = batch["valid"].to(device, non_blocking=True) & (mask != IGNORE_INDEX)
-        target = mask.clamp(0, 1).float()
-        with torch.set_grad_enabled(training):
-            logits = model(image).squeeze(1)
-            raw_loss = F.binary_cross_entropy_with_logits(
-                logits,
-                target,
-                pos_weight=pos_weight,
-                reduction="none",
-            )
-            loss = raw_loss[valid].mean() if valid.any() else raw_loss.mean() * 0
-            if training:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-        with torch.no_grad():
-            pred = torch.sigmoid(logits) >= threshold
-            target_bool = target >= 0.5
-            totals["loss"] += float(loss.detach().cpu()) * int(valid.sum().item())
-            totals["valid"] += int(valid.sum().item())
-            totals["tp"] += int((pred & target_bool & valid).sum().item())
-            totals["fp"] += int((pred & ~target_bool & valid).sum().item())
-            totals["fn"] += int((~pred & target_bool & valid).sum().item())
-    return metrics_from_totals(totals)
-
-
-def metrics_from_totals(totals: dict) -> dict:
-    valid = max(1, totals["valid"])
-    tp, fp, fn = totals["tp"], totals["fp"], totals["fn"]
-    iou = tp / max(1, tp + fp + fn)
-    dice = (2 * tp) / max(1, 2 * tp + fp + fn)
-    return {
-        "loss": totals["loss"] / valid,
-        "iou": iou,
-        "dice": dice,
-        "valid_pixels": totals["valid"],
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-    }
-
-
-def load_manifest_rows(path: Path) -> list[dict]:
-    table = pd.read_csv(path, dtype=str).fillna("")
-    rows = []
-    for row in table.to_dict("records"):
-        include = row.get("include") or row.get("included") or "true"
-        if include.strip().lower() in {"0", "false", "no", "n"}:
-            continue
-        npz_path = resolve_project_path(row.get("npz_path", ""))
-        if npz_path.exists():
-            rows.append(row)
-    return rows
-
-
 def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "resize256_v1", workspace_id: str = "default") -> Path:
     if patch_dir:
         manifest = patch_dir / "manifest.csv" if patch_dir.is_dir() else patch_dir
@@ -387,128 +290,6 @@ def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "re
     if not manifest.exists():
         raise SystemExit(f"training dataset manifest not found: {manifest}; run scripts/build_training_dataset.py first")
     return manifest
-
-
-def compute_normalization(rows: list[dict], max_patches: int = 0) -> Normalization:
-    selected = rows if max_patches <= 0 else rows[:max_patches]
-    sums = None
-    squares = None
-    count = 0
-    for row in selected:
-        with np.load(resolve_project_path(row["npz_path"])) as data:
-            image = data["image"].astype("float64")
-            valid = data["valid"].astype(bool)
-        values = image[:, valid]
-        if values.size == 0:
-            continue
-        if sums is None:
-            sums = values.sum(axis=1)
-            squares = (values * values).sum(axis=1)
-        else:
-            sums += values.sum(axis=1)
-            squares += (values * values).sum(axis=1)
-        count += values.shape[1]
-    if sums is None or count == 0:
-        raise SystemExit("cannot compute normalization: no valid pixels")
-    mean = sums / count
-    variance = np.maximum(squares / count - mean * mean, 1e-6)
-    std = np.sqrt(variance)
-    return Normalization(mean.astype("float32"), std.astype("float32"))
-
-
-def compute_pos_weight(rows: list[dict]) -> float:
-    positive = 0
-    negative = 0
-    for row in rows:
-        with np.load(resolve_project_path(row["npz_path"])) as data:
-            mask = data["mask"].astype("uint8")
-            valid = data["valid"].astype(bool) & (mask != IGNORE_INDEX)
-        positive += int(((mask == 1) & valid).sum())
-        negative += int(((mask == 0) & valid).sum())
-    if positive == 0:
-        return 1.0
-    return float(min(max(negative / positive, 1.0), 50.0))
-
-
-def patch_channels(row: dict) -> int:
-    with np.load(resolve_project_path(row["npz_path"])) as data:
-        return int(data["image"].shape[0])
-
-
-def augment_patch(image: np.ndarray, mask: np.ndarray, valid: np.ndarray):
-    if random.random() < 0.5:
-        image = image[:, :, ::-1]
-        mask = mask[:, ::-1]
-        valid = valid[:, ::-1]
-    if random.random() < 0.5:
-        image = image[:, ::-1, :]
-        mask = mask[::-1, :]
-        valid = valid[::-1, :]
-    turns = random.randint(0, 3)
-    if turns:
-        image = np.rot90(image, turns, axes=(1, 2))
-        mask = np.rot90(mask, turns, axes=(0, 1))
-        valid = np.rot90(valid, turns, axes=(0, 1))
-    return image, mask, valid
-
-
-def save_checkpoint(path: Path, model, optimizer, epoch: int, config: dict, normalization: Normalization, history: list) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "config": config,
-            "normalization": normalization.to_json(),
-            "history": history,
-        },
-        path,
-    )
-
-
-def choose_device(value: str):
-    if value == "cuda":
-        if not torch.cuda.is_available():
-            raise SystemExit("CUDA requested but not available")
-        return torch.device("cuda")
-    if value == "cpu":
-        return torch.device("cpu")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def format_epoch(record: dict) -> str:
-    train = record["train"]
-    val = record["val"]
-    val_text = f" val_loss={val['loss']:.4f} val_iou={val['iou']:.4f} val_dice={val['dice']:.4f}" if val else ""
-    return (
-        f"epoch={record['epoch']:03d}"
-        f" lr={record['lr']:.2e}"
-        f" train_loss={train['loss']:.4f} train_iou={train['iou']:.4f} train_dice={train['dice']:.4f}"
-        f"{val_text}"
-    )
-
-
-def resolve_project_path(value: str) -> Path:
-    path = Path(str(value))
-    if path.is_absolute():
-        return path
-    return PROJECT_ROOT / path
-
-
-def display_path(path: Path) -> str:
-    try:
-        return str(path.relative_to(PROJECT_ROOT))
-    except ValueError:
-        return str(path)
 
 
 # Compatibility for callers that imported the old training function directly.
