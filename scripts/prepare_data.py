@@ -9,26 +9,25 @@ configured ``raw`` directory; global source data stays under ``data/shared``.
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 from dataclasses import replace
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from lake_workbench.regions.config import RegionConfig, load_region_configs  # noqa: E402
+from lake_workbench.data.transfer import download_file, extract_zip  # noqa: E402
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
-HYDROLAKES_ZIP_URL = "https://data.hydrosheds.org/file/HydroLAKES/HydroLAKES_polys_v10_shp.zip"
+HYDROLAKES_ZIP_URL = (
+    "https://data.hydrosheds.org/file/HydroLAKES/HydroLAKES_polys_v10_shp.zip"
+)
 ESA_TILE_URL = (
     "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/"
     "ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
@@ -39,34 +38,79 @@ JRC_TILE_URL = (
 )
 
 WATER_COLUMN_CANDIDATES = ["fclass", "class", "type", "natural", "water", "landuse"]
-OSM_WATER_VALUES = {"water", "reservoir", "lake", "pond", "basin", "wetland", "riverbank", "dock"}
+OSM_WATER_VALUES = {
+    "water",
+    "reservoir",
+    "lake",
+    "pond",
+    "basin",
+    "wetland",
+    "riverbank",
+    "dock",
+}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--region", choices=sorted(REGIONS), default=DEFAULT_REGION_KEY)
-    parser.add_argument("--data-dir", type=Path, default=None, help="override configured raw data directory")
-    parser.add_argument("--processed-dir", type=Path, default=None, help="override configured processed data directory")
-    parser.add_argument("--force", action="store_true", help="overwrite existing generated files")
-    parser.add_argument("--proxy", default="", help="proxy URL or host:port for downloads that need it")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="override configured raw data directory",
+    )
+    parser.add_argument(
+        "--processed-dir",
+        type=Path,
+        default=None,
+        help="override configured processed data directory",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="overwrite existing generated files"
+    )
+    parser.add_argument(
+        "--proxy", default="", help="proxy URL or host:port for downloads that need it"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("osm", help="download Geofabrik water polygons for the selected region")
+    sub.add_parser(
+        "osm", help="download Geofabrik water polygons for the selected region"
+    )
     sub.add_parser("hydrolakes", help="download HydroLAKES polygons")
-    sub.add_parser("esa", help="download ESA WorldCover tiles and build a regional water mask")
+    sub.add_parser(
+        "esa", help="download ESA WorldCover tiles and build a regional water mask"
+    )
     sub.add_parser("jrc", help="download JRC GSW tiles and build regional clips")
-    sub.add_parser("sentinel-grid", help="download Sentinel-2 MGRS tile grid, not SAFE imagery")
-    sub.add_parser("sentinel-tiles", help="alias for sentinel-grid; downloads the tile grid only")
-    sub.add_parser("metadata", help="generate processed observation-site metadata for the selected region")
-    sub.add_parser("all", help="run public base-data prep and metadata; does not download Sentinel SAFE imagery")
+    sub.add_parser(
+        "sentinel-grid", help="download Sentinel-2 MGRS tile grid, not SAFE imagery"
+    )
+    sub.add_parser(
+        "sentinel-tiles", help="alias for sentinel-grid; downloads the tile grid only"
+    )
+    sub.add_parser(
+        "metadata",
+        help="generate processed observation-site metadata for the selected region",
+    )
+    sub.add_parser(
+        "all",
+        help="run public base-data prep and metadata; does not download Sentinel SAFE imagery",
+    )
 
     args = parser.parse_args()
     region = REGIONS[args.region]
     if args.data_dir or args.processed_dir:
         region = replace(
             region,
-            data_dir=(args.data_dir.expanduser().resolve() if args.data_dir else region.data_dir),
-            processed_dir=(args.processed_dir.expanduser().resolve() if args.processed_dir else region.processed_dir),
+            data_dir=(
+                args.data_dir.expanduser().resolve()
+                if args.data_dir
+                else region.data_dir
+            ),
+            processed_dir=(
+                args.processed_dir.expanduser().resolve()
+                if args.processed_dir
+                else region.processed_dir
+            ),
         )
     data_dir = region.data_dir
     processed_dir = region.processed_dir
@@ -110,7 +154,9 @@ def prepare_osm(region: RegionConfig, force: bool, proxy: str = "") -> None:
             raise FileNotFoundError("Geofabrik archive did not contain a .gpkg file")
         water = read_osm_water(gpkg)
         if water.empty:
-            raise RuntimeError(f"No water polygons found in Geofabrik {region.name} GPKG")
+            raise RuntimeError(
+                f"No water polygons found in Geofabrik {region.name} GPKG"
+            )
         water = water.to_crs("EPSG:4326")
         water = water[water.geometry.notna() & ~water.geometry.is_empty].copy()
         water = normalize_osm_water_schema(water)
@@ -152,8 +198,12 @@ def prepare_esa(region: RegionConfig, force: bool, proxy: str = "") -> None:
         download_file(ESA_TILE_URL.format(tile=tile), path, force=force, proxy=proxy)
         tile_paths.append(path)
     if region.external_raster_mode == "tiles":
-        print(f"wrote {len(tile_paths)} ESA WorldCover source tiles under {display(out_dir)}")
-        print("skip regional 10m mosaic; the workbench reads intersecting source tiles on demand")
+        print(
+            f"wrote {len(tile_paths)} ESA WorldCover source tiles under {display(out_dir)}"
+        )
+        print(
+            "skip regional 10m mosaic; the workbench reads intersecting source tiles on demand"
+        )
         return
     clip_rasters(tile_paths, clip_path, region_geom(region), force=True)
     build_esa_water_mask(clip_path, mask_path)
@@ -176,10 +226,17 @@ def prepare_jrc(region: RegionConfig, force: bool, proxy: str = "") -> None:
         tile_paths = []
         for tile in region.jrc_tiles:
             path = out_dir / f"{layer}_{tile}v1_4_2021.tif"
-            download_file(JRC_TILE_URL.format(layer=layer, tile=tile), path, force=force, proxy=proxy)
+            download_file(
+                JRC_TILE_URL.format(layer=layer, tile=tile),
+                path,
+                force=force,
+                proxy=proxy,
+            )
             tile_paths.append(path)
         if region.external_raster_mode == "tiles":
-            print(f"wrote {len(tile_paths)} JRC {layer} source tiles under {display(out_dir)}")
+            print(
+                f"wrote {len(tile_paths)} JRC {layer} source tiles under {display(out_dir)}"
+            )
             continue
         clip_rasters(tile_paths, clip_path, region_geom(region), force=True)
         print(f"wrote {display(clip_path)}")
@@ -192,7 +249,12 @@ def prepare_sentinel_tiles(region: RegionConfig, force: bool) -> None:
         print(f"exists {display(geojson_path)}")
         print(f"exists {display(shp_path)}")
         return
-    cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "download_sentinel_tile_index.py"), "--out-dir", str(out_dir)]
+    cmd = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "download_sentinel_tile_index.py"),
+        "--out-dir",
+        str(out_dir),
+    ]
     run(cmd)
 
 
@@ -256,7 +318,12 @@ def read_osm_water(gpkg: Path):
 def preferred_osm_layers(layer_names: list[str]) -> list[str]:
     preferred = [
         name
-        for name in ["gis_osm_water_a_free", "gis_osm_water_a_free_1", "water", "water_a"]
+        for name in [
+            "gis_osm_water_a_free",
+            "gis_osm_water_a_free_1",
+            "water",
+            "water_a",
+        ]
         if name in layer_names
     ]
     rest = [name for name in layer_names if name not in preferred]
@@ -277,7 +344,9 @@ def filter_osm_water(gdf):
         tags = gdf["other_tags"].fillna("").astype(str).str.lower()
         mask_values |= tags.str.contains('"natural"=>"water"', regex=False).to_numpy()
         mask_values |= tags.str.contains('"water"=>"', regex=False).to_numpy()
-        mask_values |= tags.str.contains('"landuse"=>"reservoir"', regex=False).to_numpy()
+        mask_values |= tags.str.contains(
+            '"landuse"=>"reservoir"', regex=False
+        ).to_numpy()
     if not mask_values.any():
         return gdf.copy()
     return gdf[mask_values].copy()
@@ -303,13 +372,37 @@ def normalize_osm_water_schema(gdf):
         gdf["man_made"] = None
     if "other_tags" not in gdf.columns:
         if "fclass" in gdf.columns:
-            gdf["other_tags"] = ['"water"=>"{}"'.format(value) for value in gdf["fclass"].fillna("").astype(str)]
+            gdf["other_tags"] = [
+                '"water"=>"{}"'.format(value)
+                for value in gdf["fclass"].fillna("").astype(str)
+            ]
         else:
             gdf["other_tags"] = ""
-    for column in ["osm_id", "osm_way_id", "name", "type", "natural", "landuse", "man_made", "other_tags"]:
+    for column in [
+        "osm_id",
+        "osm_way_id",
+        "name",
+        "type",
+        "natural",
+        "landuse",
+        "man_made",
+        "other_tags",
+    ]:
         if column not in gdf.columns:
             gdf[column] = None
-    return gdf[["osm_id", "osm_way_id", "name", "type", "natural", "landuse", "man_made", "other_tags", "geometry"]]
+    return gdf[
+        [
+            "osm_id",
+            "osm_way_id",
+            "name",
+            "type",
+            "natural",
+            "landuse",
+            "man_made",
+            "other_tags",
+            "geometry",
+        ]
+    ]
 
 
 def build_esa_water_mask(source_path: Path, out_path: Path) -> None:
@@ -350,81 +443,6 @@ def clip_rasters(paths: list[Path], out_path: Path, geom, force: bool) -> None:
             dataset.close()
 
 
-def download_file(url: str, path: Path, force: bool = False, timeout: int = 120, proxy: str = "") -> None:
-    if path.exists() and path.stat().st_size > 0 and not force:
-        print(f"exists {display(path)}")
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    part_path = path.with_suffix(path.suffix + ".part")
-    part_path.unlink(missing_ok=True)
-    print(f"download {url}")
-    if download_with_curl(url, path, proxy):
-        print(f"wrote {display(path)}")
-        return
-    request = Request(url, headers={"User-Agent": "lakes-prepare-data/0.1"})
-    try:
-        total = 0
-        with urlopen(request, timeout=timeout) as response, part_path.open("wb") as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                total += len(chunk)
-                if total % (25 * 1024 * 1024) < len(chunk):
-                    print(f"downloaded {total / 1024 / 1024:.1f} MiB", flush=True)
-    except (HTTPError, URLError) as exc:
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError(f"failed to download {url}: {exc}") from exc
-    part_path.replace(path)
-    print(f"wrote {display(path)}")
-
-
-def download_with_curl(url: str, path: Path, proxy: str = "") -> bool:
-    if shutil.which("curl") is None:
-        return False
-    part_path = path.with_suffix(path.suffix + ".part")
-    cmd = [
-        "curl",
-        "-L",
-        "--fail",
-        "--connect-timeout",
-        "30",
-        "--retry",
-        "3",
-        "--retry-delay",
-        "2",
-        "-o",
-        str(part_path),
-        url,
-    ]
-    if proxy:
-        cmd[1:1] = ["--proxy", normalize_proxy(proxy)]
-    else:
-        cmd[1:1] = ["--noproxy", "*"]
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        part_path.unlink(missing_ok=True)
-        return False
-    part_path.replace(path)
-    return True
-
-
-def normalize_proxy(proxy: str) -> str:
-    proxy = proxy.strip()
-    if not proxy:
-        return proxy
-    if "://" not in proxy:
-        return f"http://{proxy}"
-    return proxy
-
-
-def extract_zip(zip_path: Path, out_dir: Path) -> None:
-    with zipfile.ZipFile(zip_path) as archive:
-        archive.extractall(out_dir)
-
-
 def write_layer(path: Path, layer: str, gdf, force: bool) -> None:
     import pyogrio
 
@@ -437,7 +455,9 @@ def write_layer(path: Path, layer: str, gdf, force: bool) -> None:
 def require_paths(paths: list[Path]) -> None:
     missing = [display(path) for path in paths if not path.exists()]
     if missing:
-        raise FileNotFoundError("missing required inputs:\n" + "\n".join(f"- {path}" for path in missing))
+        raise FileNotFoundError(
+            "missing required inputs:\n" + "\n".join(f"- {path}" for path in missing)
+        )
 
 
 def run(cmd: list[str]) -> None:
