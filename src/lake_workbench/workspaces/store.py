@@ -15,7 +15,13 @@ from typing import Any, Iterable
 
 from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.regions.config import RegionConfig
-from lake_workbench.utils import clean_optional, read_csv_records, truthy_flag, write_csv_records
+from lake_workbench.utils import clean_optional, read_csv_records, write_csv_records
+from lake_workbench.workspaces.membership import (
+    apply_membership_operation,
+    find_patch_conflicts,
+    included_members,
+    replace_region_members,
+)
 
 
 DEFAULT_WORKSPACE_ID = "default"
@@ -54,36 +60,6 @@ def _atomic_text(path: Path, text: str) -> None:
         except OSError:
             pass
         raise
-
-
-def _patch_is_included(row: dict) -> bool:
-    status = clean_optional(row.get("review_status"))
-    if status in {"included", "excluded"}:
-        return status == "included"
-    return truthy_flag(row.get("include"), default=True)
-
-
-def _patch_bbox(row: dict) -> tuple[float, float, float, float] | None:
-    try:
-        return tuple(float(row[key]) for key in ("bounds_left", "bounds_bottom", "bounds_right", "bounds_top"))  # type: ignore[return-value]
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _patch_bbox_iou(first: dict, second: dict) -> float:
-    left_box = _patch_bbox(first)
-    right_box = _patch_bbox(second)
-    if not left_box or not right_box:
-        return 0.0
-    left = max(left_box[0], right_box[0])
-    bottom = max(left_box[1], right_box[1])
-    right = min(left_box[2], right_box[2])
-    top = min(left_box[3], right_box[3])
-    intersection = max(0.0, right - left) * max(0.0, top - bottom)
-    first_area = max(0.0, left_box[2] - left_box[0]) * max(0.0, left_box[3] - left_box[1])
-    second_area = max(0.0, right_box[2] - right_box[0]) * max(0.0, right_box[3] - right_box[1])
-    union = first_area + second_area - intersection
-    return intersection / union if union else 0.0
 
 
 class WorkspaceStore:
@@ -272,20 +248,19 @@ class WorkspaceStore:
 
     def members(self, workspace_id: str, region: str = "") -> set[tuple[str, str]]:
         self._workspace_record(workspace_id)
-        manifest_members: set[tuple[str, str]] = set()
-        for key in ([region] if region else self.regions):
-            path = self.workspace_logical_patch_manifest(workspace_id, key)
-            for row in read_csv_records(path):
-                if row.get("logical_patch_id") and _patch_is_included(row):
-                    manifest_members.add((key, str(row["logical_patch_id"])))
-        if manifest_members:
-            return manifest_members
-        rows = read_csv_records(self._members_path(workspace_id))
-        return {
+        legacy_members = {
             (str(row.get("region") or ""), str(row.get("logical_patch_id") or ""))
-            for row in rows
+            for row in read_csv_records(self._members_path(workspace_id))
             if row.get("logical_patch_id") and (not region or row.get("region") == region)
         }
+        members: set[tuple[str, str]] = set()
+        for key in ([region] if region else self.regions):
+            path = self.workspace_logical_patch_manifest(workspace_id, key)
+            if path.exists():
+                members.update(included_members(read_csv_records(path), key))
+            else:
+                members.update(member for member in legacy_members if member[0] == key)
+        return members
 
     def patch_counts(self, workspace_id: str, region: str) -> dict[str, int]:
         member_ids = {patch_id for _region, patch_id in self.members(workspace_id, region)}
@@ -322,35 +297,18 @@ class WorkspaceStore:
             if missing:
                 raise KeyError(f"logical patches not found: {', '.join(missing)}")
             members = self.members(workspace_id)
-            if operation in {"include", "restore"}:
-                current_ids = {patch_id for member_region, patch_id in members if member_region == region} - wanted
-                conflicts = []
-                for patch_id in wanted:
-                    incoming = canonical[patch_id]
-                    incoming_image = incoming.get("image_fingerprint") or incoming.get("image_path")
-                    for current_id in current_ids:
-                        existing = canonical.get(current_id)
-                        if not existing:
-                            continue
-                        existing_image = existing.get("image_fingerprint") or existing.get("image_path")
-                        overlap = _patch_bbox_iou(incoming, existing)
-                        if incoming_image and incoming_image == existing_image and overlap >= 0.9:
-                            conflicts.append({
-                                "type": "spatial_overlap",
-                                "patch_id": patch_id,
-                                "existing_patch_id": current_id,
-                                "overlap": round(overlap, 6),
-                            })
-                            break
-                if conflicts and not replace:
-                    raise WorkspacePatchConflict(conflicts)
-                if replace:
-                    members.difference_update((region, item["existing_patch_id"]) for item in conflicts)
+            current_ids = {patch_id for member_region, patch_id in members if member_region == region}
+            conflicts = find_patch_conflicts(canonical, current_ids, wanted) if operation in {"include", "restore"} else []
+            if conflicts and not replace:
+                raise WorkspacePatchConflict(conflicts, sorted(wanted))
             before = set(members)
-            if operation in {"include", "restore"}:
-                members.update((region, patch_id) for patch_id in wanted)
-            else:
-                members.difference_update((region, patch_id) for patch_id in wanted)
+            members = apply_membership_operation(
+                members,
+                region,
+                wanted,
+                operation,
+                conflicts if replace else (),
+            )
             self._write_members(workspace_id, members)
             selected = {patch_id for member_region, patch_id in members if member_region == region}
             self._write_workspace_logical_rows(
@@ -669,8 +627,7 @@ class WorkspaceStore:
             registry = self._read_registry()
             workspace = self._workspace_record(workspace_id, registry)
             if workspace.get("status") != "archived":
-                workspace["status"] = "active"
-                self._write_sources(workspace_id, {"sites": {}, "conflicts": {}})
+                workspace["status"] = "needs_resolution" if self._read_sources(workspace_id)["conflicts"] else "active"
             workspace["updated_at"] = _timestamp()
             self._write_registry(registry)
 
@@ -743,12 +700,7 @@ class WorkspaceStore:
 
     def _sync_members_from_workspace_manifest(self, workspace_id: str, region: str, path: Path) -> None:
         members = self.members(workspace_id)
-        synced = {(key, patch_id) for key, patch_id in members if key != region}
-        synced.update(
-            (region, row.get("logical_patch_id", ""))
-            for row in read_csv_records(path)
-            if row.get("logical_patch_id") and truthy_flag(row.get("include"), default=True)
-        )
+        synced = replace_region_members(members, region, read_csv_records(path))
         if synced != members:
             self._write_members(workspace_id, synced)
 

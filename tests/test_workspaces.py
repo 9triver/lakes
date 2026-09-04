@@ -146,6 +146,33 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(read_csv_records(empty_manifest), [])
         self.assertNotEqual(default_manifest, empty_manifest)
 
+    def test_empty_manifest_is_authoritative_for_membership(self) -> None:
+        self.store.ensure_default_workspace()
+        write_csv_records(
+            self.store._members_path("default"),
+            [{"region": "test", "logical_patch_id": "legacy-patch"}],
+        )
+        write_csv_records(self.store.workspace_logical_patch_manifest("default", "test"), [])
+
+        self.assertEqual(self.store.members("default", "test"), set())
+
+    def test_refreshing_members_keeps_selected_source_variants(self) -> None:
+        self.store.ensure_default_workspace()
+        source_path = self.store._sources_path("default")
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text(
+            json.dumps({"sites": {"site-1": {"variant_ids": ["variant-1"]}}, "conflicts": {}}),
+            encoding="utf-8",
+        )
+        self._install_workspace_rows("default", "patch-osm")
+
+        self.store.update_members("default", "test", ["patch-osm"], "include")
+
+        self.assertEqual(
+            json.loads(source_path.read_text(encoding="utf-8"))["sites"]["site-1"]["variant_ids"],
+            ["variant-1"],
+        )
+
     def test_archive_and_restore_preserve_workspace(self) -> None:
         self.store.ensure_default_workspace()
         workspace = self.store.create("Disposable")
