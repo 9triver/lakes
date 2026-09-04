@@ -54,11 +54,11 @@ interface SiteMapProps {
   jrc?: GeoJsonLayer | null;
   localLabel?: FeatureCollection | null;
   modelPrediction?: FeatureCollection;
-  logicalPatches?: TrainingPatch[];
+  patches?: TrainingPatch[];
   patchReviewEnabled?: boolean;
   activePatchId?: string;
   pendingPatchIds?: Set<string>;
-  onLogicalPatchClick?: (patchId: string) => void;
+  onPatchClick?: (patchId: string) => void;
   patchSourceMeta?: TileMeta;
 }
 
@@ -76,7 +76,7 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, modelPrediction, logicalPatches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onLogicalPatchClick, patchSourceMeta }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const basemapTileLoadFunction = createBasemapTileLoadFunction();
@@ -101,7 +101,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   const jrcSourceRef = useRef(new VectorSource());
   const localSourceRef = useRef(new VectorSource());
   const predictionSourceRef = useRef(new VectorSource());
-  const logicalPatchSourceRef = useRef(new VectorSource());
+  const patchSourceRef = useRef(new VectorSource());
   const osmLayerRef = useRef(new VectorLayer({ source: osmSourceRef.current, style: vectorStyle("#00a6ff", "rgba(0,166,255,.20)") }));
   const hydroLayerRef = useRef(new VectorLayer({ source: hydroSourceRef.current, style: vectorStyle("#d6a900", "rgba(255,212,71,.18)") }));
   const contextOsmLayerRef = useRef(new VectorLayer({ source: contextOsmSourceRef.current, style: vectorStyle("#0088cc", "rgba(0,136,204,.06)") }));
@@ -110,7 +110,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   const jrcLayerRef = useRef(new VectorLayer({ source: jrcSourceRef.current, style: vectorStyle("#0b9c64", "rgba(11,156,100,.24)") }));
   const localLayerRef = useRef(new VectorLayer({ source: localSourceRef.current, style: vectorStyle("#ffffff", "rgba(0,0,0,.08)") }));
   const predictionLayerRef = useRef(new VectorLayer({ source: predictionSourceRef.current, style: vectorStyle("#ff3b30", "rgba(255,59,48,.32)") }));
-  const logicalPatchLayerRef = useRef(new VectorLayer({ source: logicalPatchSourceRef.current, style: (feature) => {
+  const patchLayerRef = useRef(new VectorLayer({ source: patchSourceRef.current, style: (feature) => {
     const included = Boolean(feature.get("included"));
     const pending = Boolean(feature.get("pending"));
     const active = Boolean(feature.get("active"));
@@ -161,7 +161,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
     mapRef.current = new Map({
       target: targetRef.current,
       interactions: defaultInteractions({ doubleClickZoom: false, keyboard: false, pinchZoom: false, shiftDragZoom: false }),
-      layers: [osmBasemapLayerRef.current, satelliteBasemapLayerRef.current, imageLayerRef.current, tileLayerRef.current, contextOsmLayerRef.current, contextHydroLayerRef.current, osmLayerRef.current, hydroLayerRef.current, esaLayerRef.current, jrcLayerRef.current, localLayerRef.current, predictionLayerRef.current, logicalPatchLayerRef.current],
+      layers: [osmBasemapLayerRef.current, satelliteBasemapLayerRef.current, imageLayerRef.current, tileLayerRef.current, contextOsmLayerRef.current, contextHydroLayerRef.current, osmLayerRef.current, hydroLayerRef.current, esaLayerRef.current, jrcLayerRef.current, localLayerRef.current, predictionLayerRef.current, patchLayerRef.current],
       view: new View({ center: [0, 0], zoom: 6, minZoom: 4, maxZoom: 17 }),
     });
     return () => { mapRef.current?.setTarget(undefined); mapRef.current = null; };
@@ -169,17 +169,17 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !onLogicalPatchClick) return;
+    if (!map || !onPatchClick) return;
     const handleClick = (event: { pixel: number[]; originalEvent?: Event }) => {
       if (!patchReviewEnabled) return;
       if (event.originalEvent instanceof MouseEvent && event.originalEvent.detail > 1) return;
-      const feature = map.forEachFeatureAtPixel(event.pixel, (candidate) => candidate, { layerFilter: (layer) => layer === logicalPatchLayerRef.current });
+      const feature = map.forEachFeatureAtPixel(event.pixel, (candidate) => candidate, { layerFilter: (layer) => layer === patchLayerRef.current });
       const patchId = feature?.get("logical_patch_id");
-      if (patchId) onLogicalPatchClick(String(patchId));
+      if (patchId) onPatchClick(String(patchId));
     };
     map.on("click", handleClick);
     return () => { map.un("click", handleClick); };
-  }, [onLogicalPatchClick, patchReviewEnabled]);
+  }, [onPatchClick, patchReviewEnabled]);
 
   useEffect(() => {
     osmBasemapLayerRef.current.setVisible(basemap === "osm");
@@ -232,11 +232,11 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
 
   useEffect(() => {
     const format = new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" });
-    logicalPatchSourceRef.current.clear();
+    patchSourceRef.current.clear();
     if (!patchReviewEnabled) return;
-    const features = logicalPatches.filter((patch) => patch.geometry).map((patch) => ({ type: "Feature", geometry: patch.geometry, properties: { logical_patch_id: patch.logical_patch_id || patch.patch_id, included: patch.included, pending: pendingPatchIds.has(patch.logical_patch_id || patch.patch_id), active: (patch.logical_patch_id || patch.patch_id) === activePatchId } }));
-    logicalPatchSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features }));
-  }, [activePatchId, logicalPatches, patchReviewEnabled, pendingPatchIds]);
+    const features = patches.filter((patch) => patch.geometry).map((patch) => ({ type: "Feature", geometry: patch.geometry, properties: { logical_patch_id: patch.logical_patch_id || patch.patch_id, included: patch.included, pending: pendingPatchIds.has(patch.logical_patch_id || patch.patch_id), active: (patch.logical_patch_id || patch.patch_id) === activePatchId } }));
+    patchSourceRef.current.addFeatures(format.readFeatures({ type: "FeatureCollection", features }));
+  }, [activePatchId, patches, patchReviewEnabled, pendingPatchIds]);
 
   useEffect(() => {
     const sourceMeta = patchReviewEnabled && patchSourceMeta ? patchSourceMeta : tileMeta;

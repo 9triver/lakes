@@ -94,20 +94,20 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     0.5,
     Boolean(selectedSiteId && predictionModel && layerVisibility.prediction),
   );
-  const logicalPatches = useSiteLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
-  const updateLogicalPatches = useBatchUpdateLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
+  const sitePatches = useSiteLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
+  const updatePatches = useBatchUpdateLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
   const patchGroups = useMemo<PatchGroup[]>(() => {
     const groups = new Map<string, TrainingPatch[]>();
-    for (const patch of logicalPatches.data?.items || []) {
+    for (const patch of sitePatches.data?.items || []) {
       const key = `${patch.sample_id}:${patch.image_index || 0}`;
       groups.set(key, [...(groups.get(key) || []), patch]);
     }
     return [...groups.entries()].map(([key, patches]) => ({ key, patches, label: `${patches[0]?.product_date || patches[0]?.product_name || patches[0]?.sample_id} · ${patches.length} 个` })).sort((a, b) => b.label.localeCompare(a.label));
-  }, [logicalPatches.data?.items]);
+  }, [sitePatches.data?.items]);
   const activePatchGroup = patchGroups.find((group) => group.key === patchGroupKey) || patchGroups[0];
-  const visibleLogicalPatches = activePatchGroup?.patches || logicalPatches.data?.items || [];
-  const activePatch = visibleLogicalPatches.find((patch) => (patch.logical_patch_id || patch.patch_id) === activePatchId);
-  const patchSource = useLogicalPatchSourceMeta(activeWorkspaceId, selectedRegion, selectedSiteId, visibleLogicalPatches[0]?.logical_patch_id || visibleLogicalPatches[0]?.patch_id || "", patchReviewEnabled);
+  const visiblePatches = activePatchGroup?.patches || sitePatches.data?.items || [];
+  const activePatch = visiblePatches.find((patch) => (patch.logical_patch_id || patch.patch_id) === activePatchId);
+  const patchSource = useLogicalPatchSourceMeta(activeWorkspaceId, selectedRegion, selectedSiteId, visiblePatches[0]?.logical_patch_id || visiblePatches[0]?.patch_id || "", patchReviewEnabled);
 
   useEffect(() => {
     if (!region && regions.data) setRegion(siteListRoute?.[1] || siteRoute?.[1] || trainingRoute?.[1] || modelRoute?.[1] || regions.data.default);
@@ -148,9 +148,9 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const handleLayerVisibility = useCallback((layer: keyof SiteLayerVisibility, visible: boolean) => {
     setLayerVisibility((current) => ({ ...current, [layer]: visible }));
   }, []);
-  const handleLogicalPatchClick = useCallback((patchId: string) => {
+  const handlePatchClick = useCallback((patchId: string) => {
     setActivePatchId(patchId);
-    const patch = visibleLogicalPatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
+    const patch = visiblePatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
     const selectable = patchOperation === "exclude" ? patch?.included : patch && !patch.included;
     if (!selectable) return;
     setPendingPatchIds((current) => {
@@ -158,7 +158,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
       if (next.has(patchId)) next.delete(patchId); else next.add(patchId);
       return next;
     });
-  }, [patchOperation, visibleLogicalPatches]);
+  }, [patchOperation, visiblePatches]);
   const handleRegionChange = (nextRegion: string) => {
     setRegion(nextRegion);
     navigate(isTraining ? `${workspacePrefix}/regions/${nextRegion}/training-data` : isModel ? `${workspacePrefix}/regions/${nextRegion}/models/${modelStage}` : `${workspacePrefix}/regions/${nextRegion}/sites`);
@@ -260,7 +260,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             onJrcThresholdChange={setJrcThreshold}
             trainingAction={!patchReviewEnabled ? <TrainingCaptureButton controller={trainingCapture} /> : undefined}
             showPrediction={Boolean(predictionModel)}
-            showPatches={visibleLogicalPatches.length > 0}
+            showPatches={visiblePatches.length > 0}
             patchReviewEnabled={patchReviewEnabled}
             onPatchReviewEnabledChange={(enabled) => { setPatchReviewEnabled(enabled); setPendingPatchIds(new Set()); setActivePatchId(""); }}
             canFitSite={Boolean(tileMeta.data?.site_bounds || site.data.bbox)}
@@ -283,15 +283,15 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             jrc={jrc.data}
             localLabel={localLabel.data}
             modelPrediction={modelPrediction.data?.prediction}
-            logicalPatches={visibleLogicalPatches}
+            patches={visiblePatches}
             patchReviewEnabled={patchReviewEnabled}
             activePatchId={activePatchId}
             pendingPatchIds={pendingPatchIds}
-            onLogicalPatchClick={handleLogicalPatchClick}
+            onPatchClick={handlePatchClick}
             patchSourceMeta={patchSource.data}
           />
           <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
-            {patchReviewEnabled ? <SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updateLogicalPatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updateLogicalPatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /> : <>
+            {patchReviewEnabled ? <SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updatePatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updatePatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /> : <>
               <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                 <TrainingCaptureStatus controller={trainingCapture} />
                 {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}
