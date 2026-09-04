@@ -12,7 +12,8 @@ from typing import Any
 import rasterio
 
 from lake_workbench.geo import padded_bounds
-from lake_workbench.imagery import mosaic_source_meta, predict_water_geojson
+from lake_workbench.imagery.mosaic import mosaic_source_meta
+from lake_workbench.imagery.prediction import predict_water_geojson
 from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.utils import display_path, safe_filename
 

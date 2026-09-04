@@ -6,11 +6,11 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import box
 
 from lake_workbench.geo import padded_bounds
-from lake_workbench.imagery.raster import (
-    blank_png,
+from lake_workbench.imagery.display import blank_png
+from lake_workbench.imagery.mosaic import render_tci_mosaic_png
+from lake_workbench.imagery.tiles import (
     image_cache_key,
     mosaic_source_meta,
-    render_tci_mosaic_png,
     render_tci_xyz_tile,
     rows_bounds,
     tile_cache_key,

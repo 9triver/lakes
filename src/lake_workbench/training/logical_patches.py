@@ -16,16 +16,22 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import rasterio
-from PIL import Image
-from pyproj import Transformer
-from rasterio.features import rasterize
-from shapely.geometry import shape
-from shapely.ops import transform as shapely_transform
-from shapely.validation import make_valid
 
 from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.regions.config import RegionConfig
+from lake_workbench.training.patch_processing import (
+    derive_patch,
+    eligible_actual_patch,
+    grid_cell_bounds,
+    image_fingerprint,
+    padded_crop,
+    preview_image,
+    rasterize_label,
+    rasterize_label_payload,
+    rasterize_source_variants,
+    write_preview,
+)
 from lake_workbench.utils import display_path, read_csv_records, resolve_data_path, truthy_flag
 
 if TYPE_CHECKING:
@@ -146,23 +152,23 @@ def _build_sample_logical_patches(
             continue
         with rasterio.open(image_path) as src:
             image = src.read()
-            image_fingerprint = _image_fingerprint(image_path, src)
-            valid = _valid_mask(image, src.nodatavals, src.read_masks())
-            label = _rasterize_label(label_path, src)
+            image_signature = image_fingerprint(image_path, src)
+            valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
+            label = rasterize_label(label_path, src)
             target = np.where(valid, label, 255).astype("uint8")
             for row_off in grid_offsets(src.height, patch_size, stride):
                 for col_off in grid_offsets(src.width, patch_size, stride):
-                    image_patch = _padded_crop(image, row_off, col_off, fill=0, patch_size=patch_size)
-                    valid_patch = _padded_crop(valid, row_off, col_off, fill=False, patch_size=patch_size)
+                    image_patch = padded_crop(image, row_off, col_off, fill=0, patch_size=patch_size)
+                    valid_patch = padded_crop(valid, row_off, col_off, fill=False, patch_size=patch_size)
                     if not np.any(valid_patch):
                         continue
-                    mask_patch = _padded_crop(target, row_off, col_off, fill=255, patch_size=patch_size)
-                    patch_id = logical_patch_id(sample_id, image_index, row_off, col_off, patch_size, image_fingerprint, label_fingerprint)
+                    mask_patch = padded_crop(target, row_off, col_off, fill=255, patch_size=patch_size)
+                    patch_id = logical_patch_id(sample_id, image_index, row_off, col_off, patch_size, image_signature, label_fingerprint)
                     preview_path = preview_dir / f"{patch_id}.png"
                     preview_base_path = preview_dir / f"{patch_id}.base.png"
-                    _write_preview(preview_path, image_patch, mask_patch, valid_patch, overlay=True)
-                    _write_preview(preview_base_path, image_patch, mask_patch, valid_patch, overlay=False)
-                    bounds = _grid_cell_bounds(src.transform, row_off, col_off, patch_size)
+                    write_preview(preview_path, image_patch, mask_patch, valid_patch, overlay=True)
+                    write_preview(preview_base_path, image_patch, mask_patch, valid_patch, overlay=False)
+                    bounds = grid_cell_bounds(src.transform, row_off, col_off, patch_size)
                     valid_pixels = int(valid_patch.sum())
                     water_pixels = int(np.count_nonzero(mask_patch == 1))
                     old = previous.get(patch_id, {})
@@ -194,7 +200,7 @@ def _build_sample_logical_patches(
                             "grid_stride": stride,
                             "window_width": patch_size,
                             "window_height": patch_size,
-                            "image_fingerprint": image_fingerprint,
+                            "image_fingerprint": image_signature,
                             "label_fingerprint": label_fingerprint,
                             "valid_ratio": f"{valid_pixels / float(patch_size**2):.6f}",
                             "valid_pixels": valid_pixels,
@@ -275,21 +281,21 @@ def build_workspace_training_dataset(
                 continue
             with rasterio.open(image_path) as src:
                 image = src.read()
-                valid = _valid_mask(image, src.nodatavals, src.read_masks())
+                valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
                 for logical in rows:
                     label_path = resolve_data_path(logical.get("label_path", ""), region)
                     if label_path.is_file():
                         label_fingerprint = logical.get("label_fingerprint") or hashlib.sha256(label_path.read_bytes()).hexdigest()
                         source_signature = str(label_fingerprint)
-                        target_mask = _rasterize_label(label_path, src)
+                        target_mask = rasterize_label(label_path, src)
                     else:
                         variants = workspace_store.selected_variants(workspace_id, logical.get("site_id", ""))
                         if not variants:
                             continue
                         source_signature = workspace_store.source_signature(workspace_id, logical.get("site_id", ""))
-                        target_mask = _rasterize_source_variants(variants, src)
+                        target_mask = rasterize_source_variants(variants, src)
                     target = np.where(valid, target_mask, 255).astype("uint8")
-                    actual = _derive_patch(
+                    actual = derive_patch(
                         image,
                         target,
                         valid,
@@ -297,7 +303,7 @@ def build_workspace_training_dataset(
                         int(config["output_size"]),
                     )
                     patch_id = logical["logical_patch_id"]
-                    if not _eligible_actual_patch(actual, patch_id, config):
+                    if not eligible_actual_patch(actual, patch_id, config):
                         continue
                     cache_name = f"{patch_id}-{source_signature[:16]}.npz"
                     cache_path = cache_dir / cache_name
@@ -392,20 +398,20 @@ def build_global_training_dataset(
                 continue
             with rasterio.open(image_path) as src:
                 image = src.read()
-                valid = _valid_mask(image, src.nodatavals, src.read_masks())
+                valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
                 variants = group[0]["_variants"]
                 label_snapshot = group[0].get("label_snapshot_json") or ""
                 if label_snapshot:
-                    target_mask = _rasterize_label_payload(json.loads(label_snapshot), src)
+                    target_mask = rasterize_label_payload(json.loads(label_snapshot), src)
                 elif variants:
-                    target_mask = _rasterize_source_variants(variants, src)
+                    target_mask = rasterize_source_variants(variants, src)
                 else:
-                    target_mask = _rasterize_label(resolve_data_path(group[0].get("label_path", ""), region), src)
+                    target_mask = rasterize_label(resolve_data_path(group[0].get("label_path", ""), region), src)
                 target = np.where(valid, target_mask, 255).astype("uint8")
                 for logical in group:
-                    actual = _derive_patch(image, target, valid, logical, int(config["output_size"]))
+                    actual = derive_patch(image, target, valid, logical, int(config["output_size"]))
                     patch_id = logical.get("source_patch_id") or logical.get("logical_patch_id", "")
-                    if not _eligible_actual_patch(actual, patch_id, config):
+                    if not eligible_actual_patch(actual, patch_id, config):
                         continue
                     cache_name = f"{logical.get('source_workspace_id', 'workspace')}-{patch_id}-{source_signature[:16]}.npz"
                     cache_path = cache_dir / cache_name
@@ -486,34 +492,6 @@ def workspace_training_dataset_status(
     }
 
 
-def _rasterize_source_variants(variants: list[dict], src: Any) -> np.ndarray:
-    transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True) if src.crs else None
-    geometries = []
-    seen = set()
-    for variant in variants:
-        for feature in variant.get("snapshot", {}).get("features", []):
-            geometry_payload = feature.get("geometry")
-            if not geometry_payload:
-                continue
-            token = json.dumps(geometry_payload, sort_keys=True, separators=(",", ":"))
-            if token in seen:
-                continue
-            seen.add(token)
-            geometry = make_valid(shape(geometry_payload))
-            if geometry.is_empty:
-                continue
-            if transformer and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
-                geometry = shapely_transform(transformer.transform, geometry)
-            geometries.append((geometry, 1))
-    return rasterize(
-        geometries,
-        out_shape=(src.height, src.width),
-        transform=src.transform,
-        fill=0,
-        dtype="uint8",
-    ) if geometries else np.zeros((src.height, src.width), dtype="uint8")
-
-
 def workspace_logical_patch_preview(
     region: RegionConfig,
     row: dict,
@@ -533,148 +511,24 @@ def workspace_logical_patch_preview(
         raise FileNotFoundError(f"logical patch source image not found: {row.get('logical_patch_id', '')}")
     with rasterio.open(image_path) as src:
         image = src.read()
-        valid = _valid_mask(image, src.nodatavals, src.read_masks())
+        valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
         label_path = resolve_data_path(row.get("label_path", ""), region)
         if not label_path.exists():
             if not overlay:
-                actual = _derive_patch(image, np.zeros((src.height, src.width), dtype="uint8"), valid, row, LOGICAL_PATCH_SIZE)
+                actual = derive_patch(image, np.zeros((src.height, src.width), dtype="uint8"), valid, row, LOGICAL_PATCH_SIZE)
                 output = BytesIO()
-                _preview_image(actual["image"], actual["mask"], actual["valid"], overlay=False).save(output, format="PNG")
+                preview_image(actual["image"], actual["mask"], actual["valid"], overlay=False).save(output, format="PNG")
                 return output.getvalue()
             if preview_path and preview_path.is_file():
                 return preview_path.read_bytes()
             raise FileNotFoundError(f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}")
-        label = _rasterize_label(label_path, src)
+        label = rasterize_label(label_path, src)
         target = np.where(valid, label, 255).astype("uint8")
-        actual = _derive_patch(image, target, valid, row, LOGICAL_PATCH_SIZE)
-    preview = _preview_image(actual["image"], actual["mask"], actual["valid"], overlay=overlay)
+        actual = derive_patch(image, target, valid, row, LOGICAL_PATCH_SIZE)
+    preview = preview_image(actual["image"], actual["mask"], actual["valid"], overlay=overlay)
     output = BytesIO()
     preview.save(output, format="PNG")
     return output.getvalue()
-
-
-def _derive_patch(image: np.ndarray, target: np.ndarray, valid: np.ndarray, row: dict, output_size: int) -> dict:
-    row_off, col_off = int(row["row_off"]), int(row["col_off"])
-    logical_size = int(row.get("logical_size") or row.get("window_width") or LOGICAL_PATCH_SIZE)
-    image_patch = _padded_crop(image, row_off, col_off, fill=0, patch_size=logical_size)
-    mask_patch = _padded_crop(target, row_off, col_off, fill=255, patch_size=logical_size)
-    valid_patch = _padded_crop(valid, row_off, col_off, fill=False, patch_size=logical_size)
-    if output_size != logical_size:
-        bilinear = Image.Resampling.BILINEAR
-        nearest = Image.Resampling.NEAREST
-        dtype = image_patch.dtype
-        image_patch = np.stack(
-            [np.asarray(Image.fromarray(band.astype("float32"), mode="F").resize((output_size, output_size), bilinear)) for band in image_patch]
-        ).round().astype(dtype)
-        mask_patch = np.asarray(Image.fromarray(mask_patch).resize((output_size, output_size), nearest))
-        valid_patch = np.asarray(Image.fromarray(valid_patch.astype("uint8")).resize((output_size, output_size), nearest)).astype(bool)
-    mask_patch = np.where(valid_patch, mask_patch, 255).astype("uint8")
-    valid_pixels = int(valid_patch.sum())
-    water_pixels = int(np.count_nonzero(mask_patch == 1))
-    return {
-        "image": image_patch,
-        "mask": mask_patch,
-        "valid": valid_patch,
-        "valid_pixels": valid_pixels,
-        "valid_ratio": valid_pixels / float(output_size**2),
-        "water_pixels": water_pixels,
-        "water_ratio_valid": water_pixels / valid_pixels if valid_pixels else 0.0,
-        "ignore_pixels": int(np.count_nonzero(mask_patch == 255)),
-    }
-
-
-def _eligible_actual_patch(actual: dict, patch_id: str, config: dict) -> bool:
-    if actual["valid_ratio"] < float(config["min_valid_ratio"]):
-        return False
-    if actual["water_pixels"] >= int(config["min_water_pixels"]):
-        return True
-    ratio = float(config["negative_ratio"])
-    token = f"{config['id']}:{int(config.get('negative_seed', 42))}:{patch_id}".encode("utf-8")
-    sample = int.from_bytes(hashlib.sha256(token).digest()[:8], "big") / float(2**64)
-    return sample < ratio
-
-
-def _padded_crop(array: np.ndarray, row_off: int, col_off: int, fill: Any, patch_size: int = LOGICAL_PATCH_SIZE) -> np.ndarray:
-    shape = (*array.shape[:-2], patch_size, patch_size)
-    out = np.full(shape, fill, dtype=array.dtype)
-    height = min(patch_size, max(0, array.shape[-2] - row_off))
-    width = min(patch_size, max(0, array.shape[-1] - col_off))
-    if height and width:
-        out[..., :height, :width] = array[..., row_off : row_off + height, col_off : col_off + width]
-    return out
-
-
-def _grid_cell_bounds(transform: Any, row_off: int, col_off: int, patch_size: int = LOGICAL_PATCH_SIZE) -> tuple[float, float, float, float]:
-    corners = [
-        transform * (col_off, row_off),
-        transform * (col_off + patch_size, row_off),
-        transform * (col_off + patch_size, row_off + patch_size),
-        transform * (col_off, row_off + patch_size),
-    ]
-    xs, ys = zip(*corners)
-    return (min(xs), min(ys), max(xs), max(ys))
-
-
-def _image_fingerprint(path: Path, src: Any) -> str:
-    payload = {
-        "path": display_path(path),
-        "size": path.stat().st_size,
-        "mtime_ns": path.stat().st_mtime_ns,
-        "width": src.width,
-        "height": src.height,
-        "count": src.count,
-        "dtype": list(src.dtypes),
-        "crs": str(src.crs or ""),
-        "transform": tuple(src.transform),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def _valid_mask(image: np.ndarray, nodata: Any, masks: np.ndarray | None = None) -> np.ndarray:
-    return valid_pixel_mask(image, nodata, masks)
-
-
-def _rasterize_label(path: Path, src: Any) -> np.ndarray:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return _rasterize_label_payload(payload, src)
-
-
-def _rasterize_label_payload(payload: dict, src: Any) -> np.ndarray:
-    features = payload.get("features") if payload.get("type") == "FeatureCollection" else [payload]
-    transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True) if src.crs else None
-    geometries = []
-    for feature in features or []:
-        if not feature.get("geometry"):
-            continue
-        geometry = make_valid(shape(feature["geometry"]))
-        if geometry.is_empty:
-            continue
-        if transformer and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
-            geometry = shapely_transform(transformer.transform, geometry)
-        geometries.append((geometry, 1))
-    return rasterize(geometries, out_shape=(src.height, src.width), transform=src.transform, fill=0, dtype="uint8") if geometries else np.zeros((src.height, src.width), dtype="uint8")
-
-
-def _write_preview(path: Path, image: np.ndarray, mask: np.ndarray, valid: np.ndarray, overlay: bool = True) -> None:
-    _preview_image(image, mask, valid, overlay=overlay).save(path)
-
-
-def _preview_image(image: np.ndarray, mask: np.ndarray, valid: np.ndarray, overlay: bool = True) -> Image.Image:
-    indexes = [2, 1, 0] if image.shape[0] >= 3 else [0, 0, 0]
-    rgb = np.stack([image[index] for index in indexes], axis=-1).astype("float32")
-    output = np.zeros_like(rgb, dtype="uint8")
-    for index in range(3):
-        values = rgb[..., index]
-        selected = values[valid & np.isfinite(values)]
-        low, high = np.percentile(selected, [2, 98]) if selected.size else (0, 1)
-        if high <= low:
-            high = low + 1
-        output[..., index] = np.clip((values - low) * 255 / (high - low), 0, 255).astype("uint8")
-    output[~valid] = [34, 34, 34]
-    if overlay:
-        water = mask == 1
-        output[water] = (output[water].astype("uint16") * 25 // 100 + np.array([255, 32, 128], dtype="uint16") * 75 // 100).astype("uint8")
-    return Image.fromarray(output)
 
 
 def _split_values(value: Any) -> list[str]:

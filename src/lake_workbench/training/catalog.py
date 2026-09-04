@@ -12,7 +12,8 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping
 
 from lake_workbench.geo import site_aoi_geometry, transform_geom
-from lake_workbench.imagery.raster import blank_png, render_tci_xyz_tile, xyz_tile_bounds
+from lake_workbench.imagery.display import blank_png
+from lake_workbench.imagery.tiles import render_tci_xyz_tile, xyz_tile_bounds
 from lake_workbench.sentinel.download import upsert_csv_row
 from lake_workbench.training.identity import bbox_from_row, bbox_iou, training_view_signature
 from lake_workbench.utils import (
