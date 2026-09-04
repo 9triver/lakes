@@ -8,7 +8,6 @@ import json
 import os
 import shutil
 import tempfile
-import tomllib
 from io import BytesIO
 from collections import defaultdict
 from pathlib import Path
@@ -17,7 +16,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import rasterio
 
-from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.training.patch_processing import (
@@ -32,19 +30,25 @@ from lake_workbench.training.patch_processing import (
     rasterize_source_variants,
     write_preview,
 )
-from lake_workbench.utils import display_path, read_csv_records, resolve_data_path, truthy_flag
+from lake_workbench.utils import (
+    display_path,
+    read_csv_records,
+    resolve_data_path,
+    truthy_flag,
+)
+from lake_workbench.training.dataset_status import (
+    dataset_configs,
+    workspace_dataset_signature,
+    workspace_training_dataset_status as _workspace_training_dataset_status,
+)
+
+workspace_training_dataset_status = _workspace_training_dataset_status
 
 if TYPE_CHECKING:
     from lake_workbench.workspaces import WorkspaceStore
 
 
 LOGICAL_PATCH_SIZE = 512
-DATASET_CONFIG_PATH = PROJECT_ROOT / "config" / "training_datasets.toml"
-
-
-def dataset_configs(path: Path = DATASET_CONFIG_PATH) -> dict[str, dict]:
-    payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    return {key: {"id": key, **value} for key, value in payload.get("datasets", {}).items()}
 
 
 def logical_patch_id(
@@ -61,7 +65,9 @@ def logical_patch_id(
     return f"{sample_id}_i{image_index:02d}_r{row_off:05d}_c{col_off:05d}_s{patch_size}_{suffix}"
 
 
-def grid_offsets(length: int, patch_size: int = LOGICAL_PATCH_SIZE, stride: int | None = None) -> list[int]:
+def grid_offsets(
+    length: int, patch_size: int = LOGICAL_PATCH_SIZE, stride: int | None = None
+) -> list[int]:
     stride = stride or patch_size
     return list(range(0, max(1, length), stride))
 
@@ -82,20 +88,29 @@ def build_logical_patches(
         for row in previous_rows
         if row.get("logical_patch_id")
     }
-    samples = list(samples) if samples is not None else read_csv_records(region.training_samples)
+    samples = (
+        list(samples)
+        if samples is not None
+        else read_csv_records(region.training_samples)
+    )
     if sample_ids is not None:
         samples = [row for row in samples if row.get("sample_id") in sample_ids]
     if not samples:
         return {"region": region.key, "samples": 0, "patches": 0, "manifest": ""}
     stride = stride or patch_size
-    rebuilt_sample_ids = {row.get("sample_id", "") for row in samples if row.get("sample_id")}
+    rebuilt_sample_ids = {
+        row.get("sample_id", "") for row in samples if row.get("sample_id")
+    }
     retained = [
         row
         for row in previous_rows
         if not (
             row.get("sample_id") in rebuilt_sample_ids
             and int(row.get("logical_size") or LOGICAL_PATCH_SIZE) == patch_size
-            and int(row.get("grid_stride") or row.get("logical_size") or LOGICAL_PATCH_SIZE) == stride
+            and int(
+                row.get("grid_stride") or row.get("logical_size") or LOGICAL_PATCH_SIZE
+            )
+            == stride
         )
     ]
     parent = logical_dir.parent
@@ -106,15 +121,41 @@ def build_logical_patches(
     generated: list[dict] = []
     try:
         for sample in samples:
-            generated.extend(_build_sample_logical_patches(region, sample, previous, preview_dir, logical_dir, patch_size, stride))
+            generated.extend(
+                _build_sample_logical_patches(
+                    region,
+                    sample,
+                    previous,
+                    preview_dir,
+                    logical_dir,
+                    patch_size,
+                    stride,
+                )
+            )
         retained_ids = {row.get("logical_patch_id", "") for row in retained}
         for row in retained:
             for field in ("preview_path", "preview_base_path"):
-                preview_path = resolve_data_path(row.get(field, ""), region) if row.get(field) else None
+                preview_path = (
+                    resolve_data_path(row.get(field, ""), region)
+                    if row.get(field)
+                    else None
+                )
                 if preview_path and preview_path.is_file():
                     shutil.copy2(preview_path, preview_dir / preview_path.name)
-        rows = retained + [row for row in generated if row.get("logical_patch_id", "") not in retained_ids]
-        rows.sort(key=lambda row: (row["sample_id"], int(row["image_index"]), int(row["row_off"]), int(row["col_off"]), int(row["logical_size"])))
+        rows = retained + [
+            row
+            for row in generated
+            if row.get("logical_patch_id", "") not in retained_ids
+        ]
+        rows.sort(
+            key=lambda row: (
+                row["sample_id"],
+                int(row["image_index"]),
+                int(row["row_off"]),
+                int(row["col_off"]),
+                int(row["logical_size"]),
+            )
+        )
         _write_csv(temp_dir / "manifest.csv", rows)
         _replace_directory(temp_dir, logical_dir)
     except Exception:
@@ -140,7 +181,11 @@ def _build_sample_logical_patches(
 ) -> list[dict]:
     sample_id = sample.get("sample_id", "")
     label_path = resolve_data_path(sample.get("label_path", ""), region)
-    image_paths = [resolve_data_path(value, region) for value in str(sample.get("tci_path", "")).split(";") if value.strip()]
+    image_paths = [
+        resolve_data_path(value, region)
+        for value in str(sample.get("tci_path", "")).split(";")
+        if value.strip()
+    ]
     if not sample_id or not label_path.exists():
         return []
     label_fingerprint = hashlib.sha256(label_path.read_bytes()).hexdigest()
@@ -158,27 +203,61 @@ def _build_sample_logical_patches(
             target = np.where(valid, label, 255).astype("uint8")
             for row_off in grid_offsets(src.height, patch_size, stride):
                 for col_off in grid_offsets(src.width, patch_size, stride):
-                    image_patch = padded_crop(image, row_off, col_off, fill=0, patch_size=patch_size)
-                    valid_patch = padded_crop(valid, row_off, col_off, fill=False, patch_size=patch_size)
+                    image_patch = padded_crop(
+                        image, row_off, col_off, fill=0, patch_size=patch_size
+                    )
+                    valid_patch = padded_crop(
+                        valid, row_off, col_off, fill=False, patch_size=patch_size
+                    )
                     if not np.any(valid_patch):
                         continue
-                    mask_patch = padded_crop(target, row_off, col_off, fill=255, patch_size=patch_size)
-                    patch_id = logical_patch_id(sample_id, image_index, row_off, col_off, patch_size, image_signature, label_fingerprint)
+                    mask_patch = padded_crop(
+                        target, row_off, col_off, fill=255, patch_size=patch_size
+                    )
+                    patch_id = logical_patch_id(
+                        sample_id,
+                        image_index,
+                        row_off,
+                        col_off,
+                        patch_size,
+                        image_signature,
+                        label_fingerprint,
+                    )
                     preview_path = preview_dir / f"{patch_id}.png"
                     preview_base_path = preview_dir / f"{patch_id}.base.png"
-                    write_preview(preview_path, image_patch, mask_patch, valid_patch, overlay=True)
-                    write_preview(preview_base_path, image_patch, mask_patch, valid_patch, overlay=False)
-                    bounds = grid_cell_bounds(src.transform, row_off, col_off, patch_size)
+                    write_preview(
+                        preview_path, image_patch, mask_patch, valid_patch, overlay=True
+                    )
+                    write_preview(
+                        preview_base_path,
+                        image_patch,
+                        mask_patch,
+                        valid_patch,
+                        overlay=False,
+                    )
+                    bounds = grid_cell_bounds(
+                        src.transform, row_off, col_off, patch_size
+                    )
                     valid_pixels = int(valid_patch.sum())
                     water_pixels = int(np.count_nonzero(mask_patch == 1))
                     old = previous.get(patch_id, {})
                     old_status = str(old.get("review_status") or "")
-                    old_included = truthy_flag(old.get("include"), default=True) if "include" in old else old_status == "included"
+                    old_included = (
+                        truthy_flag(old.get("include"), default=True)
+                        if "include" in old
+                        else old_status == "included"
+                    )
                     # Negative patches stay available for review but do not enter the workspace by default.
                     is_new = not old
                     has_review_metadata = "exclude_reason" in old
-                    auto_excluded = water_pixels == 0 and (is_new or not has_review_metadata)
-                    included = False if auto_excluded else (old_included if not is_new else True)
+                    auto_excluded = water_pixels == 0 and (
+                        is_new or not has_review_metadata
+                    )
+                    included = (
+                        False
+                        if auto_excluded
+                        else (old_included if not is_new else True)
+                    )
                     exclude_reason = old.get("exclude_reason", "")
                     if auto_excluded:
                         exclude_reason = "no_water"
@@ -192,8 +271,12 @@ def _build_sample_logical_patches(
                             "image_index": image_index,
                             "image_path": display_path(image_path),
                             "label_path": display_path(label_path),
-                            "preview_path": display_path(logical_dir / "preview" / preview_path.name),
-                            "preview_base_path": display_path(logical_dir / "preview" / preview_base_path.name),
+                            "preview_path": display_path(
+                                logical_dir / "preview" / preview_path.name
+                            ),
+                            "preview_base_path": display_path(
+                                logical_dir / "preview" / preview_base_path.name
+                            ),
                             "row_off": row_off,
                             "col_off": col_off,
                             "logical_size": patch_size,
@@ -215,7 +298,8 @@ def _build_sample_logical_patches(
                             "product_name": _value_at(products, image_index),
                             "product_date": _value_at(dates, image_index),
                             "label_source": sample.get("label_source", ""),
-                            "label_sources": sample.get("context_sources") or sample.get("label_source", ""),
+                            "label_sources": sample.get("context_sources")
+                            or sample.get("label_source", ""),
                             "label_scope": sample.get("label_scope", ""),
                             "mask_policy": sample.get("mask_policy", ""),
                             "include": "true" if included else "false",
@@ -225,25 +309,6 @@ def _build_sample_logical_patches(
                         }
                     )
     return result
-
-
-def workspace_dataset_signature(
-    region: RegionConfig,
-    config: dict,
-    workspace_store: "WorkspaceStore",
-    workspace_id: str,
-) -> str:
-    members = {patch_id for _region, patch_id in workspace_store.members(workspace_id, region.key)}
-    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(workspace_id, region.key)
-    logical_rows = [
-        row for row in read_csv_records(manifest_path)
-        if row.get("logical_patch_id") in members
-    ]
-    payload = {
-        "config": config,
-        "logical_rows": logical_rows,
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def build_workspace_training_dataset(
@@ -257,18 +322,30 @@ def build_workspace_training_dataset(
     if config_id not in configs:
         raise KeyError(f"unknown training dataset config: {config_id}")
     config = configs[config_id]
-    member_ids = {patch_id for _region, patch_id in workspace_store.members(workspace_id, region.key)}
-    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(workspace_id, region.key)
+    member_ids = {
+        patch_id
+        for _region, patch_id in workspace_store.members(workspace_id, region.key)
+    }
+    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(
+        workspace_id, region.key
+    )
     logical_rows = [
-        row for row in read_csv_records(manifest_path)
+        row
+        for row in read_csv_records(manifest_path)
         if row.get("logical_patch_id") in member_ids
     ]
     if not logical_rows:
-        raise FileNotFoundError(f"Workspace has no selected logical patches for {region.key}: {workspace_id}")
-    output_dir = workspace_store.workspace_dataset_dir(workspace_id, region.key, config_id)
+        raise FileNotFoundError(
+            f"Workspace has no selected logical patches for {region.key}: {workspace_id}"
+        )
+    output_dir = workspace_store.workspace_dataset_dir(
+        workspace_id, region.key, config_id
+    )
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix=f"{config_id}.", dir=output_dir.parent))
-    cache_dir = workspace_store.workspace_training_patch_cache_dir(workspace_id, region.key, config_id)
+    cache_dir = workspace_store.workspace_training_patch_cache_dir(
+        workspace_id, region.key, config_id
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     output_rows: list[dict] = []
     grouped: dict[str, list[dict]] = defaultdict(list)
@@ -283,16 +360,25 @@ def build_workspace_training_dataset(
                 image = src.read()
                 valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
                 for logical in rows:
-                    label_path = resolve_data_path(logical.get("label_path", ""), region)
+                    label_path = resolve_data_path(
+                        logical.get("label_path", ""), region
+                    )
                     if label_path.is_file():
-                        label_fingerprint = logical.get("label_fingerprint") or hashlib.sha256(label_path.read_bytes()).hexdigest()
+                        label_fingerprint = (
+                            logical.get("label_fingerprint")
+                            or hashlib.sha256(label_path.read_bytes()).hexdigest()
+                        )
                         source_signature = str(label_fingerprint)
                         target_mask = rasterize_label(label_path, src)
                     else:
-                        variants = workspace_store.selected_variants(workspace_id, logical.get("site_id", ""))
+                        variants = workspace_store.selected_variants(
+                            workspace_id, logical.get("site_id", "")
+                        )
                         if not variants:
                             continue
-                        source_signature = workspace_store.source_signature(workspace_id, logical.get("site_id", ""))
+                        source_signature = workspace_store.source_signature(
+                            workspace_id, logical.get("site_id", "")
+                        )
                         target_mask = rasterize_source_variants(variants, src)
                     target = np.where(valid, target_mask, 255).astype("uint8")
                     actual = derive_patch(
@@ -336,13 +422,22 @@ def build_workspace_training_dataset(
                         }
                     )
         if not output_rows:
-            raise FileNotFoundError(f"Workspace selection produced no eligible patches for {region.key}: {workspace_id}")
+            raise FileNotFoundError(
+                f"Workspace selection produced no eligible patches for {region.key}: {workspace_id}"
+            )
         output_rows.sort(key=lambda row: row["logical_patch_id"])
         _write_csv(temp_dir / "manifest.csv", output_rows)
-        signature = workspace_dataset_signature(region, config, workspace_store, workspace_id)
+        signature = workspace_dataset_signature(
+            region, config, workspace_store, workspace_id
+        )
         (temp_dir / "build.json").write_text(
             json.dumps(
-                {"workspace_id": workspace_id, "config": config, "signature": signature, "patches": len(output_rows)},
+                {
+                    "workspace_id": workspace_id,
+                    "config": config,
+                    "signature": signature,
+                    "patches": len(output_rows),
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -388,8 +483,12 @@ def build_global_training_dataset(
         if region_key not in regions:
             continue
         variants = _global_row_variants(row, workspace_store)
-        signature = hashlib.sha256(json.dumps(variants, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-        grouped[(region_key, row.get("image_path", ""), signature)].append({**row, "_variants": variants})
+        signature = hashlib.sha256(
+            json.dumps(variants, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        grouped[(region_key, row.get("image_path", ""), signature)].append(
+            {**row, "_variants": variants}
+        )
     try:
         for (region_key, image_text, source_signature), group in grouped.items():
             region = regions[region_key]
@@ -402,47 +501,82 @@ def build_global_training_dataset(
                 variants = group[0]["_variants"]
                 label_snapshot = group[0].get("label_snapshot_json") or ""
                 if label_snapshot:
-                    target_mask = rasterize_label_payload(json.loads(label_snapshot), src)
+                    target_mask = rasterize_label_payload(
+                        json.loads(label_snapshot), src
+                    )
                 elif variants:
                     target_mask = rasterize_source_variants(variants, src)
                 else:
-                    target_mask = rasterize_label(resolve_data_path(group[0].get("label_path", ""), region), src)
+                    target_mask = rasterize_label(
+                        resolve_data_path(group[0].get("label_path", ""), region), src
+                    )
                 target = np.where(valid, target_mask, 255).astype("uint8")
                 for logical in group:
-                    actual = derive_patch(image, target, valid, logical, int(config["output_size"]))
-                    patch_id = logical.get("source_patch_id") or logical.get("logical_patch_id", "")
+                    actual = derive_patch(
+                        image, target, valid, logical, int(config["output_size"])
+                    )
+                    patch_id = logical.get("source_patch_id") or logical.get(
+                        "logical_patch_id", ""
+                    )
                     if not eligible_actual_patch(actual, patch_id, config):
                         continue
                     cache_name = f"{logical.get('source_workspace_id', 'workspace')}-{patch_id}-{source_signature[:16]}.npz"
                     cache_path = cache_dir / cache_name
                     final_cache_path = output_dir / "patch_cache" / cache_name
                     with cache_path.open("wb") as handle:
-                        np.savez_compressed(handle, image=actual["image"], mask=actual["mask"], valid=actual["valid"].astype("uint8"))
-                    output_rows.append({
-                        **{key: value for key, value in logical.items() if not key.startswith("_")},
-                        "patch_id": patch_id,
-                        "dataset_id": scope,
-                        "dataset_config_id": config_id,
-                        "source_signature": source_signature,
-                        "npz_path": display_path(final_cache_path),
-                        "patch_size": config["output_size"],
-                        "valid_ratio": f"{actual['valid_ratio']:.6f}",
-                        "valid_pixels": actual["valid_pixels"],
-                        "water_pixels": actual["water_pixels"],
-                        "water_ratio_valid": f"{actual['water_ratio_valid']:.6f}",
-                        "ignore_pixels": actual["ignore_pixels"],
-                        "include": "true",
-                    })
+                        np.savez_compressed(
+                            handle,
+                            image=actual["image"],
+                            mask=actual["mask"],
+                            valid=actual["valid"].astype("uint8"),
+                        )
+                    output_rows.append(
+                        {
+                            **{
+                                key: value
+                                for key, value in logical.items()
+                                if not key.startswith("_")
+                            },
+                            "patch_id": patch_id,
+                            "dataset_id": scope,
+                            "dataset_config_id": config_id,
+                            "source_signature": source_signature,
+                            "npz_path": display_path(final_cache_path),
+                            "patch_size": config["output_size"],
+                            "valid_ratio": f"{actual['valid_ratio']:.6f}",
+                            "valid_pixels": actual["valid_pixels"],
+                            "water_pixels": actual["water_pixels"],
+                            "water_ratio_valid": f"{actual['water_ratio_valid']:.6f}",
+                            "ignore_pixels": actual["ignore_pixels"],
+                            "include": "true",
+                        }
+                    )
         if not output_rows:
-            raise FileNotFoundError(f"Global Dataset produced no eligible patches: {scope}")
-        output_rows.sort(key=lambda row: (row.get("region", ""), row.get("source_patch_id", "")))
+            raise FileNotFoundError(
+                f"Global Dataset produced no eligible patches: {scope}"
+            )
+        output_rows.sort(
+            key=lambda row: (row.get("region", ""), row.get("source_patch_id", ""))
+        )
         _write_csv(temp_dir / "manifest.csv", output_rows)
-        (temp_dir / "build.json").write_text(json.dumps({"dataset_id": scope, "config": config, "patches": len(output_rows)}, ensure_ascii=False, indent=2), encoding="utf-8")
+        (temp_dir / "build.json").write_text(
+            json.dumps(
+                {"dataset_id": scope, "config": config, "patches": len(output_rows)},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         _replace_directory(temp_dir, output_dir)
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
-    return {"dataset_id": scope, "config_id": config_id, "patches": len(output_rows), "manifest": display_path(output_dir / "manifest.csv")}
+    return {
+        "dataset_id": scope,
+        "config_id": config_id,
+        "patches": len(output_rows),
+        "manifest": display_path(output_dir / "manifest.csv"),
+    }
 
 
 def _global_row_variants(row: dict, workspace_store: "WorkspaceStore") -> list[dict]:
@@ -453,43 +587,11 @@ def _global_row_variants(row: dict, workspace_store: "WorkspaceStore") -> list[d
         except json.JSONDecodeError:
             pass
     workspace_id = row.get("source_workspace_id", "")
-    return workspace_store.selected_variants(workspace_id, row.get("site_id", "")) if workspace_id else []
-
-
-def workspace_training_dataset_status(
-    region: RegionConfig,
-    config_id: str,
-    workspace_store: "WorkspaceStore",
-    workspace_id: str,
-) -> dict:
-    config = dataset_configs()[config_id]
-    output_dir = workspace_store.workspace_dataset_dir(workspace_id, region.key, config_id)
-    metadata_path = output_dir / "build.json"
-    manifest_path = output_dir / "manifest.csv"
-    members = workspace_store.members(workspace_id, region.key)
-    workspace = workspace_store.get(workspace_id)
-    if not members:
-        status, metadata = "missing_selection", {}
-    elif workspace["status"] == "needs_resolution":
-        status, metadata = "needs_resolution", {}
-    elif not metadata_path.exists() or not manifest_path.exists():
-        status, metadata = "missing", {}
-    else:
-        try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            status = "ready" if metadata.get("signature") == workspace_dataset_signature(region, config, workspace_store, workspace_id) else "stale"
-        except (OSError, json.JSONDecodeError):
-            status, metadata = "stale", {}
-    return {
-        "workspace_id": workspace_id,
-        "config": config,
-        "config_id": config_id,
-        "region": region.key,
-        "status": status,
-        "ready": status == "ready",
-        "patches": int(metadata.get("patches") or 0),
-        "manifest": display_path(manifest_path),
-    }
+    return (
+        workspace_store.selected_variants(workspace_id, row.get("site_id", ""))
+        if workspace_id
+        else []
+    )
 
 
 def workspace_logical_patch_preview(
@@ -499,8 +601,16 @@ def workspace_logical_patch_preview(
     workspace_id: str,
     overlay: bool = True,
 ) -> bytes:
-    preview_path = resolve_data_path(row.get("preview_path", ""), region) if row.get("preview_path") else None
-    preview_base_path = resolve_data_path(row.get("preview_base_path", ""), region) if row.get("preview_base_path") else None
+    preview_path = (
+        resolve_data_path(row.get("preview_path", ""), region)
+        if row.get("preview_path")
+        else None
+    )
+    preview_base_path = (
+        resolve_data_path(row.get("preview_base_path", ""), region)
+        if row.get("preview_base_path")
+        else None
+    )
     image_path = resolve_data_path(row.get("image_path", ""), region)
     if not image_path.exists():
         fallback = preview_path if overlay else preview_base_path
@@ -508,24 +618,38 @@ def workspace_logical_patch_preview(
             return fallback.read_bytes()
         if preview_path and preview_path.is_file():
             return preview_path.read_bytes()
-        raise FileNotFoundError(f"logical patch source image not found: {row.get('logical_patch_id', '')}")
+        raise FileNotFoundError(
+            f"logical patch source image not found: {row.get('logical_patch_id', '')}"
+        )
     with rasterio.open(image_path) as src:
         image = src.read()
         valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
         label_path = resolve_data_path(row.get("label_path", ""), region)
         if not label_path.exists():
             if not overlay:
-                actual = derive_patch(image, np.zeros((src.height, src.width), dtype="uint8"), valid, row, LOGICAL_PATCH_SIZE)
+                actual = derive_patch(
+                    image,
+                    np.zeros((src.height, src.width), dtype="uint8"),
+                    valid,
+                    row,
+                    LOGICAL_PATCH_SIZE,
+                )
                 output = BytesIO()
-                preview_image(actual["image"], actual["mask"], actual["valid"], overlay=False).save(output, format="PNG")
+                preview_image(
+                    actual["image"], actual["mask"], actual["valid"], overlay=False
+                ).save(output, format="PNG")
                 return output.getvalue()
             if preview_path and preview_path.is_file():
                 return preview_path.read_bytes()
-            raise FileNotFoundError(f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}")
+            raise FileNotFoundError(
+                f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}"
+            )
         label = rasterize_label(label_path, src)
         target = np.where(valid, label, 255).astype("uint8")
         actual = derive_patch(image, target, valid, row, LOGICAL_PATCH_SIZE)
-    preview = preview_image(actual["image"], actual["mask"], actual["valid"], overlay=overlay)
+    preview = preview_image(
+        actual["image"], actual["mask"], actual["valid"], overlay=overlay
+    )
     output = BytesIO()
     preview.save(output, format="PNG")
     return output.getvalue()
