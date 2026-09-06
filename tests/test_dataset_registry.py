@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,56 @@ from lake_workbench.utils import write_csv_records
 
 
 class DatasetRegistryTests(unittest.TestCase):
+    def test_concurrent_contributions_keep_every_patch_and_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "workspace" / "manifest.csv"
+            rows = [
+                {
+                    "logical_patch_id": f"patch-{index}",
+                    "region": "gansu",
+                    "include": "true",
+                    "image_fingerprint": f"image-{index}",
+                    "bounds_left": index,
+                    "bounds_bottom": 0,
+                    "bounds_right": index + 0.5,
+                    "bounds_top": 0.5,
+                }
+                for index in range(8)
+            ]
+            write_csv_records(source, rows)
+            store = SimpleNamespace(
+                regions={"gansu": object()},
+                ensure_workspace_logical_patch_manifest=lambda _workspace, _region: source,
+            )
+            registry = DatasetRegistry(root / "global")
+            barrier = threading.Barrier(len(rows))
+            errors = []
+
+            def contribute(row: dict) -> None:
+                try:
+                    barrier.wait()
+                    registry.contribute(
+                        store,
+                        "workspace",
+                        "gansu",
+                        "gansu",
+                        [row["logical_patch_id"]],
+                    )
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=contribute, args=(row,)) for row in rows]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assertEqual(errors, [])
+            self.assertEqual(registry.list("gansu")["total"], len(rows))
+            versions = list((registry.root / "gansu" / "versions").glob("*.csv"))
+            self.assertEqual(len(versions), len(rows))
+
     def test_contribution_detects_duplicate_and_spatial_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

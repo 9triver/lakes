@@ -31,6 +31,7 @@ class RegionService:
         items = []
         for key, catalog in self.catalogs.items():
             region = catalog.region
+            site_count = catalog.site_count()
             items.append(
                 {
                     "key": key,
@@ -39,7 +40,7 @@ class RegionService:
                     "bounds": list(region.bounds) if region.bounds else None,
                     "ready": catalog.load_error is None,
                     "load_error": catalog.load_error,
-                    "site_count": len(catalog.sites),
+                    "site_count": site_count,
                     **catalog.imagery_inventory_summary(),
                     "has_metadata": region.site_metadata.exists(),
                     "has_osm_water": region.osm_water.exists(),
@@ -136,8 +137,6 @@ class RegionService:
                 status = "missing_selection"
             elif statuses == {"ready"}:
                 status = "ready"
-            elif "needs_resolution" in statuses:
-                status = "needs_resolution"
             elif "stale" in statuses:
                 status = "stale"
             else:

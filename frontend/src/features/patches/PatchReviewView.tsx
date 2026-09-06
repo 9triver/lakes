@@ -26,7 +26,7 @@ export function PatchReviewView({ workspaceId, scope, siteId = "", sourceSampleI
   const [active, setActive] = useState<TrainingPatch | null>(null);
   const [showLabelOverlay, setShowLabelOverlay] = useState(true);
   const query = useTrainingPatches(workspaceId, scope, "", sourceSampleId, siteId);
-  const update = useUpdateTrainingPatch(workspaceId, scope, "");
+  const update = useUpdateTrainingPatch(workspaceId, scope);
   const contribute = useContributePatches(workspaceId, scope);
   const allItems = query.data?.items || [];
   const counts = useMemo(() => ({

@@ -128,10 +128,11 @@ def main() -> None:
     print(f"Default User: {default_user['name']} -> {default_user['default_workspace_id']}")
     print(f"Authentication: {auth_service.mode}")
     for key, catalog in catalogs.items():
+        site_count = catalog.site_count()
         status = "ready" if catalog.load_error is None else catalog.load_error
         imagery_summary = catalog.imagery_inventory_summary()
         print(
-            f"Region {key}: {len(catalog.sites)} sites, "
+            f"Region {key}: {site_count} sites, "
             f"{imagery_summary['tci_tile_count']} imagery tiles, "
             f"{imagery_summary['active_imagery_count']} active imagery selections, {status}"
         )

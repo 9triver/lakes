@@ -7,7 +7,7 @@ import threading
 from http import HTTPStatus
 from urllib.parse import parse_qs
 
-from lake_workbench.imagery import blank_png
+from lake_workbench.imagery.display import blank_png
 from lake_workbench.routes.regions import site_list_options
 
 

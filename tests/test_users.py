@@ -17,9 +17,7 @@ class FakeWorkspaceStore:
                 "status": "active",
                 "selected_patch_count": 3,
                 "site_count": 2,
-                "conflict_count": 0,
                 "default": True,
-                "source_workspace_ids": [],
             }
         }
         self.created = []
@@ -32,7 +30,7 @@ class FakeWorkspaceStore:
             raise KeyError(workspace_id)
         return self.items[workspace_id]
 
-    def create(self, name, mode="empty", source_workspace_ids=None):
+    def create(self, name):
         workspace_id = f"workspace-{len(self.items)}"
         workspace = {
             "id": workspace_id,
@@ -40,12 +38,10 @@ class FakeWorkspaceStore:
             "status": "active",
             "selected_patch_count": 0,
             "site_count": 0,
-            "conflict_count": 0,
             "default": False,
-            "source_workspace_ids": list(source_workspace_ids or []),
         }
         self.items[workspace_id] = workspace
-        self.created.append((name, mode, list(source_workspace_ids or [])))
+        self.created.append(name)
         return workspace
 
 
@@ -68,10 +64,10 @@ class UserStoreTests(unittest.TestCase):
 
     def test_create_user_creates_exactly_one_workspace_mapping(self) -> None:
         self.store.ensure_default_user()
-        user = self.store.create("Alice", "union", ["default"])
+        user = self.store.create("Alice")
 
         self.assertEqual(len(self.workspaces.created), 1)
-        self.assertEqual(user["workspace"]["source_workspace_ids"], ["default"])
+        self.assertEqual(self.workspaces.created, ["Alice的训练工作区"])
         self.assertEqual(user["default_workspace_id"], user["workspace"]["id"])
         self.assertNotEqual(user["id"], user["default_workspace_id"])
 

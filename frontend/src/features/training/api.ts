@@ -61,8 +61,6 @@ export interface TrainingDatasetConfigStatus {
   patches: number;
 }
 
-export interface DatasetBuildJob { job_id: string; status: string; message?: string; progress?: number }
-
 const runningStatuses = new Set(["queued", "configured", "running", "cancel_requested"]);
 
 export function isTrainingRunActive(run?: TrainingRun) {
@@ -108,45 +106,5 @@ export function useGlobalDataset(workspaceId: string, scope: string) {
     queryKey: ["global-dataset", workspaceId, scope],
     queryFn: () => getJson<GlobalDataset>(workspaceRegionApi(workspaceId, scope, "/global-dataset")),
     enabled: Boolean(workspaceId && scope),
-  });
-}
-
-export function useBuildGlobalDataset(workspaceId: string, scope: string) {
-  return useMutation({
-    mutationFn: (configId: string) => postJson<DatasetBuildJob>(workspaceRegionApi(workspaceId, scope, "/global-dataset/build-jobs"), { config_id: configId }),
-  });
-}
-
-export function useGlobalDatasetBuildJob(workspaceId: string, scope: string, jobId: string) {
-  const client = useQueryClient();
-  return useQuery({
-    queryKey: ["global-dataset-build", workspaceId, scope, jobId],
-    queryFn: async () => {
-      const job = await getJson<DatasetBuildJob>(workspaceRegionApi(workspaceId, scope, `/global-dataset/build-jobs/${encodeURIComponent(jobId)}`));
-      if (job.status === "completed") await client.invalidateQueries({ queryKey: ["global-dataset", workspaceId, scope] });
-      return job;
-    },
-    enabled: Boolean(workspaceId && scope && jobId),
-    refetchInterval: (query) => ["completed", "failed"].includes(query.state.data?.status || "") ? false : 1500,
-  });
-}
-
-export function useBuildTrainingDataset(workspaceId: string, scope: string) {
-  return useMutation({ mutationFn: (configId: string) => postJson<DatasetBuildJob>(workspaceRegionApi(workspaceId, scope, `/training-datasets/${encodeURIComponent(configId)}/build-jobs`), {}) });
-}
-
-export function useTrainingDatasetBuildJob(workspaceId: string, scope: string, configId: string, jobId: string) {
-  const client = useQueryClient();
-  return useQuery({
-    queryKey: ["training-dataset-build", workspaceId, scope, configId, jobId],
-    queryFn: async () => {
-      const job = await getJson<DatasetBuildJob>(workspaceRegionApi(workspaceId, scope, `/training-datasets/${encodeURIComponent(configId)}/build-jobs/${encodeURIComponent(jobId)}`));
-      if (job.status === "completed") {
-        await Promise.all([client.invalidateQueries({ queryKey: ["training-datasets", workspaceId, scope] }), client.invalidateQueries({ queryKey: ["training-runs", workspaceId, scope] })]);
-      }
-      return job;
-    },
-    enabled: Boolean(workspaceId && scope && configId && jobId),
-    refetchInterval: (query) => ["completed", "failed"].includes(query.state.data?.status || "") ? false : 1500,
   });
 }

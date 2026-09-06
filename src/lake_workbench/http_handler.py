@@ -19,7 +19,7 @@ from lake_workbench.regions.service import RegionService
 from lake_workbench.auth import AuthError, AuthIdentity
 from lake_workbench.routes.auth import handle_auth_get
 from lake_workbench.routes.frontend import handle_frontend_get
-from lake_workbench.routes.workspaces import handle_workspace_get, handle_workspace_patch
+from lake_workbench.routes.workspaces import handle_workspace_get
 from lake_workbench.routes.users import handle_user_get, handle_user_patch, handle_user_post
 from lake_workbench.routes.sites import handle_site_get, handle_site_post
 from lake_workbench.routes.models import handle_model_get
@@ -127,8 +127,6 @@ class SiteHandler(BaseHTTPRequestHandler):
                 return
 
             if handle_user_patch(self, path):
-                return
-            if handle_workspace_patch(self, path):
                 return
             if not handle_training_patch(self, path):
                 self._error(HTTPStatus.NOT_FOUND, "Not found")

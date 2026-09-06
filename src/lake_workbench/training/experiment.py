@@ -1,20 +1,14 @@
-#!/usr/bin/env python3
-"""Train a registered water-segmentation model from exported patch npz files."""
+"""Train a registered water-segmentation model from materialized Patch data."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 import threading
-import time
+from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
-
-from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs  # noqa: E402
-from lake_workbench.models.runtime import (  # noqa: E402
+from lake_workbench.models.runtime import (
     PIXEL_MLP_HIDDEN_CHANNELS,
     SUPPORTED_MODEL_TYPES,
     architecture_label,
@@ -22,15 +16,17 @@ from lake_workbench.models.runtime import (  # noqa: E402
     model_options,
     normalize_model_type,
 )
-from lake_workbench.training.datasets import split_rows_by_site  # noqa: E402
-from lake_workbench.training.unet.data import (  # noqa: E402
+from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.regions.config import DEFAULT_CONFIG_PATH, load_region_configs
+from lake_workbench.training.datasets import split_rows_by_site
+from lake_workbench.training.unet.data import (
     compute_normalization,
     compute_pos_weight,
     load_manifest_rows,
     make_patch_dataset,
     patch_channels,
 )
-from lake_workbench.training.unet.engine import (  # noqa: E402
+from lake_workbench.training.unet.engine import (
     choose_device,
     emit_progress,
     format_epoch,
@@ -38,7 +34,7 @@ from lake_workbench.training.unet.engine import (  # noqa: E402
     save_checkpoint,
     seed_everything,
 )
-from lake_workbench.utils import display_path  # noqa: E402
+from lake_workbench.utils import display_path
 
 
 REGIONS, DEFAULT_REGION_KEY = load_region_configs(DEFAULT_CONFIG_PATH)
@@ -121,7 +117,14 @@ def train_model(args: argparse.Namespace, progress_callback=None, cancel_event: 
         getattr(args, "dataset_config_id", "resize256_v1"),
         getattr(args, "workspace_id", "default"),
     )
-    output_dir = args.output_dir or MODEL_ROOT / "workspaces" / getattr(args, "workspace_id", "default") / args.region / f"{selected_model_type}_{time.strftime('%Y%m%d_%H%M%S')}"
+    output_dir = (
+        args.output_dir
+        or MODEL_ROOT
+        / "workspaces"
+        / getattr(args, "workspace_id", "default")
+        / args.region
+        / f"{selected_model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = load_manifest_rows(manifest)
@@ -290,10 +293,6 @@ def latest_manifest(region, patch_dir: Path | None, dataset_config_id: str = "re
     if not manifest.exists():
         raise SystemExit(f"training dataset manifest not found: {manifest}; run scripts/build_training_dataset.py first")
     return manifest
-
-
-# Compatibility for callers that imported the old training function directly.
-train_unet = train_model
 
 
 if __name__ == "__main__":

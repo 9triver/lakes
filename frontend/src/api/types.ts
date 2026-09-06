@@ -8,11 +8,9 @@ export interface RegionSummary {
 export interface TrainingWorkspace {
   id: string;
   name: string;
-  status: "active" | "needs_resolution" | "archived";
-  source_workspace_ids: string[];
+  status: "active" | "archived";
   selected_patch_count: number;
   site_count: number;
-  conflict_count: number;
   default: boolean;
   training_defaults?: Record<string, unknown>;
   created_at?: string;
@@ -39,22 +37,6 @@ export interface AuthSession {
   identity: { provider: string; subject: string; email: string; name: string };
   user: WorkbenchUser;
   logout_url: string;
-}
-
-export interface SourceVariant {
-  id: string;
-  site_id: string;
-  source: string;
-  label: string;
-  parameters?: Record<string, unknown>;
-  sample_ids?: string[];
-}
-
-export interface SiteSourceConflict {
-  site_id: string;
-  candidate_variant_ids: string[];
-  source_workspace_ids: string[];
-  variants: SourceVariant[];
 }
 
 export interface RegionsResponse {
@@ -157,32 +139,6 @@ export interface SentinelTile {
   product?: string | null;
 }
 
-export interface SentinelProduct {
-  product_id: string;
-  name: string;
-  tile: string;
-  date?: string;
-  cloud_cover?: number;
-  site_coverage_ratio?: number;
-  aoi_coverage_ratio?: number;
-  downloaded?: boolean;
-}
-
-export interface TrainingSample {
-  sample_id: string;
-  site_id: string;
-  site_display_name?: string;
-  site_name?: string;
-  region?: string;
-  region_name?: string;
-  status?: string;
-  notes?: string;
-  label_source?: string;
-  product_date?: string;
-  tile_count?: number;
-  imagery_asset_labels?: string[];
-}
-
 export interface TrainingPatch {
   patch_id: string;
   sample_id: string;
@@ -204,13 +160,10 @@ export interface TrainingPatch {
   product_date?: string;
   label_source?: string;
   label_sources?: string;
-  label_scope?: string;
-  mask_policy?: string;
   logical_patch_id?: string;
   image_index?: number | string;
   geometry?: GeoJsonGeometry | null;
   workspace_id?: string;
-  source_variants?: SourceVariant[];
   logical_size?: number | string;
   window_width?: number | string;
   window_height?: number | string;

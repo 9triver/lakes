@@ -12,7 +12,8 @@ from rasterio.transform import from_bounds
 
 from lake_workbench.imagery.inventory import ImageryInventoryMixin
 from lake_workbench.imagery.formats import local_imagery_paths, local_imagery_paths_from_roots
-from lake_workbench.imagery.raster import display_band_indexes, render_tci_xyz_tile
+from lake_workbench.imagery.display import display_band_indexes
+from lake_workbench.imagery.tiles import render_tci_xyz_tile
 from lake_workbench.imagery.validity import valid_pixel_mask
 
 
@@ -154,7 +155,7 @@ class ImageryRasterTests(unittest.TestCase):
             ) as dataset:
                 dataset.write(data)
 
-            from lake_workbench.imagery.raster import render_tci_png
+            from lake_workbench.imagery.mosaic import render_tci_png
 
             payload, _meta = render_tci_png(path, (0, 0, 4, 4), size=64, padding=0)
             with Image.open(BytesIO(payload)) as image:

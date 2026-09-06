@@ -7,16 +7,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lake_workbench.geo import site_aoi_geometry
 from lake_workbench.sentinel.download import upsert_csv_row
 from lake_workbench.training.identity import (
     bbox_from_row,
     bbox_iou,
+    normalized_view_extent,
     training_view_signature,
 )
 from lake_workbench.utils import (
     clean_optional,
-    count_values,
     display_path,
     parse_float_or_default,
     parse_int_or_default,
@@ -28,6 +27,8 @@ from lake_workbench.utils import (
     write_csv_records,
     write_training_label,
 )
+from shapely.geometry import box, mapping, shape
+from shapely.validation import make_valid
 
 
 class TrainingSampleCatalogMixin:
@@ -43,7 +44,6 @@ class TrainingSampleCatalogMixin:
         samples_path: Path | None = None,
         label_dir: Path | None = None,
     ) -> dict:
-        readiness = self.training_sample_readiness(site)
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
         view_state = (
@@ -60,20 +60,10 @@ class TrainingSampleCatalogMixin:
             view_state.get("model_prediction_excluded"), default=True
         )
         is_current_view = label_source == "current_view" or bool(view_state)
-        label_scope = clean_optional(payload.get("label_scope")) or (
-            "current_view" if is_current_view else "target_only"
-        )
-        mask_policy = clean_optional(payload.get("mask_policy")) or (
-            "current_view" if is_current_view else "other_water_ignore"
-        )
         context_sources = clean_optional(payload.get("context_sources")) or (
             "" if is_current_view else "osm,hydrolakes"
         )
-        ignore_sources = clean_optional(payload.get("ignore_sources")) or (
-            "" if is_current_view else "osm,hydrolakes,esa,jrc"
-        )
         buffer_ratio = parse_float_or_default(payload.get("buffer_ratio"), 0.8)
-        aoi = site_aoi_geometry(site, padding=buffer_ratio)
         if is_current_view:
             label_source = "current_view"
             label_layer = self.current_view_training_label_layer(
@@ -89,6 +79,9 @@ class TrainingSampleCatalogMixin:
             )
         else:
             label_layer = self.training_label_layer(site, label_source, label_threshold)
+        view_extent = normalized_view_extent(view_state)
+        if is_current_view and view_extent:
+            label_layer = _clip_label_layer(label_layer, view_extent)
         has_label_geometry = bool(
             label_layer
             and (
@@ -101,7 +94,7 @@ class TrainingSampleCatalogMixin:
         )
         if not has_label_geometry:
             raise ValueError(f"label source has no geometry: {label_source}")
-        products = readiness["products"]
+        products = self.selected_training_imagery(site, view_state)
         product_names = [item["product_name"] for item in products]
         tile_names = [item["tile"] for item in products]
         product_key = ",".join(product_names)
@@ -110,8 +103,6 @@ class TrainingSampleCatalogMixin:
             product_key,
             label_source,
             label_threshold,
-            label_scope,
-            mask_policy,
             view_state,
         )
         samples_path = samples_path or self.region.training_samples
@@ -154,10 +145,7 @@ class TrainingSampleCatalogMixin:
             sample_id,
             label_layer,
             {
-                "label_scope": label_scope,
-                "mask_policy": mask_policy,
                 "context_sources": context_sources,
-                "ignore_sources": ignore_sources,
                 "model_prediction_excluded": model_prediction_excluded,
             },
             output_dir=label_dir,
@@ -171,10 +159,6 @@ class TrainingSampleCatalogMixin:
             "site_name": site.display_name or "",
             "tile": ",".join(tile_names),
             "tiles": ",".join(tile_names),
-            "required_tiles": ",".join(readiness.get("required_tiles") or []),
-            "ready_tiles": ",".join(tile_names),
-            "missing_tiles": ",".join(readiness.get("missing_tiles") or []),
-            "imagery_ready": "true" if readiness.get("ready") else "false",
             "product_id": ",".join(item.get("product_id", "") for item in products),
             "product_name": product_key,
             "products": product_key,
@@ -190,18 +174,9 @@ class TrainingSampleCatalogMixin:
             "tci_path": ";".join(item.get("tci_path", "") for item in products),
             "label_source": label_source,
             "label_threshold": label_threshold,
-            "label_scope": label_scope,
-            "mask_policy": mask_policy,
             "context_sources": context_sources,
-            "ignore_sources": ignore_sources,
             "label_path": display_path(label_path),
-            "aoi_west": aoi.bounds[0],
-            "aoi_south": aoi.bounds[1],
-            "aoi_east": aoi.bounds[2],
-            "aoi_north": aoi.bounds[3],
             "buffer_ratio": buffer_ratio,
-            "quality": clean_optional(payload.get("quality")) or "",
-            "split": clean_optional(payload.get("split")) or "",
             "training_fingerprint": fingerprint,
             "training_base_fingerprint": base_fingerprint,
             "view_west": view_extent[0] if view_extent else "",
@@ -245,7 +220,6 @@ class TrainingSampleCatalogMixin:
             "diagnostic_model_device": clean_optional(model_validation.get("device"))
             or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "notes": clean_optional(payload.get("notes")) or "",
         }
         upsert_csv_row(samples_path, row, key="sample_id")
         return {
@@ -361,8 +335,6 @@ class TrainingSampleCatalogMixin:
         return {
             "total": len(samples),
             "items": samples,
-            "quality_counts": count_values(item.get("quality") for item in samples),
-            "split_counts": count_values(item.get("split") for item in samples),
         }
 
     def update_training_sample(
@@ -371,15 +343,7 @@ class TrainingSampleCatalogMixin:
         samples_path = samples_path or self.region.training_samples
         rows = read_csv_records(samples_path)
         updated = None
-        allowed = {
-            "quality",
-            "split",
-            "notes",
-            "label_scope",
-            "mask_policy",
-            "context_sources",
-            "ignore_sources",
-        }
+        allowed = {"context_sources"}
         for row in rows:
             if row.get("sample_id") != str(sample_id):
                 continue
@@ -446,16 +410,29 @@ class TrainingSampleCatalogMixin:
             else "ok",
         }
 
-    def training_sample_readiness(self, site: Any, buffer_ratio: float = 0.8) -> dict:
-        aoi = site_aoi_geometry(site, padding=buffer_ratio)
-        tiles = self._required_sentinel_tiles_for_site(site)
+    def selected_training_imagery(self, site: Any, view_state: dict) -> list[dict]:
+        selected_asset = clean_optional(view_state.get("selected_imagery_asset_id")) or ""
+        selected_product = clean_optional(view_state.get("selected_product")) or ""
+        local_rows = self._local_imagery_rows_for_site(site)
+        selected = next(
+            (
+                row
+                for row in local_rows
+                if (selected_asset and selected_asset in {row.get("product_id"), row.get("product")})
+                or (selected_product and selected_product == row.get("product"))
+            ),
+            None,
+        )
+        if selected is None:
+            selected = self._active_local_imagery_row(site)
+        rows = [selected] if selected is not None else [
+            row
+            for tile in self._required_sentinel_tiles_for_site(site)
+            if (row := self._active_imagery_row(tile, site)) is not None
+        ]
         products = []
-        missing_tiles = []
-        for tile in tiles:
-            row = self._active_imagery_row(tile, site)
-            if row is None:
-                missing_tiles.append(tile)
-                continue
+        for row in rows:
+            tile = clean_optional(row.get("tile")) or ""
             products.append(
                 {
                     "tile": tile,
@@ -473,22 +450,7 @@ class TrainingSampleCatalogMixin:
                     else "",
                 }
             )
-        return {
-            "site_id": site.site_id,
-            "ready": bool(tiles) and not missing_tiles,
-            "required_tiles": tiles,
-            "missing_tiles": missing_tiles,
-            "ready_tiles": [item["tile"] for item in products],
-            "required_count": len(tiles),
-            "ready_count": len(products),
-            "missing_count": len(missing_tiles),
-            "products": products,
-            "buffer_ratio": buffer_ratio,
-            "aoi_bounds": list(aoi.bounds),
-            "message": "ready"
-            if tiles and not missing_tiles
-            else "active imagery selection is incomplete",
-        }
+        return products
 
     def training_label_layer(
         self, site: Any, label_source: str, label_threshold: str = ""
@@ -504,3 +466,30 @@ class TrainingSampleCatalogMixin:
         self, site: Any, source: str, options: dict | None = None
     ) -> dict | None:
         return self.annotation_for_site(site, source, options).get("annotation")
+
+
+def _clip_label_layer(layer: dict | None, extent: list[float]) -> dict | None:
+    if not layer:
+        return layer
+    clip = box(*extent)
+    features = layer.get("features") if layer.get("type") == "FeatureCollection" else [layer]
+    clipped = []
+    for feature in features or []:
+        geometry_payload = feature.get("geometry")
+        if not geometry_payload:
+            continue
+        geometry = make_valid(shape(geometry_payload)).intersection(clip)
+        if geometry.is_empty:
+            continue
+        clipped.append(
+            {
+                "type": "Feature",
+                "geometry": mapping(make_valid(geometry)),
+                "properties": dict(feature.get("properties") or {}),
+            }
+        )
+    return {
+        "type": "FeatureCollection",
+        "features": clipped,
+        "properties": dict(layer.get("properties") or {}),
+    }

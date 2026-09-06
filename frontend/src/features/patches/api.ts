@@ -64,7 +64,7 @@ export function useTrainingPatchSites(workspaceId: string, scope: string, enable
   });
 }
 
-export function useUpdateTrainingPatch(workspaceId: string, scope: string, include: string) {
+export function useUpdateTrainingPatch(workspaceId: string, scope: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ patch, replace = false }: { patch: TrainingPatch; replace?: boolean }) => patchJson(workspaceRegionApi(workspaceId, patch.region || scope, `/logical-patches/${encodeURIComponent(patch.patch_id)}`), { include: !patch.included, replace }),
@@ -109,7 +109,7 @@ export function useSiteLogicalPatches(workspaceId: string, region: string, siteI
   });
 }
 
-export function useBatchUpdateLogicalPatches(workspaceId: string, region: string, siteId: string) {
+export function useBatchUpdateLogicalPatches(workspaceId: string, region: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ operation, ids }: { operation: "exclude" | "restore"; ids: string[] }) => patchJson(workspaceRegionApi(workspaceId, region, "/logical-patches"), { operation, logical_patch_ids: ids }),

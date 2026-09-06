@@ -30,8 +30,6 @@ class RegionConfig:
     cache_dir: Path
     shared_data_dir: Path
     bounds: tuple[float, float, float, float] | None = None
-    metadata_source: str = "osm"
-    uid_prefix: str = ""
     geofabrik: str = ""
     external_raster_mode: str = "clip"
     local_imagery_root: Path | None = None
@@ -56,10 +54,6 @@ class RegionConfig:
     @property
     def site_metadata(self) -> Path:
         return self.processed_dir / "site_metadata.gpkg"
-
-    @property
-    def site_metadata_csv(self) -> Path:
-        return self.processed_dir / "site_metadata.csv"
 
     @property
     def hydrolakes(self) -> Path:
@@ -168,8 +162,6 @@ def region_from_mapping(
         cache_dir=project_path(value.get("cache_dir", f"data/cache/{key}")),
         shared_data_dir=shared_data_dir or project_path("data/shared"),
         bounds=tuple(float(item) for item in bounds) if bounds else None,
-        metadata_source=str(value.get("metadata_source", "osm")),
-        uid_prefix=str(value.get("uid_prefix", key)),
         geofabrik=str(value.get("geofabrik", "")),
         external_raster_mode=str(value.get("external_raster_mode", "clip")),
         local_imagery_root=(

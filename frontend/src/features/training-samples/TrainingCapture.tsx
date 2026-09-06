@@ -106,8 +106,6 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
       const result = await postJson<SaveResponse>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/training-samples`), {
         label_source: "current_view",
         label_threshold: String(jrcThreshold),
-        label_scope: "current_view",
-        mask_policy: "current_view",
         buffer_ratio: 0.8,
         auto_patch: true,
         view_state: viewState,

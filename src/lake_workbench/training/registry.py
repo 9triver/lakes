@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import time
 import tempfile
+import threading
+import uuid
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 from lake_workbench.paths import PROJECT_ROOT
@@ -47,6 +51,7 @@ class DatasetRegistry:
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or PROJECT_ROOT / "data" / "global_datasets"
+        self._lock = threading.RLock()
 
     def manifest_path(self, scope: str) -> Path:
         return self.root / scope / "manifest.csv"
@@ -54,9 +59,27 @@ class DatasetRegistry:
     def dataset_dir(self, scope: str, config_id: str) -> Path:
         return self.root / scope / "datasets" / config_id
 
+    @contextmanager
+    def transaction(self):
+        """Serialize one shared Dataset read/materialization or mutation."""
+        with self._lock:
+            yield
+
+    @staticmethod
+    def _version_id() -> str:
+        timestamp = datetime.now().astimezone().strftime("v%Y%m%d_%H%M%S_%f")
+        return f"{timestamp}_{uuid.uuid4().hex[:8]}"
+
+    def _write_version(self, scope: str, rows: list[dict]) -> tuple[str, Path]:
+        version = self._version_id()
+        version_path = self.root / scope / "versions" / f"{version}.csv"
+        write_csv_records(version_path, rows)
+        return version, version_path
+
     def list(self, scope: str) -> dict:
-        rows = read_csv_records(self.manifest_path(scope))
-        versions = sorted((self.root / scope / "versions").glob("*.csv")) if (self.root / scope / "versions").exists() else []
+        with self._lock:
+            rows = read_csv_records(self.manifest_path(scope))
+            versions = sorted((self.root / scope / "versions").glob("*.csv")) if (self.root / scope / "versions").exists() else []
         return {
             "dataset_id": scope,
             "scope": scope,
@@ -72,16 +95,21 @@ class DatasetRegistry:
         result = {patch_id: [] for patch_id in wanted}
         if not wanted or not self.root.exists():
             return result
-        for manifest in sorted(self.root.glob("*/manifest.csv")):
-            scope = manifest.parent.name
-            for row in read_csv_records(manifest):
-                patch_id = row.get("source_patch_id", "")
-                if row.get("source_workspace_id") == workspace_id and patch_id in wanted:
-                    result[patch_id].append(scope)
+        with self._lock:
+            for manifest in sorted(self.root.glob("*/manifest.csv")):
+                scope = manifest.parent.name
+                for row in read_csv_records(manifest):
+                    patch_id = row.get("source_patch_id", "")
+                    if row.get("source_workspace_id") == workspace_id and patch_id in wanted:
+                        result[patch_id].append(scope)
         return result
 
     def withdraw(self, workspace_id: str, scope: str, patch_ids: list[str]) -> dict:
         """Remove contributed snapshots without modifying their source Workspace Patches."""
+        with self._lock:
+            return self._withdraw_locked(workspace_id, scope, patch_ids)
+
+    def _withdraw_locked(self, workspace_id: str, scope: str, patch_ids: list[str]) -> dict:
         wanted = set(patch_ids)
         path = self.manifest_path(scope)
         existing = read_csv_records(path)
@@ -91,9 +119,7 @@ class DatasetRegistry:
         ]
         final_rows = [row for row in existing if row not in removed]
         write_csv_records(path, final_rows)
-        version = time.strftime("v%Y%m%d_%H%M%S")
-        version_path = self.root / scope / "versions" / f"{version}.csv"
-        write_csv_records(version_path, final_rows)
+        version, version_path = self._write_version(scope, final_rows)
         return {
             "dataset_id": scope,
             "scope": scope,
@@ -106,6 +132,21 @@ class DatasetRegistry:
         }
 
     def contribute(
+        self,
+        workspace_store,
+        workspace_id: str,
+        scope: str,
+        region: str,
+        patch_ids: list[str],
+        *,
+        replace: bool = False,
+    ) -> dict:
+        with self._lock:
+            return self._contribute_locked(
+                workspace_store, workspace_id, scope, region, patch_ids, replace=replace
+            )
+
+    def _contribute_locked(
         self,
         workspace_store,
         workspace_id: str,
@@ -186,17 +227,13 @@ class DatasetRegistry:
                 "global_dataset_id": scope,
                 "source_workspace_id": workspace_id,
                 "source_patch_id": source_patch_id,
-                "source_variant_ids": "",
-                "source_variants_json": "[]",
                 "label_snapshot_json": label_snapshot,
                 "contributed_at": timestamp,
                 "contribution_status": "accepted",
             })
         final_rows = existing + added
         write_csv_records(path, final_rows)
-        version = time.strftime("v%Y%m%d_%H%M%S")
-        version_path = self.root / scope / "versions" / f"{version}.csv"
-        write_csv_records(version_path, final_rows)
+        version, version_path = self._write_version(scope, final_rows)
         return {
             "dataset_id": scope,
             "scope": scope,
@@ -219,35 +256,34 @@ class DatasetRegistry:
         replace: bool = False,
     ) -> dict:
         """Validate a cross-region contribution before committing one Dataset version."""
-        path = self.manifest_path(scope)
-        with tempfile.TemporaryDirectory() as directory:
-            staged = DatasetRegistry(Path(directory))
-            write_csv_records(staged.manifest_path(scope), read_csv_records(path))
-            results = [
-                staged.contribute(
-                    workspace_store,
-                    workspace_id,
-                    scope,
-                    region,
-                    patch_ids,
-                    replace=replace,
-                )
-                for region, patch_ids in sorted(source_groups.items())
-                if patch_ids
-            ]
-            final_rows = read_csv_records(staged.manifest_path(scope))
-        write_csv_records(path, final_rows)
-        version = time.strftime("v%Y%m%d_%H%M%S")
-        version_path = self.root / scope / "versions" / f"{version}.csv"
-        write_csv_records(version_path, final_rows)
-        return {
-            "dataset_id": scope,
-            "scope": scope,
-            "added": sum(item["added"] for item in results),
-            "replaced": sum(item["replaced"] for item in results),
-            "total": len(final_rows),
-            "conflicts": [conflict for item in results for conflict in item.get("conflicts", [])],
-            "manifest": display_path(path),
-            "version": version,
-            "version_manifest": display_path(version_path),
-        }
+        with self._lock:
+            path = self.manifest_path(scope)
+            with tempfile.TemporaryDirectory() as directory:
+                staged = DatasetRegistry(Path(directory))
+                write_csv_records(staged.manifest_path(scope), read_csv_records(path))
+                results = [
+                    staged.contribute(
+                        workspace_store,
+                        workspace_id,
+                        scope,
+                        region,
+                        patch_ids,
+                        replace=replace,
+                    )
+                    for region, patch_ids in sorted(source_groups.items())
+                    if patch_ids
+                ]
+                final_rows = read_csv_records(staged.manifest_path(scope))
+            write_csv_records(path, final_rows)
+            version, version_path = self._write_version(scope, final_rows)
+            return {
+                "dataset_id": scope,
+                "scope": scope,
+                "added": sum(item["added"] for item in results),
+                "replaced": sum(item["replaced"] for item in results),
+                "total": len(final_rows),
+                "conflicts": [conflict for item in results for conflict in item.get("conflicts", [])],
+                "manifest": display_path(path),
+                "version": version,
+                "version_manifest": display_path(version_path),
+            }

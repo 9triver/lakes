@@ -56,11 +56,7 @@ def handle_user_post(handler, path: str) -> bool:
                 handler._error(HTTPStatus.FORBIDDEN, "仅管理员可以创建用户")
                 return True
             payload = handler._read_json()
-            user = store.create(
-                payload.get("name", ""),
-                payload.get("workspace_mode", "empty"),
-                payload.get("source_workspace_ids") or [],
-            )
+            user = store.create(payload.get("name", ""))
             handler._json({"user": user})
         elif re.fullmatch(r"/api/users/[^/]+/(?:archive|restore)", path):
             user_id, operation = path.split("/")[-2:]

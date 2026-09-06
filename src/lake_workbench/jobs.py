@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import uuid
+from datetime import datetime
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,11 +18,11 @@ from lake_workbench.utils import clean_optional, safe_filename
 from lake_workbench.workspaces import WorkspacePatchConflict
 
 
-JobRunner = Callable[..., dict]
-
-
 class TrainingRunActiveError(RuntimeError):
     """Raised when a caller tries to remove a job that is still running."""
+
+
+TRAINING_SLOT = threading.BoundedSemaphore(1)
 
 
 def _timestamp() -> str:
@@ -219,12 +220,12 @@ class TrainingManager:
 
     def create(self, options: dict) -> dict:
         options = {**options, "workspace_id": self.workspace_id} if self.workspace_id else dict(options)
+        job_id = uuid.uuid4().hex[:12]
         run_name = safe_filename(
             clean_optional(options.get("run_name"))
-            or f"{normalize_model_type(options.get('model_type') or 'unet')}_{time.strftime('%Y%m%d_%H%M%S')}"
+            or f"{normalize_model_type(options.get('model_type') or 'unet')}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         )
         options["run_name"] = run_name
-        job_id = uuid.uuid4().hex[:12]
         cancel_event = threading.Event()
         job = {
             "job_id": job_id,
@@ -345,7 +346,14 @@ class TrainingManager:
             return
         options = job["options"]
         cancel_event = self.cancel_events[job_id]
+        acquired = False
         try:
+            self._update(job_id, status="queued", message="等待训练资源", progress=0)
+            while not acquired:
+                if cancel_event.is_set():
+                    self._update(job_id, status="cancelled", message="训练已取消", progress=100)
+                    return
+                acquired = TRAINING_SLOT.acquire(timeout=0.25)
             self._update(job_id, status="running", message="准备训练数据", progress=2)
             result = self.runner(
                 self.scope,
@@ -363,6 +371,8 @@ class TrainingManager:
             message = str(exc) or "训练在开始前退出"
             self._update(job_id, status="failed", message=message, progress=100)
         finally:
+            if acquired:
+                TRAINING_SLOT.release()
             _release_cuda_memory()
             with self._lock:
                 self.cancel_events.pop(job_id, None)

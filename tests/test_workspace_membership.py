@@ -1,7 +1,6 @@
 import unittest
 
 from lake_workbench.workspaces.membership import (
-    apply_membership_operation,
     find_patch_conflicts,
     included_members,
 )
@@ -44,15 +43,6 @@ class WorkspaceMembershipTests(unittest.TestCase):
         conflicts = find_patch_conflicts(canonical, ["existing"], ["incoming", "different-image"])
 
         self.assertEqual([item["patch_id"] for item in conflicts], ["incoming"])
-
-    def test_replace_removes_conflicting_member_before_include(self) -> None:
-        members = {("gansu", "existing")}
-        conflicts = [{"existing_patch_id": "existing"}]
-
-        updated = apply_membership_operation(members, "gansu", ["incoming"], "include", conflicts)
-
-        self.assertEqual(updated, {("gansu", "incoming")})
-
 
 if __name__ == "__main__":
     unittest.main()

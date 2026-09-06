@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -12,6 +13,56 @@ from lake_workbench.workspaces import WorkspacePatchConflict
 
 
 class TrainingManagerTests(unittest.TestCase):
+    def test_second_training_job_waits_for_process_training_slot(self) -> None:
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+
+        def first_runner(*_args, **_kwargs):
+            first_started.set()
+            release_first.wait(timeout=5)
+            return {"status": "completed"}
+
+        def second_runner(*_args, **_kwargs):
+            second_started.set()
+            return {"status": "completed"}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("lake_workbench.jobs.TRAINING_SLOT", threading.BoundedSemaphore(1)),
+            patch("lake_workbench.jobs._release_cuda_memory"),
+        ):
+            common = {
+                "model_root": Path(directory),
+                "dataset_summary": lambda *args: {},
+                "persisted_job_loader": lambda *args: None,
+                "parse_epochs": lambda value, default: default,
+            }
+            first = TrainingManager("first", runner=first_runner, **common)
+            second = TrainingManager("second", runner=second_runner, **common)
+
+            first_job = first.create({})
+            self.assertTrue(first_started.wait(timeout=2))
+            second_job = second.create({})
+            time.sleep(0.1)
+
+            self.assertFalse(second_started.is_set())
+            self.assertEqual(second.get(second_job["job_id"])["status"], "queued")
+
+            release_first.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if (
+                    first.get(first_job["job_id"])["status"] == "completed"
+                    and second.get(second_job["job_id"])["status"] == "completed"
+                ):
+                    break
+                time.sleep(0.02)
+
+            self.assertTrue(second_started.is_set())
+            self.assertEqual(first.get(first_job["job_id"])["status"], "completed")
+            self.assertEqual(second.get(second_job["job_id"])["status"], "completed")
+
     def test_patch_conflict_job_exposes_retry_details(self) -> None:
         def fail(_region, _options):
             raise WorkspacePatchConflict([{"patch_id": "existing"}], ["incoming"])

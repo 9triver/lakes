@@ -9,16 +9,161 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 from PIL import Image
+from shapely.geometry import shape
 
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.training.logical_patches import (
     build_logical_patches,
     workspace_logical_patch_preview,
 )
+from lake_workbench.training.samples import _clip_label_layer
 from lake_workbench.utils import read_csv_records, write_csv_records
 
 
 class LogicalPatchPipelineTests(unittest.TestCase):
+    @staticmethod
+    def _write_raster(path: Path, driver: str = "GTiff") -> None:
+        image = np.full((5, 1024, 1024), 1000, dtype=np.uint16)
+        with rasterio.open(
+            path,
+            "w",
+            driver=driver,
+            width=1024,
+            height=1024,
+            count=5,
+            dtype=image.dtype,
+            crs="EPSG:4326",
+            transform=from_origin(100, 30, 0.001, 0.001),
+        ) as target:
+            target.write(image)
+
+    @staticmethod
+    def _write_label(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [
+                                    [[100, 30], [101, 30], [101, 29], [100, 29], [100, 30]]
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_current_view_limits_patch_windows_and_marks_outside_pixels_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            region = RegionConfig(
+                key="test",
+                name="Test",
+                data_dir=root / "raw",
+                processed_dir=root / "processed",
+                cache_dir=root / "cache",
+                shared_data_dir=root / "shared",
+            )
+            image_path = region.data_dir / "image.tif"
+            image_path.parent.mkdir(parents=True)
+            self._write_raster(image_path)
+            label_path = region.training_label_dir / "sample.geojson"
+            self._write_label(label_path)
+            samples = [
+                {
+                    "sample_id": "view-sample",
+                    "site_id": "site-1",
+                    "tci_path": str(image_path),
+                    "label_path": str(label_path),
+                    "view_west": 100,
+                    "view_south": 29.8,
+                    "view_east": 100.2,
+                    "view_north": 30,
+                }
+            ]
+
+            output_dir = root / "patches"
+            build_logical_patches(region, output_dir, samples=samples)
+            rows = read_csv_records(output_dir / "manifest.csv")
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual((int(rows[0]["row_off"]), int(rows[0]["col_off"])), (0, 0))
+            self.assertEqual(int(rows[0]["valid_pixels"]), 200 * 200)
+            self.assertEqual(int(rows[0]["water_pixels"]), 200 * 200)
+            self.assertEqual(int(rows[0]["ignore_pixels"]), 512 * 512 - 200 * 200)
+
+    def test_label_snapshot_is_clipped_to_captured_view(self) -> None:
+        layer = {
+            "type": "FeatureCollection",
+            "properties": {"source": "current_view"},
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {"training_layer": "osm"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [3, 0], [3, 3], [0, 3], [0, 0]]],
+                    },
+                }
+            ],
+        }
+
+        clipped = _clip_label_layer(layer, [1, 1, 2, 2])
+
+        self.assertIsNotNone(clipped)
+        assert clipped is not None
+        geometry = clipped["features"][0]["geometry"]
+        self.assertEqual(
+            tuple(round(value, 6) for value in shape(geometry).bounds),
+            (1, 1, 2, 2),
+        )
+        self.assertEqual(clipped["properties"], {"source": "current_view"})
+
+    def test_window_generation_supports_tiff_and_img_sources(self) -> None:
+        with rasterio.Env() as environment:
+            if "HFA" not in environment.drivers():
+                self.skipTest("Rasterio HFA driver is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            region = RegionConfig(
+                key="test",
+                name="Test",
+                data_dir=root / "raw",
+                processed_dir=root / "processed",
+                cache_dir=root / "cache",
+                shared_data_dir=root / "shared",
+            )
+            region.data_dir.mkdir(parents=True)
+            tiff_path = region.data_dir / "first.tif"
+            img_path = region.data_dir / "second.img"
+            self._write_raster(tiff_path)
+            self._write_raster(img_path, driver="HFA")
+            label_path = region.training_label_dir / "sample.geojson"
+            self._write_label(label_path)
+            samples = [
+                {
+                    "sample_id": "dual-format",
+                    "site_id": "site-1",
+                    "tci_path": f"{tiff_path};{img_path}",
+                    "label_path": str(label_path),
+                }
+            ]
+
+            output_dir = root / "patches"
+            build_logical_patches(region, output_dir, samples=samples)
+            rows = read_csv_records(output_dir / "manifest.csv")
+
+            self.assertEqual(len(rows), 8)
+            self.assertEqual({Path(row["image_path"]).suffix for row in rows}, {".tif", ".img"})
+
     def test_preview_falls_back_to_saved_png_when_source_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

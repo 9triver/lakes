@@ -1,12 +1,12 @@
 # Lakes
 
-Lakes is a local Web GIS for multi-region satellite observation, water annotation, and semantic-segmentation training. It combines local imagery, on-demand Sentinel-2 products, external water providers, training-area capture, Patch review, GPU training, and model validation in one workbench.
+Lakes is a local Web GIS for multi-region satellite observation, water annotation, and semantic-segmentation training. It combines local imagery, external water providers, training-area capture, Patch review, GPU training, and model validation in one workbench. Sentinel-2 query and download remain available through backend APIs and command-line tools.
 
 ## Capabilities
 
-- Browse observation Sites defined by local imagery directories across all configured regions. The current configuration includes Gansu, Shaanxi, Yunnan, Guangdong, Guangxi, Shandong, Sichuan, and Xizang.
+- Browse observation Sites defined by local imagery directories across all configured regions. The current configuration contains 17 provincial regions.
 - Display OSM, HydroLAKES, ESA WorldCover, JRC GSW, and local Shapefile annotations independently.
-- Query and download Sentinel-2 SAFE/TCI products and select active imagery per Site.
+- Use local imagery as the primary Site imagery; query and download Sentinel-2 SAFE/TCI products through the API or CLI when needed.
 - Generate Workspace-owned Patches directly from the current map extent, imagery, and visible annotations.
 - Review Patch include/exclude state and contribute selected included Patches to versioned shared Datasets.
 - Train U-Net or Pixel MLP models from Workspace or shared data by region or across all regions.

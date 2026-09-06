@@ -106,32 +106,14 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(self.store.ensure_default_workspace()["selected_patch_count"], 0)
         self.assertFalse(self.store.workspace_logical_patch_manifest("default", "test").exists())
 
-    def test_patch_snapshots_do_not_create_site_level_source_conflicts(self) -> None:
+    def test_manifest_can_include_different_label_snapshots_for_one_site(self) -> None:
         self.store.ensure_default_workspace()
         self._install_workspace_rows("default", "patch-osm", "patch-jrc")
         self.store.update_members("default", "test", ["patch-osm"], "include")
 
         self.store.update_members("default", "test", ["patch-jrc"], "include")
 
-        self.assertEqual(self.store.get("default")["status"], "active")
-        self.assertEqual(self.store.conflicts("default")["total"], 0)
         self.assertEqual(self.store.members("default"), {("test", "patch-osm"), ("test", "patch-jrc")})
-
-    def test_union_is_snapshot_and_does_not_copy_history(self) -> None:
-        self.store.ensure_default_workspace()
-        self._install_workspace_rows("default", "patch-osm", "patch-jrc")
-        self.store.update_members("default", "test", ["patch-osm"], "include")
-        first = self.store.create("First")
-        self._install_workspace_rows(first["id"], "patch-osm", "patch-jrc")
-        self.store.update_members(first["id"], "test", ["patch-osm"], "include")
-        union = self.store.create("Union", "union", ["default", first["id"]])
-
-        self.store.update_members(first["id"], "test", ["patch-jrc"], "include")
-
-        self.assertEqual(self.store.members(union["id"]), {("test", "patch-osm")})
-        self.assertEqual(union["training_defaults"], {})
-        union_rows = read_csv_records(self.store.workspace_logical_patch_manifest(union["id"], "test"))
-        self.assertEqual({row["logical_patch_id"] for row in union_rows}, {"patch-osm"})
 
     def test_empty_workspace_does_not_inherit_default_logical_patch_catalog(self) -> None:
         self.store.ensure_default_workspace()
@@ -148,30 +130,25 @@ class WorkspaceStoreTests(unittest.TestCase):
 
     def test_empty_manifest_is_authoritative_for_membership(self) -> None:
         self.store.ensure_default_workspace()
-        write_csv_records(
-            self.store._members_path("default"),
-            [{"region": "test", "logical_patch_id": "legacy-patch"}],
-        )
         write_csv_records(self.store.workspace_logical_patch_manifest("default", "test"), [])
 
         self.assertEqual(self.store.members("default", "test"), set())
 
-    def test_refreshing_members_keeps_selected_source_variants(self) -> None:
+    def test_including_one_patch_preserves_other_exclusion_reasons(self) -> None:
         self.store.ensure_default_workspace()
-        source_path = self.store._sources_path("default")
-        source_path.parent.mkdir(parents=True, exist_ok=True)
-        source_path.write_text(
-            json.dumps({"sites": {"site-1": {"variant_ids": ["variant-1"]}}, "conflicts": {}}),
-            encoding="utf-8",
-        )
-        self._install_workspace_rows("default", "patch-osm")
+        manifest = self._install_workspace_rows("default", "patch-osm", "patch-jrc")
+        rows = read_csv_records(manifest)
+        next(row for row in rows if row["logical_patch_id"] == "patch-jrc")[
+            "exclude_reason"
+        ] = "no_water"
+        write_csv_records(manifest, rows)
 
         self.store.update_members("default", "test", ["patch-osm"], "include")
 
-        self.assertEqual(
-            json.loads(source_path.read_text(encoding="utf-8"))["sites"]["site-1"]["variant_ids"],
-            ["variant-1"],
-        )
+        updated = {
+            row["logical_patch_id"]: row for row in read_csv_records(manifest)
+        }
+        self.assertEqual(updated["patch-jrc"]["exclude_reason"], "no_water")
 
     def test_archive_and_restore_preserve_workspace(self) -> None:
         self.store.ensure_default_workspace()

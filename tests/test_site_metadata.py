@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from shapely.geometry import box
 
 from scripts.build_site_metadata import geo_frame, site_display_name, suggested_site_name
-from scripts.site_metadata_sources import image_date
 from lake_workbench.catalog import SiteCatalog, SiteRecord
+from lake_workbench.metadata.sources import image_date
+from lake_workbench.regions.config import RegionConfig
 
 
 class SiteDisplayNameTests(unittest.TestCase):
@@ -43,12 +47,48 @@ class SiteDisplayNameTests(unittest.TestCase):
     def test_shared_site_list_does_not_include_workspace_patch_state(self) -> None:
         site = self.site_record()
         catalog = SiteCatalog.__new__(SiteCatalog)
-        catalog.sites = [site]
+        catalog._loaded = True
+        catalog._sites = [site]
         catalog._summary_cache = {site.site_id: {"site_id": site.site_id}}
         payload = catalog.list_sites()
 
         self.assertNotIn("included_logical_patch_count", payload["items"][0])
         self.assertNotIn("usable_training_patch_count", payload["items"][0])
+
+    def test_catalog_defers_site_metadata_loading_until_site_access(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            region = RegionConfig(
+                key="test",
+                name="Test",
+                data_dir=root / "raw",
+                processed_dir=root / "processed",
+                cache_dir=root / "cache",
+                shared_data_dir=root / "shared",
+            )
+            region.site_metadata.parent.mkdir(parents=True)
+            region.site_metadata.touch()
+            with (
+                patch.object(SiteCatalog, "_load_sites", return_value=[]) as load_sites,
+                patch.object(
+                    SiteCatalog, "_load_external_water_features", return_value=None
+                ) as load_external,
+                patch(
+                    "lake_workbench.catalog.pyogrio.read_info",
+                    return_value={"features": 7},
+                ) as read_info,
+            ):
+                catalog = SiteCatalog(region, "test")
+                load_sites.assert_not_called()
+                load_external.assert_not_called()
+                self.assertEqual(catalog.site_count(), 7)
+                read_info.assert_called_once_with(region.site_metadata, layer="sites")
+                load_sites.assert_not_called()
+
+                self.assertEqual(catalog.list_sites()["total"], 0)
+
+                load_sites.assert_called_once_with()
+                load_external.assert_called_once_with()
 
     def test_display_name_keeps_directory_identity_first(self) -> None:
         self.assertEqual(site_display_name("20307"), "区域 20307")

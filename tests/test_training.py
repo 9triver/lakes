@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +22,7 @@ class TrainingIdentityTests(unittest.TestCase):
                 members=lambda _workspace_id, _region: set(),
                 get=lambda _workspace_id: {"status": "active"},
                 workspace_dataset_dir=lambda _workspace_id, _region, config_id: Path(directory) / config_id,
+                transaction=nullcontext,
             )
             with patch("lake_workbench.training.runner.REGIONS", {"test": region}):
                 result = run_dataset_build("test", {"workspace_id": "workspace-1", "config_id": "resize256_v1"}, store)
@@ -68,15 +70,15 @@ class TrainingIdentityTests(unittest.TestCase):
             "visible_layers": {**base["visible_layers"], "model_prediction": False},
             "model_validation": {"model_key": "second.pt", "predicted_ratio": 0.9},
         }
-        first = training_view_signature("site_1", "product", "current_view", "75", "current_view", "current_view", base)
-        second = training_view_signature("site_1", "product", "current_view", "75", "current_view", "current_view", changed)
+        first = training_view_signature("site_1", "product", "current_view", "75", base)
+        second = training_view_signature("site_1", "product", "current_view", "75", changed)
         self.assertEqual(first[:2], second[:2])
 
     def test_extent_is_rounded_for_stable_identity(self) -> None:
         first = {"visible_layers": {"osm": True}, "map": {"extent": [100.1234561, 20, 101, 21]}}
         second = {"visible_layers": {"osm": True}, "map": {"extent": [100.1234562, 20, 101, 21]}}
-        a = training_view_signature("site_1", "product", "current_view", "", "current_view", "current_view", first)
-        b = training_view_signature("site_1", "product", "current_view", "", "current_view", "current_view", second)
+        a = training_view_signature("site_1", "product", "current_view", "", first)
+        b = training_view_signature("site_1", "product", "current_view", "", second)
         self.assertEqual(a[0], b[0])
 
     def test_bbox_iou(self) -> None:

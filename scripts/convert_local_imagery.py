@@ -22,6 +22,14 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 
 def convert_image(source: Path, destination: Path, *, overwrite: bool = False) -> dict:
+    if source.stat().st_size == 0:
+        return {
+            "source": str(source),
+            "destination": str(destination),
+            "source_bytes": 0,
+            "destination_bytes": 0,
+            "status": "skipped_empty",
+        }
     if destination.exists() and not overwrite:
         return {"source": str(source), "destination": str(destination), "status": "skipped"}
 
@@ -109,6 +117,7 @@ def convert_region(
         "source_count": len(sources),
         "converted_count": sum(result["status"] == "converted" for result in results),
         "skipped_count": sum(result["status"] == "skipped" for result in results),
+        "empty_count": sum(result["status"] == "skipped_empty" for result in results),
         "source_bytes": source_bytes,
         "destination_bytes": destination_bytes,
     }

@@ -49,8 +49,6 @@ def training_view_signature(
     product_key: str,
     label_source: str,
     label_threshold: str,
-    label_scope: str,
-    mask_policy: str,
     view_state: dict,
 ) -> tuple[str, str, list[float]]:
     visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
@@ -65,8 +63,6 @@ def training_view_signature(
         "product_key": product_key,
         "label_source": label_source,
         "label_threshold": str(label_threshold or ""),
-        "label_scope": label_scope,
-        "mask_policy": mask_policy,
         "label_layers": label_layers,
         "jrc_threshold": parse_int_or_default(view_state.get("jrc_threshold"), 75),
         "local_label_id": clean_optional(local_label.get("id")) or "",

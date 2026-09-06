@@ -95,7 +95,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     Boolean(selectedSiteId && predictionModel && layerVisibility.prediction),
   );
   const sitePatches = useSiteLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
-  const updatePatches = useBatchUpdateLogicalPatches(activeWorkspaceId, selectedRegion, selectedSiteId);
+  const updatePatches = useBatchUpdateLogicalPatches(activeWorkspaceId, selectedRegion);
   const patchGroups = useMemo<PatchGroup[]>(() => {
     const groups = new Map<string, TrainingPatch[]>();
     for (const patch of sitePatches.data?.items || []) {

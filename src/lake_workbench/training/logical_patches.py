@@ -15,19 +15,20 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import rasterio
+from pyproj import Transformer
+from rasterio.windows import from_bounds
+from shapely.geometry import box
+from shapely.ops import transform as shapely_transform
 
-from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.training.patch_processing import (
-    derive_patch,
     eligible_actual_patch,
     grid_cell_bounds,
     image_fingerprint,
-    padded_crop,
+    label_geometries,
     preview_image,
-    rasterize_label,
-    rasterize_label_payload,
-    rasterize_source_variants,
+    read_patch_window,
+    resize_patch,
     write_preview,
 )
 from lake_workbench.utils import (
@@ -179,6 +180,7 @@ def _build_sample_logical_patches(
     patch_size: int,
     stride: int | None,
 ) -> list[dict]:
+    stride = stride or patch_size
     sample_id = sample.get("sample_id", "")
     label_path = resolve_data_path(sample.get("label_path", ""), region)
     image_paths = [
@@ -196,24 +198,28 @@ def _build_sample_logical_patches(
         if not image_path.exists():
             continue
         with rasterio.open(image_path) as src:
-            image = src.read()
             image_signature = image_fingerprint(image_path, src)
-            valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
-            label = rasterize_label(label_path, src)
-            target = np.where(valid, label, 255).astype("uint8")
-            for row_off in grid_offsets(src.height, patch_size, stride):
-                for col_off in grid_offsets(src.width, patch_size, stride):
-                    image_patch = padded_crop(
-                        image, row_off, col_off, fill=0, patch_size=patch_size
-                    )
-                    valid_patch = padded_crop(
-                        valid, row_off, col_off, fill=False, patch_size=patch_size
+            label_payload = json.loads(label_path.read_text(encoding="utf-8"))
+            geometries = label_geometries(label_payload, src.crs)
+            scope_geometry = _sample_scope_geometry(sample, src.crs)
+            row_offsets = _scope_grid_offsets(
+                src.height, patch_size, stride, scope_geometry, src.transform, axis="row"
+            )
+            col_offsets = _scope_grid_offsets(
+                src.width, patch_size, stride, scope_geometry, src.transform, axis="col"
+            )
+            for row_off in row_offsets:
+                for col_off in col_offsets:
+                    image_patch, mask_patch, valid_patch = read_patch_window(
+                        src,
+                        row_off,
+                        col_off,
+                        patch_size,
+                        geometries,
+                        scope_geometry,
                     )
                     if not np.any(valid_patch):
                         continue
-                    mask_patch = padded_crop(
-                        target, row_off, col_off, fill=255, patch_size=patch_size
-                    )
                     patch_id = logical_patch_id(
                         sample_id,
                         image_index,
@@ -300,8 +306,10 @@ def _build_sample_logical_patches(
                             "label_source": sample.get("label_source", ""),
                             "label_sources": sample.get("context_sources")
                             or sample.get("label_source", ""),
-                            "label_scope": sample.get("label_scope", ""),
-                            "mask_policy": sample.get("mask_policy", ""),
+                            "view_west": sample.get("view_west", ""),
+                            "view_south": sample.get("view_south", ""),
+                            "view_east": sample.get("view_east", ""),
+                            "view_north": sample.get("view_north", ""),
                             "include": "true" if included else "false",
                             "review_status": "included" if included else "excluded",
                             "exclude_reason": exclude_reason,
@@ -309,6 +317,41 @@ def _build_sample_logical_patches(
                         }
                     )
     return result
+
+
+def _sample_scope_geometry(sample: dict, crs: Any) -> Any | None:
+    try:
+        values = [
+            float(sample[key])
+            for key in ("view_west", "view_south", "view_east", "view_north")
+        ]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if values[2] <= values[0] or values[3] <= values[1]:
+        return None
+    geometry = box(values[0], values[1], values[2], values[3])
+    if crs and str(crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
+        transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        geometry = shapely_transform(transformer.transform, geometry)
+    return geometry
+
+
+def _scope_grid_offsets(
+    length: int,
+    patch_size: int,
+    stride: int,
+    scope_geometry: Any | None,
+    transform: Any,
+    *,
+    axis: str,
+) -> list[int]:
+    offsets = grid_offsets(length, patch_size, stride)
+    if scope_geometry is None:
+        return offsets
+    window = from_bounds(*scope_geometry.bounds, transform=transform)
+    start = float(window.row_off if axis == "row" else window.col_off)
+    stop = start + float(window.height if axis == "row" else window.width)
+    return [offset for offset in offsets if offset < stop and offset + patch_size > start]
 
 
 def build_workspace_training_dataset(
@@ -357,37 +400,35 @@ def build_workspace_training_dataset(
             if not image_path.exists():
                 continue
             with rasterio.open(image_path) as src:
-                image = src.read()
-                valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
+                geometry_cache: dict[Path, list[tuple[Any, int]]] = {}
                 for logical in rows:
                     label_path = resolve_data_path(
                         logical.get("label_path", ""), region
                     )
-                    if label_path.is_file():
-                        label_fingerprint = (
-                            logical.get("label_fingerprint")
-                            or hashlib.sha256(label_path.read_bytes()).hexdigest()
-                        )
-                        source_signature = str(label_fingerprint)
-                        target_mask = rasterize_label(label_path, src)
-                    else:
-                        variants = workspace_store.selected_variants(
-                            workspace_id, logical.get("site_id", "")
-                        )
-                        if not variants:
-                            continue
-                        source_signature = workspace_store.source_signature(
-                            workspace_id, logical.get("site_id", "")
-                        )
-                        target_mask = rasterize_source_variants(variants, src)
-                    target = np.where(valid, target_mask, 255).astype("uint8")
-                    actual = derive_patch(
-                        image,
-                        target,
-                        valid,
-                        logical,
-                        int(config["output_size"]),
+                    if not label_path.is_file():
+                        continue
+                    label_fingerprint = (
+                        logical.get("label_fingerprint")
+                        or hashlib.sha256(label_path.read_bytes()).hexdigest()
                     )
+                    source_signature = str(label_fingerprint)
+                    if label_path not in geometry_cache:
+                        payload = json.loads(label_path.read_text(encoding="utf-8"))
+                        geometry_cache[label_path] = label_geometries(payload, src.crs)
+                    logical_size = int(
+                        logical.get("logical_size")
+                        or logical.get("window_width")
+                        or LOGICAL_PATCH_SIZE
+                    )
+                    image, target, valid = read_patch_window(
+                        src,
+                        int(logical["row_off"]),
+                        int(logical["col_off"]),
+                        logical_size,
+                        geometry_cache[label_path],
+                        _sample_scope_geometry(logical, src.crs),
+                    )
+                    actual = resize_patch(image, target, valid, int(config["output_size"]))
                     patch_id = logical["logical_patch_id"]
                     if not eligible_actual_patch(actual, patch_id, config):
                         continue
@@ -409,7 +450,6 @@ def build_workspace_training_dataset(
                             "patch_id": patch_id,
                             "workspace_id": workspace_id,
                             "dataset_config_id": config_id,
-                            "source_variant_ids": "",
                             "source_signature": source_signature,
                             "npz_path": display_path(cache_path),
                             "patch_size": config["output_size"],
@@ -464,6 +504,19 @@ def build_global_training_dataset(
     dataset_registry: Any,
 ) -> dict:
     """Materialize a global Dataset from immutable contributed Patch rows."""
+    with dataset_registry.transaction():
+        return _build_global_training_dataset_locked(
+            scope, config_id, regions, workspace_store, dataset_registry
+        )
+
+
+def _build_global_training_dataset_locked(
+    scope: str,
+    config_id: str,
+    regions: dict[str, RegionConfig],
+    workspace_store: "WorkspaceStore",
+    dataset_registry: Any,
+) -> dict:
     configs = dataset_configs()
     if config_id not in configs:
         raise KeyError(f"unknown training dataset config: {config_id}")
@@ -482,12 +535,11 @@ def build_global_training_dataset(
         region_key = row.get("region", "")
         if region_key not in regions:
             continue
-        variants = _global_row_variants(row, workspace_store)
-        signature = hashlib.sha256(
-            json.dumps(variants, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        label_snapshot = row.get("label_snapshot_json") or ""
+        signature_source = label_snapshot or row.get("label_fingerprint") or row.get("label_path", "")
+        signature = hashlib.sha256(str(signature_source).encode("utf-8")).hexdigest()
         grouped[(region_key, row.get("image_path", ""), signature)].append(
-            {**row, "_variants": variants}
+            row
         )
     try:
         for (region_key, image_text, source_signature), group in grouped.items():
@@ -496,25 +548,30 @@ def build_global_training_dataset(
             if not image_path.exists():
                 continue
             with rasterio.open(image_path) as src:
-                image = src.read()
-                valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
-                variants = group[0]["_variants"]
                 label_snapshot = group[0].get("label_snapshot_json") or ""
                 if label_snapshot:
-                    target_mask = rasterize_label_payload(
-                        json.loads(label_snapshot), src
-                    )
-                elif variants:
-                    target_mask = rasterize_source_variants(variants, src)
+                    payload = json.loads(label_snapshot)
                 else:
-                    target_mask = rasterize_label(
-                        resolve_data_path(group[0].get("label_path", ""), region), src
-                    )
-                target = np.where(valid, target_mask, 255).astype("uint8")
+                    label_path = resolve_data_path(group[0].get("label_path", ""), region)
+                    if not label_path.is_file():
+                        continue
+                    payload = json.loads(label_path.read_text(encoding="utf-8"))
+                geometries = label_geometries(payload, src.crs)
                 for logical in group:
-                    actual = derive_patch(
-                        image, target, valid, logical, int(config["output_size"])
+                    logical_size = int(
+                        logical.get("logical_size")
+                        or logical.get("window_width")
+                        or LOGICAL_PATCH_SIZE
                     )
+                    image, target, valid = read_patch_window(
+                        src,
+                        int(logical["row_off"]),
+                        int(logical["col_off"]),
+                        logical_size,
+                        geometries,
+                        _sample_scope_geometry(logical, src.crs),
+                    )
+                    actual = resize_patch(image, target, valid, int(config["output_size"]))
                     patch_id = logical.get("source_patch_id") or logical.get(
                         "logical_patch_id", ""
                     )
@@ -532,11 +589,7 @@ def build_global_training_dataset(
                         )
                     output_rows.append(
                         {
-                            **{
-                                key: value
-                                for key, value in logical.items()
-                                if not key.startswith("_")
-                            },
+                            **logical,
                             "patch_id": patch_id,
                             "dataset_id": scope,
                             "dataset_config_id": config_id,
@@ -577,23 +630,6 @@ def build_global_training_dataset(
         "patches": len(output_rows),
         "manifest": display_path(output_dir / "manifest.csv"),
     }
-
-
-def _global_row_variants(row: dict, workspace_store: "WorkspaceStore") -> list[dict]:
-    text = row.get("source_variants_json") or ""
-    if text:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-    workspace_id = row.get("source_workspace_id", "")
-    return (
-        workspace_store.selected_variants(workspace_id, row.get("site_id", ""))
-        if workspace_id
-        else []
-    )
-
-
 def workspace_logical_patch_preview(
     region: RegionConfig,
     row: dict,
@@ -622,31 +658,31 @@ def workspace_logical_patch_preview(
             f"logical patch source image not found: {row.get('logical_patch_id', '')}"
         )
     with rasterio.open(image_path) as src:
-        image = src.read()
-        valid = valid_pixel_mask(image, src.nodatavals, src.read_masks())
         label_path = resolve_data_path(row.get("label_path", ""), region)
         if not label_path.exists():
             if not overlay:
-                actual = derive_patch(
-                    image,
-                    np.zeros((src.height, src.width), dtype="uint8"),
-                    valid,
-                    row,
-                    LOGICAL_PATCH_SIZE,
-                )
-                output = BytesIO()
-                preview_image(
-                    actual["image"], actual["mask"], actual["valid"], overlay=False
-                ).save(output, format="PNG")
-                return output.getvalue()
-            if preview_path and preview_path.is_file():
+                geometries = []
+            elif preview_path and preview_path.is_file():
                 return preview_path.read_bytes()
-            raise FileNotFoundError(
-                f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}"
-            )
-        label = rasterize_label(label_path, src)
-        target = np.where(valid, label, 255).astype("uint8")
-        actual = derive_patch(image, target, valid, row, LOGICAL_PATCH_SIZE)
+            else:
+                raise FileNotFoundError(
+                    f"logical patch label snapshot not found: {row.get('logical_patch_id', '')}"
+                )
+        else:
+            payload = json.loads(label_path.read_text(encoding="utf-8"))
+            geometries = label_geometries(payload, src.crs)
+        logical_size = int(
+            row.get("logical_size") or row.get("window_width") or LOGICAL_PATCH_SIZE
+        )
+        image, target, valid = read_patch_window(
+            src,
+            int(row["row_off"]),
+            int(row["col_off"]),
+            logical_size,
+            geometries,
+            _sample_scope_geometry(row, src.crs),
+        )
+        actual = resize_patch(image, target, valid, LOGICAL_PATCH_SIZE)
     preview = preview_image(
         actual["image"], actual["mask"], actual["valid"], overlay=overlay
     )

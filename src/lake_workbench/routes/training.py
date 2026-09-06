@@ -2,16 +2,21 @@
 
 import re
 from http import HTTPStatus
+from typing import Any
 from urllib.parse import parse_qs
 
 from lake_workbench.jobs import TrainingRunActiveError
 from lake_workbench.utils import truthy_flag
 from lake_workbench.training.registry import DatasetConflict
 from lake_workbench.workspaces import WorkspacePatchConflict
+from lake_workbench.workspaces.store import WorkspaceStore
 
 
-def _workspace_store(handler):
-    return getattr(handler.__class__, "workspace_store", None)
+def _workspace_store(handler: Any) -> WorkspaceStore:
+    store = getattr(handler.__class__, "workspace_store", None)
+    if store is None:
+        raise RuntimeError("Workspace store is not configured")
+    return store
 
 
 def _has_workspace(handler) -> bool:
@@ -155,16 +160,8 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
             handler._error(HTTPStatus.NOT_FOUND, "Training job not found")
         else:
             handler._json(job)
-    elif re.fullmatch(r"/api/sites/[^/]+/training-samples/readiness", path):
-        site_key = path.split("/")[-3]
-        site = handler.catalog.get_site(site_key)
-        if site is None:
-            handler._error(HTTPStatus.NOT_FOUND, "Observation site not found")
-        else:
-            buffer_ratio = float(params.get("buffer_ratio", ["0.8"])[0])
-            handler._json(handler.catalog.training_sample_readiness(site, buffer_ratio=buffer_ratio))
     elif path == "/api/training-samples":
-        store = _workspace_store(handler)
+        store = _workspace_store(handler) if _has_workspace(handler) else None
         samples_path = store.ensure_workspace_training_samples(handler.workspace_id, handler.catalog.region.key) if store and handler.workspace_id else None
         handler._json(handler.catalog.list_training_samples() if samples_path is None else handler.catalog.list_training_samples(samples_path))
     elif path == "/api/training-patches":
@@ -223,14 +220,12 @@ def handle_training_post(handler, path: str) -> bool:
             store = _workspace_store(handler)
             samples_path = store.ensure_workspace_training_samples(handler.workspace_id, handler.catalog.region.key)
             label_dir = store.workspace_training_label_dir(handler.workspace_id, handler.catalog.region.key)
-            result = handler.catalog.create_training_sample(site, payload, samples_path=samples_path, label_dir=label_dir)
+            with store.transaction():
+                result = handler.catalog.create_training_sample(site, payload, samples_path=samples_path, label_dir=label_dir)
         except ValueError as exc:
             handler._error(HTTPStatus.BAD_REQUEST, str(exc))
             return True
         patch_job = None
-        store = _workspace_store(handler)
-        if store:
-            store.invalidate_training_sample_cache(handler.workspace_id, handler.catalog.region.key)
         manifest = store.ensure_workspace_logical_patch_manifest(handler.workspace_id, handler.catalog.region.key)
         workspace_owns_sample = bool(
             any(
@@ -329,9 +324,6 @@ def handle_training_patch(handler, path: str) -> bool:
         except KeyError as exc:
             handler._error(HTTPStatus.NOT_FOUND, str(exc))
         else:
-            store = _workspace_store(handler)
-            if store:
-                store.invalidate_training_sample_cache(handler.workspace_id, handler.catalog.region.key)
             handler._json({"sample": result})
     elif path == "/api/logical-patches":
         payload = handler._read_json()

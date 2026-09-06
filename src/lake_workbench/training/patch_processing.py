@@ -11,23 +11,26 @@ import numpy as np
 from PIL import Image
 from pyproj import Transformer
 from rasterio.features import rasterize
+from rasterio.windows import Window, transform as window_transform
 from shapely.geometry import shape
 from shapely.ops import transform as shapely_transform
 from shapely.validation import make_valid
 
+from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.utils import display_path
 
 
 DEFAULT_PATCH_SIZE = 512
 
 
-def derive_patch(image: np.ndarray, target: np.ndarray, valid: np.ndarray, row: dict, output_size: int) -> dict:
-    row_off, col_off = int(row["row_off"]), int(row["col_off"])
-    logical_size = int(row.get("logical_size") or row.get("window_width") or DEFAULT_PATCH_SIZE)
-    image_patch = padded_crop(image, row_off, col_off, fill=0, patch_size=logical_size)
-    mask_patch = padded_crop(target, row_off, col_off, fill=255, patch_size=logical_size)
-    valid_patch = padded_crop(valid, row_off, col_off, fill=False, patch_size=logical_size)
-    if output_size != logical_size:
+def resize_patch(
+    image_patch: np.ndarray,
+    mask_patch: np.ndarray,
+    valid_patch: np.ndarray,
+    output_size: int,
+) -> dict:
+    """Resize already-windowed Patch arrays and calculate their statistics."""
+    if image_patch.shape[-2:] != (output_size, output_size):
         bilinear = Image.Resampling.BILINEAR
         nearest = Image.Resampling.NEAREST
         dtype = image_patch.dtype
@@ -56,6 +59,36 @@ def derive_patch(image: np.ndarray, target: np.ndarray, valid: np.ndarray, row: 
     }
 
 
+def read_patch_window(
+    src: Any,
+    row_off: int,
+    col_off: int,
+    patch_size: int,
+    label_geometries: list[tuple[Any, int]],
+    scope_geometry: Any | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read one fixed-size raster window and rasterize its label and scope."""
+    window = Window(col_off, row_off, patch_size, patch_size)
+    image = src.read(window=window, boundless=True, fill_value=0)
+    masks = src.read_masks(window=window, boundless=True)
+    valid = valid_pixel_mask(image, src.nodatavals, masks)
+    transform = window_transform(window, src.transform)
+    label = rasterize_geometries(
+        label_geometries,
+        (patch_size, patch_size),
+        transform,
+    )
+    if scope_geometry is not None:
+        scope = rasterize_geometries(
+            [(scope_geometry, 1)],
+            (patch_size, patch_size),
+            transform,
+        ).astype(bool)
+        valid &= scope
+    target = np.where(valid, label, 255).astype("uint8")
+    return image, target, valid
+
+
 def eligible_actual_patch(actual: dict, patch_id: str, config: dict) -> bool:
     if actual["valid_ratio"] < float(config["min_valid_ratio"]):
         return False
@@ -65,22 +98,6 @@ def eligible_actual_patch(actual: dict, patch_id: str, config: dict) -> bool:
     token = f"{config['id']}:{int(config.get('negative_seed', 42))}:{patch_id}".encode("utf-8")
     sample = int.from_bytes(hashlib.sha256(token).digest()[:8], "big") / float(2**64)
     return sample < ratio
-
-
-def padded_crop(
-    array: np.ndarray,
-    row_off: int,
-    col_off: int,
-    fill: Any,
-    patch_size: int = DEFAULT_PATCH_SIZE,
-) -> np.ndarray:
-    output_shape = (*array.shape[:-2], patch_size, patch_size)
-    output = np.full(output_shape, fill, dtype=array.dtype)
-    height = min(patch_size, max(0, array.shape[-2] - row_off))
-    width = min(patch_size, max(0, array.shape[-1] - col_off))
-    if height and width:
-        output[..., :height, :width] = array[..., row_off : row_off + height, col_off : col_off + width]
-    return output
 
 
 def grid_cell_bounds(
@@ -114,14 +131,10 @@ def image_fingerprint(path: Path, src: Any) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def rasterize_label(path: Path, src: Any) -> np.ndarray:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return rasterize_label_payload(payload, src)
-
-
-def rasterize_label_payload(payload: dict, src: Any) -> np.ndarray:
+def label_geometries(payload: dict, crs: Any) -> list[tuple[Any, int]]:
+    """Transform label features from WGS84 into a raster CRS once."""
     features = payload.get("features") if payload.get("type") == "FeatureCollection" else [payload]
-    transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True) if src.crs else None
+    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True) if crs else None
     geometries = []
     for feature in features or []:
         if not feature.get("geometry"):
@@ -129,51 +142,27 @@ def rasterize_label_payload(payload: dict, src: Any) -> np.ndarray:
         geometry = make_valid(shape(feature["geometry"]))
         if geometry.is_empty:
             continue
-        if transformer and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
+        if transformer and str(crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
             geometry = shapely_transform(transformer.transform, geometry)
         geometries.append((geometry, 1))
+    return geometries
+
+
+def rasterize_geometries(
+    geometries: list[tuple[Any, int]],
+    out_shape: tuple[int, int],
+    transform: Any,
+) -> np.ndarray:
     return (
         rasterize(
             geometries,
-            out_shape=(src.height, src.width),
-            transform=src.transform,
+            out_shape=out_shape,
+            transform=transform,
             fill=0,
             dtype="uint8",
         )
         if geometries
-        else np.zeros((src.height, src.width), dtype="uint8")
-    )
-
-
-def rasterize_source_variants(variants: list[dict], src: Any) -> np.ndarray:
-    transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True) if src.crs else None
-    geometries = []
-    seen = set()
-    for variant in variants:
-        for feature in variant.get("snapshot", {}).get("features", []):
-            geometry_payload = feature.get("geometry")
-            if not geometry_payload:
-                continue
-            token = json.dumps(geometry_payload, sort_keys=True, separators=(",", ":"))
-            if token in seen:
-                continue
-            seen.add(token)
-            geometry = make_valid(shape(geometry_payload))
-            if geometry.is_empty:
-                continue
-            if transformer and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
-                geometry = shapely_transform(transformer.transform, geometry)
-            geometries.append((geometry, 1))
-    return (
-        rasterize(
-            geometries,
-            out_shape=(src.height, src.width),
-            transform=src.transform,
-            fill=0,
-            dtype="uint8",
-        )
-        if geometries
-        else np.zeros((src.height, src.width), dtype="uint8")
+        else np.zeros(out_shape, dtype="uint8")
     )
 
 

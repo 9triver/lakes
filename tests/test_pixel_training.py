@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,11 +9,7 @@ from pathlib import Path
 import numpy as np
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from train_unet import train_model  # noqa: E402
+from lake_workbench.training.experiment import train_model
 
 
 class PixelTrainingTests(unittest.TestCase):

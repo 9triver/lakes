@@ -51,8 +51,19 @@ class SiteCatalog(
     def __init__(self, region: RegionConfig, default_region_key: str) -> None:
         self.region = region
         self.default_region_key = default_region_key
-        self.load_error: str | None = None
+        self.load_error: str | None = (
+            None
+            if self.region.site_metadata.exists()
+            else f"Region site metadata is not prepared: missing {display_path(self.region.site_metadata)}"
+        )
         self._lock = threading.Lock()
+        self._load_lock = threading.RLock()
+        self._loaded = False
+        self._sites: list[SiteRecord] = []
+        self._site_lookup: dict[str, SiteRecord] = {}
+        self._external_water_features = None
+        self._summary_cache: dict[str, dict] = {}
+        self._detail_cache: dict[str, dict] = {}
         self.base_tci_by_tile = self._load_tci_index()
         self.tci_by_tile = dict(self.base_tci_by_tile)
         self.user_tci_rows = self._load_user_tci_rows()
@@ -62,11 +73,63 @@ class SiteCatalog(
         self.tci_footprints = self._load_tci_footprints()
         self.sentinel_tile_index = self._load_sentinel_tile_index()
         self._valid_ratio_cache: dict[str, float] = {}
-        self.sites = self._load_sites()
-        self._site_lookup = self._build_site_lookup()
-        self.external_water_features = self._load_external_water_features()
-        self._summary_cache = {site.site_id: self._build_summary(site) for site in self.sites}
-        self._detail_cache: dict[str, dict] = {}
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        with self._load_lock:
+            if self._loaded:
+                return
+            if not self.region.site_metadata.exists():
+                self.load_error = (
+                    "Region site metadata is not prepared: missing "
+                    f"{display_path(self.region.site_metadata)}"
+                )
+                return
+            try:
+                self._sites = self._load_sites()
+                self._external_water_features = self._load_external_water_features()
+                self._site_lookup = self._build_site_lookup()
+                self._summary_cache = {
+                    site.site_id: self._build_summary(site) for site in self._sites
+                }
+                self.load_error = None
+            except Exception as exc:  # noqa: BLE001 - retain a usable catalog with diagnostics.
+                self.load_error = f"{type(exc).__name__}: {exc}"
+                self._sites = []
+                self._site_lookup = {}
+                self._external_water_features = None
+                self._summary_cache = {}
+            self._loaded = True
+
+    @property
+    def sites(self) -> list[SiteRecord]:
+        self._ensure_loaded()
+        return self._sites
+
+    @property
+    def external_water_features(self):
+        self._ensure_loaded()
+        return self._external_water_features
+
+    def site_count(self) -> int:
+        """Read the feature count without materializing the regional GeoDataFrame."""
+        if self._loaded:
+            return len(self._sites)
+        if not self.region.site_metadata.exists():
+            return 0
+        try:
+            count = int(
+                pyogrio.read_info(self.region.site_metadata, layer="sites").get(
+                    "features", 0
+                )
+                or 0
+            )
+            self.load_error = None
+            return count
+        except Exception as exc:  # noqa: BLE001 - expose metadata failures in region status.
+            self.load_error = f"{type(exc).__name__}: {exc}"
+            return 0
 
     def _load_sites(self) -> list[SiteRecord]:
         if not self.region.site_metadata.exists():
@@ -116,7 +179,7 @@ class SiteCatalog(
 
     def _build_site_lookup(self) -> dict[str, SiteRecord]:
         lookup = {}
-        for site in self.sites:
+        for site in self._sites:
             for key in (site.site_id, site.local_directory_id):
                 text = clean_optional(key)
                 if text:
@@ -196,6 +259,7 @@ class SiteCatalog(
         }
 
     def get_site(self, site_key: str) -> SiteRecord | None:
+        self._ensure_loaded()
         return self._site_lookup.get(site_key)
 
     def get_site_detail(self, site: SiteRecord) -> dict:

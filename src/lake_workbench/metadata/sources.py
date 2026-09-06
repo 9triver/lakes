@@ -9,11 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import pyogrio
 
-from lake_workbench.metadata.geometry import (
-    geometry_area_km2,  # noqa: F401 - compatibility export
-    geometry_areas_km2,
-    metric_geometry,
-)
+from lake_workbench.metadata.geometry import geometry_areas_km2, metric_geometry
 from lake_workbench.paths import PROJECT_ROOT
 
 

@@ -63,11 +63,8 @@ def workspace_training_dataset_status(
     metadata_path = output_dir / "build.json"
     manifest_path = output_dir / "manifest.csv"
     members = workspace_store.members(workspace_id, region.key)
-    workspace = workspace_store.get(workspace_id)
     if not members:
         status, metadata = "missing_selection", {}
-    elif workspace["status"] == "needs_resolution":
-        status, metadata = "needs_resolution", {}
     elif not metadata_path.exists() or not manifest_path.exists():
         status, metadata = "missing", {}
     else:

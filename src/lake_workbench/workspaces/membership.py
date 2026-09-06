@@ -31,13 +31,6 @@ def included_members(rows: Iterable[dict], region: str) -> set[Member]:
     }
 
 
-def replace_region_members(members: set[Member], region: str, rows: Iterable[dict]) -> set[Member]:
-    """Replace one region's membership while preserving other regions."""
-    result = {(key, patch_id) for key, patch_id in members if key != region}
-    result.update(included_members(rows, region))
-    return result
-
-
 def patch_bbox(row: dict) -> tuple[float, float, float, float] | None:
     try:
         return tuple(float(row[key]) for key in ("bounds_left", "bounds_bottom", "bounds_right", "bounds_top"))  # type: ignore[return-value]
@@ -96,23 +89,3 @@ def find_patch_conflicts(
                 )
                 break
     return conflicts
-
-
-def apply_membership_operation(
-    members: set[Member],
-    region: str,
-    patch_ids: Iterable[str],
-    operation: str,
-    conflicts: Iterable[dict] = (),
-) -> set[Member]:
-    """Apply include, restore, or exclude to a member set."""
-    wanted = {str(value) for value in patch_ids if str(value)}
-    result = set(members)
-    if operation in {"include", "restore"}:
-        result.difference_update((region, row["existing_patch_id"]) for row in conflicts)
-        result.update((region, patch_id) for patch_id in wanted)
-    elif operation == "exclude":
-        result.difference_update((region, patch_id) for patch_id in wanted)
-    else:
-        raise ValueError(f"Unsupported membership operation: {operation}")
-    return result

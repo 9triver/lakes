@@ -58,10 +58,3 @@ def to_display_rgb(data: Any) -> np.ndarray:
         out[index] = np.clip(scaled, 0, 255).astype(np.uint8)
         out[index, ~valid] = 0
     return out
-
-
-def encode_rgb_png(data: Any) -> bytes:
-    image = Image.fromarray(np.moveaxis(to_display_rgb(data), 0, -1), "RGB")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue()

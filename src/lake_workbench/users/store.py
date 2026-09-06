@@ -92,8 +92,6 @@ class UserStore:
     def create(
         self,
         name: str,
-        workspace_mode: str = "empty",
-        source_workspace_ids: list[str] | None = None,
     ) -> dict:
         name = str(name or "").strip()
         if not name:
@@ -102,11 +100,7 @@ class UserStore:
             registry = self._read_registry()
             self._validate_unique_name(registry, name)
             user_id = uuid.uuid4().hex[:12]
-            workspace = self.workspace_store.create(
-                f"{name}的训练工作区",
-                workspace_mode,
-                source_workspace_ids or [],
-            )
+            workspace = self.workspace_store.create(f"{name}的训练工作区")
             now = _timestamp()
             user = {
                 "id": user_id,
@@ -207,9 +201,6 @@ class UserStore:
             registry["items"].append(user)
             self._write_registry(registry)
             return self._summary(user)
-
-    def owns_workspace(self, user_id: str, workspace_id: str) -> bool:
-        return self._record(user_id).get("default_workspace_id") == workspace_id
 
     def rename(self, user_id: str, name: str) -> dict:
         name = str(name or "").strip()
