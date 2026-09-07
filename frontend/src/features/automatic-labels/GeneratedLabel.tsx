@@ -9,7 +9,8 @@ import { workspaceRegionApi } from "../workspaces/api";
 
 const SOURCE_LABELS: Record<GeneratedLabelSource, string> = {
   spectral_water: "光谱水体",
-  spectral_osm_consensus: "光谱 + OSM 一致",
+  spectral_osm_consensus: "光谱 + OSM 连通补全",
+  osm_spectral_consensus: "OSM + 光谱连通补全",
 };
 
 interface GeneratedLabelOptions {
@@ -54,11 +55,10 @@ export function GeneratedLabelStatus({ source, result, pending, error }: { sourc
   if (pending) return <Typography variant="caption" color="text.secondary">{label}生成中</Typography>;
   if (error) return <Typography variant="caption" color="error">{label}失败：{error.message}</Typography>;
   if (!result) return null;
-  const method = source === "spectral_osm_consensus" ? " · 交集" : "";
-  const confidence = source === "spectral_water" || source === "spectral_osm_consensus"
+  const confidence = source === "spectral_water" || source === "spectral_osm_consensus" || source === "osm_spectral_consensus"
     ? ` · 高置信 ${(result.stats.confident_ratio * 100).toFixed(1)}% · 待确认 ${(result.stats.ignore_pixels / Math.max(result.stats.valid_pixels, 1) * 100).toFixed(1)}%`
     : "";
   return <Typography variant="caption" color="text.secondary">
-    {label}{method} · 水体 {(result.stats.water_ratio * 100).toFixed(1)}%{confidence} · {result.stats.polygon_count} 个多边形
+    {label} · 水体 {(result.stats.water_ratio * 100).toFixed(1)}%{confidence} · {result.stats.polygon_count} 个多边形
   </Typography>;
 }

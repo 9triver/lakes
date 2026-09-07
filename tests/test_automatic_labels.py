@@ -13,6 +13,7 @@ from rasterio.transform import from_bounds
 
 from lake_workbench.automatic_labels.basemap import bounded_tile_range
 from lake_workbench.automatic_labels.service import (
+    OSM_SPECTRAL_CONSENSUS,
     SPECTRAL_OSM_CONSENSUS,
     SPECTRAL_WATER,
     generate_derived_label,
@@ -149,13 +150,45 @@ class AutomaticLabelTests(unittest.TestCase):
                 ),
                 patch(
                     "lake_workbench.automatic_labels.service.aligned_osm_rgb",
-                    return_value=osm,
+                    side_effect=[
+                        osm,
+                        SimpleNamespace(
+                            rgb=np.concatenate(
+                                [
+                                    osm_rgb[:2],
+                                    np.array(
+                                        [[
+                                            (245, 245, 245),
+                                            (245, 245, 245),
+                                            (170, 211, 223),
+                                            (245, 245, 245),
+                                        ]],
+                                        dtype="uint8",
+                                    ),
+                                    osm_rgb[3:],
+                                ],
+                                axis=0,
+                            ),
+                            valid=np.ones((4, 4), dtype=bool),
+                            provider="osm_standard",
+                            zoom=14,
+                            tile_count=4,
+                            tile_url="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                        ),
+                    ],
                 ),
             ):
                 result = generate_derived_label(
                     catalog,
                     site,
                     SPECTRAL_OSM_CONSENSUS,
+                    {"extent": [98, 28, 99, 29]},
+                    root / "labels",
+                )
+                reverse_result = generate_derived_label(
+                    catalog,
+                    site,
+                    OSM_SPECTRAL_CONSENSUS,
                     {"extent": [98, 28, 99, 29]},
                     root / "labels",
                 )
@@ -172,6 +205,17 @@ class AutomaticLabelTests(unittest.TestCase):
                     feature["properties"]["label_value"] == WATER_LABEL
                     for feature in result["label"]["features"]
                 )
+            )
+            self.assertEqual(reverse_result["source"], OSM_SPECTRAL_CONSENSUS)
+            self.assertEqual(reverse_result["stats"]["water_pixels"], 5)
+            self.assertEqual(reverse_result["stats"]["ignore_pixels"], 5)
+            self.assertEqual(reverse_result["details"]["osm_only_pixels"], 1)
+            self.assertEqual(
+                reverse_result["details"]["osm_only_promoted_pixels"], 1
+            )
+            self.assertEqual(
+                reverse_result["details"]["processing_mode"],
+                "osm_water_connected_to_spectral_seed",
             )
 
     def test_spectral_reader_uses_named_bands(self) -> None:

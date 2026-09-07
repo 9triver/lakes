@@ -52,7 +52,11 @@ def training_view_signature(
     view_state: dict,
 ) -> tuple[str, str, list[float]]:
     visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
-    generated_source_keys = ("spectral_water", "spectral_osm_consensus")
+    generated_source_keys = (
+        "spectral_water",
+        "spectral_osm_consensus",
+        "osm_spectral_consensus",
+    )
     label_layers = {
         key: bool(visible.get(key))
         for key in (

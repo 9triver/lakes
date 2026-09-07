@@ -326,7 +326,11 @@ class TrainingSampleCatalogMixin:
             else {}
         )
         generated_label_ids = {}
-        for source in ("spectral_water", "spectral_osm_consensus"):
+        for source in (
+            "spectral_water",
+            "spectral_osm_consensus",
+            "osm_spectral_consensus",
+        ):
             selected = generated_labels.get(source)
             label_id = (
                 clean_optional(selected.get("id"))

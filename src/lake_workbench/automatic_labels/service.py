@@ -40,11 +40,17 @@ from lake_workbench.utils import (
 
 SPECTRAL_WATER = "spectral_water"
 SPECTRAL_OSM_CONSENSUS = "spectral_osm_consensus"
+OSM_SPECTRAL_CONSENSUS = "osm_spectral_consensus"
 DERIVED_LABEL_SOURCES = (
     SPECTRAL_WATER,
     SPECTRAL_OSM_CONSENSUS,
+    OSM_SPECTRAL_CONSENSUS,
 )
-SPECTRAL_LABEL_SOURCES = (SPECTRAL_WATER, SPECTRAL_OSM_CONSENSUS)
+SPECTRAL_LABEL_SOURCES = (
+    SPECTRAL_WATER,
+    SPECTRAL_OSM_CONSENSUS,
+    OSM_SPECTRAL_CONSENSUS,
+)
 
 
 def generate_derived_label(
@@ -99,6 +105,9 @@ def generate_derived_label(
         quality_path=quality_path if quality_path and quality_path.exists() else None,
     )
     details: dict[str, Any]
+    valid: np.ndarray
+    labels: np.ndarray
+    water_score: np.ndarray
     if source == SPECTRAL_WATER:
         water_score = spectral.water_score
         valid = spectral.valid
@@ -114,7 +123,7 @@ def generate_derived_label(
             "bands": spectral.bands,
             **spectral.diagnostics,
         }
-    elif source == SPECTRAL_OSM_CONSENSUS:
+    elif source in {SPECTRAL_OSM_CONSENSUS, OSM_SPECTRAL_CONSENSUS}:
         osm = aligned_osm_rgb(
             bounds,
             _bounded_int(payload.get("osm_zoom"), 14, 8, 19),
@@ -127,9 +136,15 @@ def generate_derived_label(
         valid = spectral.valid & osm.valid
         spectral_water = spectral.labels == WATER_LABEL
         spectral_water_valid = valid & spectral_water
+        osm_water_valid = valid & osm_water
         consensus_seed = spectral_water_valid & osm_water
-        connected_water = _seeded_spectral_water(
-            spectral_water_valid,
+        primary_mask = (
+            spectral_water_valid
+            if source == SPECTRAL_OSM_CONSENSUS
+            else osm_water_valid
+        )
+        connected_water = _seeded_connected_mask(
+            primary_mask,
             consensus_seed,
         )
         labels = np.full(spectral.shape, IGNORE_LABEL, dtype=np.uint8)
@@ -140,28 +155,28 @@ def generate_derived_label(
         )
         details = {
             "provider": "osm_blue_water_consensus",
-            "kind": "spectral_osm_consensus",
+            "kind": source,
             "status": "ready",
             "score_name": "spectral_water_score",
             "score_is_calibrated_probability": False,
-            "processing_mode": "spectral_water_connected_to_osm_seed",
+            "processing_mode": (
+                "spectral_water_connected_to_osm_seed"
+                if source == SPECTRAL_OSM_CONSENSUS
+                else "osm_water_connected_to_spectral_seed"
+            ),
             "connectivity": 8,
+            "primary_mask": (
+                "spectral_water"
+                if source == SPECTRAL_OSM_CONSENSUS
+                else "osm_blue_water"
+            ),
             "processing_max_dimension": max_dimension,
             "bands": spectral.bands,
             "spectral_algorithm": SPECTRAL_ALGORITHM_VERSION,
             "spectral_water_pixels": int(np.count_nonzero(spectral_water_valid)),
-            "osm_water_pixels": int(np.count_nonzero(valid & osm_water)),
+            "osm_water_pixels": int(np.count_nonzero(osm_water_valid)),
             "consensus_seed_pixels": int(np.count_nonzero(consensus_seed)),
             "consensus_water_pixels": int(np.count_nonzero(connected_water)),
-            "spectral_only_pixels": int(
-                np.count_nonzero(spectral_water_valid & ~osm_water)
-            ),
-            "spectral_only_promoted_pixels": int(
-                np.count_nonzero(connected_water & ~osm_water)
-            ),
-            "spectral_only_ignored_pixels": int(
-                np.count_nonzero(spectral_water_valid & ~connected_water)
-            ),
             "osm": {
                 "provider": osm.provider,
                 "zoom": osm.zoom,
@@ -172,9 +187,41 @@ def generate_derived_label(
             },
             **spectral.diagnostics,
         }
-    water = valid & (labels == WATER_LABEL)
-    ignore = valid & (labels == IGNORE_LABEL)
-    background = valid & (labels == BACKGROUND_LABEL)
+        if source == SPECTRAL_OSM_CONSENSUS:
+            details.update(
+                {
+                    "spectral_only_pixels": int(
+                        np.count_nonzero(spectral_water_valid & ~osm_water)
+                    ),
+                    "spectral_only_promoted_pixels": int(
+                        np.count_nonzero(connected_water & ~osm_water)
+                    ),
+                    "spectral_only_ignored_pixels": int(
+                        np.count_nonzero(spectral_water_valid & ~connected_water)
+                    ),
+                }
+            )
+        else:
+            details.update(
+                {
+                    "osm_only_pixels": int(
+                        np.count_nonzero(osm_water_valid & ~spectral_water)
+                    ),
+                    "osm_only_promoted_pixels": int(
+                        np.count_nonzero(connected_water & ~spectral_water)
+                    ),
+                    "osm_only_ignored_pixels": int(
+                        np.count_nonzero(osm_water_valid & ~connected_water)
+                    ),
+                }
+            )
+    valid_mask: np.ndarray = np.asarray(valid, dtype=bool)
+    label_array: np.ndarray = np.asarray(labels)
+    water: np.ndarray = np.logical_and(valid_mask, label_array == WATER_LABEL)
+    ignore: np.ndarray = np.logical_and(valid_mask, label_array == IGNORE_LABEL)
+    background: np.ndarray = np.logical_and(
+        valid_mask, label_array == BACKGROUND_LABEL
+    )
     water_features, water_polygon_count = _label_features(
         water,
         spectral.transform,
@@ -192,7 +239,7 @@ def generate_derived_label(
         label_value=IGNORE_LABEL,
     )
     features = water_features + ignore_features
-    valid_pixels = int(np.count_nonzero(valid))
+    valid_pixels = int(np.count_nonzero(valid_mask))
     water_pixels = int(np.count_nonzero(water))
     background_pixels = int(np.count_nonzero(background))
     ignore_pixels = int(np.count_nonzero(ignore))
@@ -207,10 +254,10 @@ def generate_derived_label(
         / max(valid_pixels, 1),
         "polygon_count": water_polygon_count,
         "ignore_polygon_count": ignore_polygon_count,
-        "mean_water_score": float(water_score[valid].mean())
+        "mean_water_score": float(water_score[valid_mask].mean())
         if valid_pixels
         else 0.0,
-        "max_water_score": float(water_score[valid].max())
+        "max_water_score": float(water_score[valid_mask].max())
         if valid_pixels
         else 0.0,
     }
@@ -265,23 +312,23 @@ def generate_derived_label(
     }
 
 
-def _seeded_spectral_water(
-    spectral_water: np.ndarray,
+def _seeded_connected_mask(
+    primary_mask: np.ndarray,
     consensus_seed: np.ndarray,
 ) -> np.ndarray:
-    """Promote spectral-water components that contain an OSM consensus seed."""
-    if spectral_water.shape != consensus_seed.shape:
-        raise ValueError("spectral water and consensus seed masks must have the same shape")
+    """Keep primary-mask components that contain a cross-source seed."""
+    if primary_mask.shape != consensus_seed.shape:
+        raise ValueError("primary and consensus masks must have the same shape")
     if not np.any(consensus_seed):
-        return np.zeros(spectral_water.shape, dtype=bool)
-    components = np.empty(spectral_water.shape, dtype=np.int32)
+        return np.zeros(primary_mask.shape, dtype=bool)
+    components = np.empty(primary_mask.shape, dtype=np.int32)
     ndimage.label(
-        spectral_water,
+        primary_mask,
         structure=np.ones((3, 3), dtype=np.uint8),
         output=components,
     )
     seeded_components = np.unique(components[consensus_seed])
-    return spectral_water & np.isin(components, seeded_components)
+    return primary_mask & np.isin(components, seeded_components)
 
 
 def _label_features(

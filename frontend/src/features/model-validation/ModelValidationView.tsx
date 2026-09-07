@@ -68,12 +68,21 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
     mapHandle: mapRef,
     onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, spectral_osm_consensus: value })),
   });
+  const osmSpectralConsensusGeneration = useGeneratedLabel({
+    workspaceId,
+    region,
+    siteId,
+    source: "osm_spectral_consensus",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, osm_spectral_consensus: value })),
+  });
   const handleImagery = useCallback((selection: ImagerySelection) => {
     setImagerySelection(selection);
   }, []);
   useEffect(() => {
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [imagerySelection.assetId]);
   const trainingCapture = useTrainingCapture({
     workspaceId,
@@ -102,6 +111,7 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
         if (!visible) return;
         if (layer === "spectralWater" && !generatedLabels.spectral_water) spectralWaterGeneration.mutate();
         if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) spectralOsmConsensusGeneration.mutate();
+        if (layer === "osmSpectralConsensus" && !generatedLabels.osm_spectral_consensus) osmSpectralConsensusGeneration.mutate();
       }}
       jrcThreshold={jrcThreshold}
       onJrcThresholdChange={setJrcThreshold}
@@ -112,13 +122,14 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
       onFitSite={() => mapRef.current?.fitSite()}
       onFitTile={() => mapRef.current?.fitTile()}
     />
-    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} modelPrediction={result.prediction} />
+    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={result.prediction} />
     <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{site.data.display_name || siteId} · 模型 {result.model.name} · 阈值 {threshold.toFixed(2)} · 水体像元 {metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · {result.model.device || ""}</Typography></Box>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <TrainingCaptureStatus controller={trainingCapture} />
         {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
         {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
+        {layerVisibility.osmSpectralConsensus && <GeneratedLabelStatus source="osm_spectral_consensus" result={generatedLabels.osm_spectral_consensus} pending={osmSpectralConsensusGeneration.isPending} error={osmSpectralConsensusGeneration.error} />}
       </Box>
     </Box>
   </Box>;

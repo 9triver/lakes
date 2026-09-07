@@ -77,7 +77,9 @@ class CurrentViewLabelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             label_id = "derived_0123456789abcdef0123"
-            for index, source in enumerate(("spectral_water", "spectral_osm_consensus")):
+            for index, source in enumerate(
+                ("spectral_water", "spectral_osm_consensus", "osm_spectral_consensus")
+            ):
                 source_dir = root / source
                 source_dir.mkdir()
                 (source_dir / f"{label_id}.geojson").write_text(
@@ -113,22 +115,24 @@ class CurrentViewLabelTests(unittest.TestCase):
                     "visible_layers": {
                         "spectral_water": True,
                         "spectral_osm_consensus": True,
+                        "osm_spectral_consensus": True,
                     },
                     "selected_generated_labels": {
                         "spectral_water": {"id": label_id},
                         "spectral_osm_consensus": {"id": label_id},
+                        "osm_spectral_consensus": {"id": label_id},
                     },
                 },
                 derived_label_dir=root,
             )
 
-        self.assertEqual(len(layer["features"]), 2)
+        self.assertEqual(len(layer["features"]), 3)
         self.assertEqual(
             {
                 feature["properties"]["training_layer"]
                 for feature in layer["features"]
             },
-            {"spectral_water", "spectral_osm_consensus"},
+            {"spectral_water", "spectral_osm_consensus", "osm_spectral_consensus"},
         )
 
 if __name__ == "__main__":

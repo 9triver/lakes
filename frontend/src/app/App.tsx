@@ -99,6 +99,15 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     mapHandle: mapRef,
     onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_osm_consensus: result })),
   });
+  const osmSpectralConsensusGeneration = useGeneratedLabel({
+    workspaceId: activeWorkspaceId,
+    region: selectedRegion,
+    siteId: selectedSiteId,
+    source: "osm_spectral_consensus",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, osm_spectral_consensus: result })),
+  });
   const validationModels = useValidationModels(activeWorkspaceId, selectedRegion, "current");
   const predictionModel = useMemo(() => {
     const items = validationModels.data?.items || [];
@@ -141,7 +150,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   useEffect(() => {
     setImagerySelection({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setPatchReviewEnabled(false);
@@ -151,7 +160,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [imagerySelection.assetId]);
   useEffect(() => {
     if (!patchGroups.length) setPatchGroupKey("");
@@ -180,7 +189,10 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) {
       spectralOsmConsensusGeneration.mutate();
     }
-  }, [generatedLabels, spectralOsmConsensusGeneration, spectralWaterGeneration]);
+    if (layer === "osmSpectralConsensus" && !generatedLabels.osm_spectral_consensus) {
+      osmSpectralConsensusGeneration.mutate();
+    }
+  }, [generatedLabels, osmSpectralConsensusGeneration, spectralOsmConsensusGeneration, spectralWaterGeneration]);
   const handlePatchClick = useCallback((patchId: string) => {
     setActivePatchId(patchId);
     const patch = visiblePatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
@@ -318,6 +330,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
               localLabel={localLabel.data}
               spectralWater={generatedLabels.spectral_water?.label}
               spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label}
+              osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label}
               modelPrediction={modelPrediction.data?.prediction}
               patches={visiblePatches}
               patchReviewEnabled={patchReviewEnabled}
@@ -330,6 +343,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
                 <TrainingCaptureStatus controller={trainingCapture} />
                 {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
                 {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
+                {layerVisibility.osmSpectralConsensus && <GeneratedLabelStatus source="osm_spectral_consensus" result={generatedLabels.osm_spectral_consensus} pending={osmSpectralConsensusGeneration.isPending} error={osmSpectralConsensusGeneration.error} />}
                 {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}
                 {modelPrediction.isError && layerVisibility.prediction && <Typography variant="caption" color="error">模型预测失败：{modelPrediction.error.message}</Typography>}
                 {predictionModel && layerVisibility.prediction && modelPrediction.data && <Typography variant="caption" color="text.secondary">模型 {predictionModel.name} · 阈值 0.50 · 水体像元 {((modelPrediction.data.stats.predicted_ratio || 0) * 100).toFixed(1)}%</Typography>}

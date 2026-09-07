@@ -187,7 +187,7 @@ COPERNICUS_USERNAME=...
 COPERNICUS_PASSWORD=...
 ```
 
-The `光谱 + OSM 一致` automatic label source downloads standard OSM tiles through the explicit proxy in `LAKES_OSM_PROXY` (default `http://192.168.30.107:7897`) and caches them under the region cache. Set `LAKES_OSM_PROXY=` to disable it. This setting is isolated to OSM evidence downloads; other service downloads continue to ignore proxy environment variables.
+The `光谱 + OSM 连通补全` and `OSM + 光谱连通补全` automatic label sources download standard OSM tiles through the explicit proxy in `LAKES_OSM_PROXY` (default `http://192.168.30.107:7897`) and cache them under the region cache. The first treats spectral water as the primary mask; the second treats OSM blue water as the primary mask. Set `LAKES_OSM_PROXY=` to disable the proxy. This setting is isolated to OSM evidence downloads; other service downloads continue to ignore proxy environment variables.
 
 Rebuild one Site catalog manually with:
 
