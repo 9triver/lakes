@@ -117,11 +117,11 @@ test("site browser filters by region and renders all map layers", async ({ page 
   await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await page.getByRole("button", { name: "展开侧栏" }).click();
   await expect(page.getByRole("button", { name: "收起侧栏" })).toBeVisible();
-  for (const label of ["影像", "Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
+  for (const label of ["影像", "Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 一致", "本体标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).toBeVisible();
   }
   await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
-  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
+  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 一致", "本体标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
   }
   await expectToolbarOutsideMap(page);
@@ -185,7 +185,7 @@ test("cached model validation deep link restores prediction", async ({ page }) =
   await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_20260823_123157/)).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: "模型预测", exact: true })).toBeChecked();
-  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "本地标注"]) {
+  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 一致", "本体标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
   }
   await expectToolbarOutsideMap(page);

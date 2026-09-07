@@ -44,7 +44,7 @@ def main() -> int:
         region_root = dataset_root / key
         region = replace(
             base,
-            data_dir=region_root,
+            data_dir=region_root / "raw",
             processed_dir=region_root / "processed",
             local_imagery_root=region_root / "raw" / "local_imagery",
         )

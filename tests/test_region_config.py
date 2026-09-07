@@ -30,7 +30,7 @@ class RegionConfigTests(unittest.TestCase):
             regions, _ = load_region_configs()
 
         gansu = regions["gansu"]
-        self.assertEqual(gansu.data_dir, root / "gansu")
+        self.assertEqual(gansu.data_dir, root / "gansu" / "raw")
         self.assertEqual(gansu.processed_dir, root / "gansu" / "processed")
         self.assertEqual(
             gansu.local_imagery_root,

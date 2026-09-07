@@ -258,17 +258,15 @@ class LogicalPatchPipelineTests(unittest.TestCase):
 
             workspace_dir = root / "workspaces" / "user-a" / "logical_patches" / "test"
             result = build_logical_patches(region, output_dir=workspace_dir, sample_ids={"test_sample"})
-            self.assertEqual(result["patches"], 4)
+            self.assertEqual(result["patches"], 1)
             manifest = workspace_dir / "manifest.csv"
             logical_rows = read_csv_records(manifest)
-            self.assertEqual({(int(row["row_off"]), int(row["col_off"])) for row in logical_rows}, {(0, 0), (0, 512), (512, 0), (512, 512)})
+            self.assertEqual(
+                {(int(row["row_off"]), int(row["col_off"])) for row in logical_rows},
+                {(0, 0)},
+            )
             self.assertTrue(all(Path(row["preview_path"]).exists() for row in logical_rows))
             self.assertTrue(all(Path(row["preview_base_path"]).exists() for row in logical_rows))
-            zero_water = [row for row in logical_rows if int(row["water_pixels"]) == 0]
-            self.assertTrue(zero_water)
-            self.assertTrue(all(row["include"] == "false" for row in zero_water))
-            self.assertTrue(all(row["review_status"] == "excluded" for row in zero_water))
-            self.assertTrue(all(row["exclude_reason"] == "no_water" for row in zero_water))
 
             empty_workspace_dir = root / "workspaces" / "empty" / "logical_patches" / "test"
             empty = build_logical_patches(region, output_dir=empty_workspace_dir, sample_ids=set())
@@ -276,23 +274,98 @@ class LogicalPatchPipelineTests(unittest.TestCase):
             self.assertFalse((empty_workspace_dir / "manifest.csv").exists())
             self.assertTrue(all(workspace_dir in Path(row["preview_path"]).parents for row in read_csv_records(workspace_dir / "manifest.csv")))
 
-            edge_row = next(row for row in logical_rows if int(row["row_off"]) == 512 and int(row["col_off"]) == 512)
-            edge_row["include"] = "false"
-            excluded_id = edge_row["logical_patch_id"]
-            manual_row = next(row for row in zero_water if row["logical_patch_id"] != excluded_id)
-            manual_row["include"] = "true"
-            manual_row["review_status"] = "included"
-            manual_row["exclude_reason"] = ""
+            state_row = logical_rows[0]
+            state_row["include"] = "false"
+            state_row["review_status"] = "excluded"
+            state_row["exclude_reason"] = "manual_review"
             write_csv_records(manifest, logical_rows)
             build_logical_patches(region, output_dir=workspace_dir, sample_ids={"test_sample"})
             rebuilt = {row["logical_patch_id"]: row for row in read_csv_records(manifest)}
-            self.assertEqual(rebuilt[excluded_id]["include"], "false")
-            self.assertEqual(rebuilt[manual_row["logical_patch_id"]]["include"], "true")
+            self.assertEqual(rebuilt[state_row["logical_patch_id"]]["include"], "false")
+            self.assertEqual(rebuilt[state_row["logical_patch_id"]]["exclude_reason"], "manual_review")
 
             build_logical_patches(region, output_dir=workspace_dir, sample_ids={"test_sample"}, patch_size=256, stride=256)
             variants = read_csv_records(manifest)
             self.assertEqual({int(row["logical_size"]) for row in variants}, {256, 512})
-            self.assertEqual(len({row["logical_patch_id"] for row in variants}), len(variants))
+            self.assertEqual(len(variants), 5)
+
+    def test_label_bbox_restricts_grid_to_water_extent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            region = RegionConfig(
+                key="test",
+                name="Test",
+                data_dir=root / "raw",
+                processed_dir=root / "processed",
+                cache_dir=root / "cache",
+                shared_data_dir=root / "shared",
+            )
+            image_path = region.data_dir / "image.tif"
+            image_path.parent.mkdir(parents=True)
+            self._write_raster(image_path)
+            label_path = region.training_label_dir / "sample.geojson"
+            label_path.parent.mkdir(parents=True)
+            label_path.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "features": [
+                            {
+                                "type": "Feature",
+                                "properties": {"label_value": 1},
+                                "geometry": {
+                                    "type": "Polygon",
+                                    "coordinates": [
+                                        [
+                                            [100.6, 29.4],
+                                            [100.8, 29.4],
+                                            [100.8, 29.2],
+                                            [100.6, 29.2],
+                                            [100.6, 29.4],
+                                        ]
+                                    ],
+                                },
+                            },
+                            {
+                                "type": "Feature",
+                                "properties": {"label_value": 255},
+                                "geometry": {
+                                    "type": "Polygon",
+                                    "coordinates": [
+                                        [
+                                            [100.0, 30.0],
+                                            [100.1, 30.0],
+                                            [100.1, 29.9],
+                                            [100.0, 29.9],
+                                            [100.0, 30.0],
+                                        ]
+                                    ],
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = build_logical_patches(
+                region,
+                root / "patches",
+                samples=[
+                    {
+                        "sample_id": "bbox-sample",
+                        "site_id": "site-1",
+                        "tci_path": str(image_path),
+                        "label_path": str(label_path),
+                    }
+                ],
+            )
+            rows = read_csv_records(root / "patches" / "manifest.csv")
+            self.assertEqual(result["patches"], 1)
+            self.assertEqual(
+                {(int(row["row_off"]), int(row["col_off"])) for row in rows},
+                {(512, 512)},
+            )
+            self.assertGreater(int(rows[0]["water_pixels"]), 0)
 
 
 if __name__ == "__main__":

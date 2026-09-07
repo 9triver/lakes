@@ -132,7 +132,7 @@ def image_fingerprint(path: Path, src: Any) -> str:
 
 
 def label_geometries(payload: dict, crs: Any) -> list[tuple[Any, int]]:
-    """Transform label features from WGS84 into a raster CRS once."""
+    """Transform 0/1/255 label features from WGS84 into a raster CRS once."""
     features = payload.get("features") if payload.get("type") == "FeatureCollection" else [payload]
     transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True) if crs else None
     geometries = []
@@ -144,7 +144,21 @@ def label_geometries(payload: dict, crs: Any) -> list[tuple[Any, int]]:
             continue
         if transformer and str(crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
             geometry = shapely_transform(transformer.transform, geometry)
-        geometries.append((geometry, 1))
+        properties = feature.get("properties") or {}
+        label_class = str(properties.get("label_class") or "").strip().lower()
+        raw_value = properties.get("label_value")
+        if raw_value is None:
+            value = {"background": 0, "water": 1, "ignore": 255}.get(
+                label_class, 1
+            )
+        else:
+            try:
+                value = int(raw_value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid label_value: {raw_value}") from exc
+        if value not in {0, 1, 255}:
+            raise ValueError(f"label_value must be 0, 1 or 255: {value}")
+        geometries.append((geometry, value))
     return geometries
 
 

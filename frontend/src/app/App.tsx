@@ -22,8 +22,9 @@ import { UserRouteError } from "../features/users/UserRouteError";
 import { AuthLoading, AuthRequired } from "../features/auth/AuthGate";
 import { useAuthSession } from "../features/auth/api";
 import { useWorkspace } from "../features/workspaces/api";
-import type { TrainingPatch, WorkbenchUser } from "../api/types";
+import type { GeneratedLabelResults, TrainingPatch, WorkbenchUser } from "../api/types";
 import { useWorkbenchStore } from "./store";
+import { GeneratedLabelStatus, useGeneratedLabel } from "../features/automatic-labels/GeneratedLabel";
 
 function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string }) {
   const location = useLocation();
@@ -32,6 +33,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const [basemap, setBasemap] = useState<BasemapType>("satellite");
   const [layerVisibility, setLayerVisibility] = useState<SiteLayerVisibility>(() => ({ ...DEFAULT_SITE_LAYER_VISIBILITY, prediction: false }));
   const [imagerySelection, setImagerySelection] = useState<ImagerySelection>({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
+  const [generatedLabels, setGeneratedLabels] = useState<GeneratedLabelResults>({});
   const [patchReviewEnabled, setPatchReviewEnabled] = useState(false);
   const [patchGroupKey, setPatchGroupKey] = useState("");
   const [patchOperation, setPatchOperation] = useState<PatchOperation>("exclude");
@@ -79,6 +81,24 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const esa = useEsaLayer(selectedRegion, selectedSiteId);
   const jrc = useJrcLayer(selectedRegion, selectedSiteId, jrcThreshold);
   const localLabel = useLocalLabel(selectedRegion, selectedSiteId, imagerySelection.localLabelId);
+  const spectralWaterGeneration = useGeneratedLabel({
+    workspaceId: activeWorkspaceId,
+    region: selectedRegion,
+    siteId: selectedSiteId,
+    source: "spectral_water",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_water: result })),
+  });
+  const spectralOsmConsensusGeneration = useGeneratedLabel({
+    workspaceId: activeWorkspaceId,
+    region: selectedRegion,
+    siteId: selectedSiteId,
+    source: "spectral_osm_consensus",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_osm_consensus: result })),
+  });
   const validationModels = useValidationModels(activeWorkspaceId, selectedRegion, "current");
   const predictionModel = useMemo(() => {
     const items = validationModels.data?.items || [];
@@ -120,7 +140,8 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
 
   useEffect(() => {
     setImagerySelection({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
-    setLayerVisibility((current) => ({ ...current, prediction: false }));
+    setGeneratedLabels({});
+    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmConsensus: false }));
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setPatchReviewEnabled(false);
@@ -128,6 +149,10 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     setPendingPatchIds(new Set());
     setActivePatchId("");
   }, [selectedRegion, selectedSiteId]);
+  useEffect(() => {
+    setGeneratedLabels({});
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false }));
+  }, [imagerySelection.assetId]);
   useEffect(() => {
     if (!patchGroups.length) setPatchGroupKey("");
     else if (!patchGroups.some((group) => group.key === patchGroupKey)) setPatchGroupKey(patchGroups[0].key);
@@ -143,11 +168,19 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     localLabel: imagerySelection.localLabel || undefined,
     imagery: imagerySelection,
     mapHandle: mapRef,
+    generatedLabels,
     onComplete: (sampleId) => navigate(`${workspacePrefix}/regions/${selectedRegion}/training-data/${encodeURIComponent(selectedSiteId)}?source=${encodeURIComponent(sampleId)}`),
   });
   const handleLayerVisibility = useCallback((layer: keyof SiteLayerVisibility, visible: boolean) => {
     setLayerVisibility((current) => ({ ...current, [layer]: visible }));
-  }, []);
+    if (!visible) return;
+    if (layer === "spectralWater" && !generatedLabels.spectral_water) {
+      spectralWaterGeneration.mutate();
+    }
+    if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) {
+      spectralOsmConsensusGeneration.mutate();
+    }
+  }, [generatedLabels, spectralOsmConsensusGeneration, spectralWaterGeneration]);
   const handlePatchClick = useCallback((patchId: string) => {
     setActivePatchId(patchId);
     const patch = visiblePatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
@@ -268,38 +301,41 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             onFitSite={() => mapRef.current?.fitSite()}
             onFitTile={() => mapRef.current?.fitTile()}
           />
-          <SiteMap
-            ref={mapRef}
-            site={site.data}
-            basemap={basemap}
-            visibility={layerVisibility}
-            tileMeta={tileMeta.data}
-            sentinelTiles={sentinelTiles.data}
-            osm={osm.data}
-            hydrolakes={hydrolakes.data}
-            contextOsm={contextWater.data?.sources.osm}
-            contextHydro={contextWater.data?.sources.hydrolakes}
-            esa={esa.data}
-            jrc={jrc.data}
-            localLabel={localLabel.data}
-            modelPrediction={modelPrediction.data?.prediction}
-            patches={visiblePatches}
-            patchReviewEnabled={patchReviewEnabled}
-            activePatchId={activePatchId}
-            pendingPatchIds={pendingPatchIds}
-            onPatchClick={handlePatchClick}
-            patchSourceMeta={patchSource.data}
-          />
-          <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
-            {patchReviewEnabled ? <SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updatePatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updatePatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /> : <>
-              <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+          <Box sx={{ position: "relative", minHeight: 0, overflow: "hidden" }}>
+            <SiteMap
+              ref={mapRef}
+              site={site.data}
+              basemap={basemap}
+              visibility={layerVisibility}
+              tileMeta={tileMeta.data}
+              sentinelTiles={sentinelTiles.data}
+              osm={osm.data}
+              hydrolakes={hydrolakes.data}
+              contextOsm={contextWater.data?.sources.osm}
+              contextHydro={contextWater.data?.sources.hydrolakes}
+              esa={esa.data}
+              jrc={jrc.data}
+              localLabel={localLabel.data}
+              spectralWater={generatedLabels.spectral_water?.label}
+              spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label}
+              modelPrediction={modelPrediction.data?.prediction}
+              patches={visiblePatches}
+              patchReviewEnabled={patchReviewEnabled}
+              activePatchId={activePatchId}
+              pendingPatchIds={pendingPatchIds}
+              onPatchClick={handlePatchClick}
+              patchSourceMeta={patchSource.data}
+            />
+            {!patchReviewEnabled && <Box sx={{ position: "absolute", zIndex: 5, left: { xs: 8, sm: 12 }, right: { xs: 8, sm: "auto" }, bottom: 12, maxWidth: { sm: "calc(100% - 24px)" }, px: 1.5, py: .75, bgcolor: "rgba(255,255,255,.92)", border: 1, borderColor: "divider", borderRadius: 1, boxShadow: 2, backdropFilter: "blur(5px)", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", pointerEvents: "none", "&:empty": { display: "none" } }}>
                 <TrainingCaptureStatus controller={trainingCapture} />
+                {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
+                {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
                 {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}
                 {modelPrediction.isError && layerVisibility.prediction && <Typography variant="caption" color="error">模型预测失败：{modelPrediction.error.message}</Typography>}
                 {predictionModel && layerVisibility.prediction && modelPrediction.data && <Typography variant="caption" color="text.secondary">模型 {predictionModel.name} · 阈值 0.50 · 水体像元 {((modelPrediction.data.stats.predicted_ratio || 0) * 100).toFixed(1)}%</Typography>}
-              </Box>
-            </>}
+            </Box>}
           </Box>
+          {patchReviewEnabled && <Box sx={{ maxHeight: "38vh", overflow: "auto" }}><SitePatchReviewPanel groups={patchGroups} groupKey={activePatchGroup?.key || ""} onGroupChange={(value) => { setPatchGroupKey(value); setPendingPatchIds(new Set()); setActivePatchId(""); }} operation={patchOperation} onOperationChange={(value) => { setPatchOperation(value); setPendingPatchIds(new Set()); }} active={activePatch} pendingCount={pendingPatchIds.size} applying={updatePatches.isPending} onClear={() => setPendingPatchIds(new Set())} onApply={() => updatePatches.mutate({ operation: patchOperation, ids: [...pendingPatchIds] }, { onSuccess: () => { setPendingPatchIds(new Set()); setActivePatchId(""); } })} /></Box>}
         </> : <Box sx={{ display: "grid", placeItems: "center" }}><Typography color="error">观测区域加载失败</Typography></Box>}
       </Box>
     </Box>

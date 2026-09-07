@@ -74,6 +74,27 @@ class TrainingIdentityTests(unittest.TestCase):
         second = training_view_signature("site_1", "product", "current_view", "75", changed)
         self.assertEqual(first[:2], second[:2])
 
+    def test_hidden_generated_label_does_not_change_training_identity(self) -> None:
+        base = {
+            "visible_layers": {"osm": True, "spectral_water": False},
+            "map": {"extent": [100, 20, 101, 21]},
+        }
+        with_hidden_result = {
+            **base,
+            "selected_generated_labels": {
+                "spectral_water": {"id": "derived_0123456789abcdef0123"}
+            },
+        }
+
+        first = training_view_signature(
+            "site_1", "product", "current_view", "", base
+        )
+        second = training_view_signature(
+            "site_1", "product", "current_view", "", with_hidden_result
+        )
+
+        self.assertEqual(first[:2], second[:2])
+
     def test_extent_is_rounded_for_stable_identity(self) -> None:
         first = {"visible_layers": {"osm": True}, "map": {"extent": [100.1234561, 20, 101, 21]}}
         second = {"visible_layers": {"osm": True}, "map": {"extent": [100.1234562, 20, 101, 21]}}

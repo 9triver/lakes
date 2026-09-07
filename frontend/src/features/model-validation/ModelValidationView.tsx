@@ -9,6 +9,8 @@ import { DEFAULT_SITE_LAYER_VISIBILITY, SiteMap, type BasemapType, type SiteLaye
 import { SiteMapToolbar } from "../map/SiteMapToolbar";
 import { TrainingCaptureButton, TrainingCaptureStatus, useTrainingCapture } from "../training-samples/TrainingCapture";
 import { type ModelOption, useSiteModelPrediction, useRandomModelValidation, useValidationModels } from "./api";
+import type { GeneratedLabelResults } from "../../api/types";
+import { GeneratedLabelStatus, useGeneratedLabel } from "../automatic-labels/GeneratedLabel";
 
 function metric(value?: number, digits = 4) { return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-"; }
 function modelLabel(value?: string) { return value === "pixel_mlp" ? "Pixel MLP" : "U-Net"; }
@@ -38,6 +40,7 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
   const [basemap, setBasemap] = useState<BasemapType>("satellite");
   const [layerVisibility, setLayerVisibility] = useState<SiteLayerVisibility>(() => ({ ...DEFAULT_SITE_LAYER_VISIBILITY }));
   const [imagerySelection, setImagerySelection] = useState<ImagerySelection>({ assetId: "", tile: result.imagery?.tile || result.imagery?.tiles?.[0] || "", product: result.imagery?.product || result.imagery?.product_name || result.imagery?.products?.[0] || "", localLabelId: "", localLabel: null });
+  const [generatedLabels, setGeneratedLabels] = useState<GeneratedLabelResults>({});
   const site = useSite(region, siteId, workspaceId);
   const tileMeta = useTileMeta(region, siteId);
   const sentinelTiles = useSentinelTiles(region, siteId);
@@ -47,9 +50,31 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
   const esa = useEsaLayer(region, siteId);
   const jrc = useJrcLayer(region, siteId, jrcThreshold);
   const localLabel = useLocalLabel(region, siteId, imagerySelection.localLabelId);
+  const spectralWaterGeneration = useGeneratedLabel({
+    workspaceId,
+    region,
+    siteId,
+    source: "spectral_water",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, spectral_water: value })),
+  });
+  const spectralOsmConsensusGeneration = useGeneratedLabel({
+    workspaceId,
+    region,
+    siteId,
+    source: "spectral_osm_consensus",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, spectral_osm_consensus: value })),
+  });
   const handleImagery = useCallback((selection: ImagerySelection) => {
     setImagerySelection(selection);
   }, []);
+  useEffect(() => {
+    setGeneratedLabels({});
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false }));
+  }, [imagerySelection.assetId]);
   const trainingCapture = useTrainingCapture({
     workspaceId,
     region,
@@ -58,6 +83,7 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
     localLabel: imagerySelection.localLabel || undefined,
     imagery: imagerySelection,
     mapHandle: mapRef,
+    generatedLabels,
     modelValidation: { model_key: result.model.key, model_name: result.model.name, model_path: result.model.path || "", threshold: result.model.threshold ?? threshold, predicted_area_km2: Number(result.stats.area_km2 || 0), predicted_ratio: Number(result.stats.predicted_ratio || 0), prediction_feature_count: result.prediction.features.length, device: result.model.device || "" },
     onComplete: (sampleId) => onTrainingDataGenerated?.(region, sampleId, result.site_id),
   });
@@ -71,7 +97,12 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
       basemap={basemap}
       onBasemapChange={setBasemap}
       visibility={layerVisibility}
-      onVisibilityChange={(layer, visible) => setLayerVisibility((current) => ({ ...current, [layer]: visible }))}
+      onVisibilityChange={(layer, visible) => {
+        setLayerVisibility((current) => ({ ...current, [layer]: visible }));
+        if (!visible) return;
+        if (layer === "spectralWater" && !generatedLabels.spectral_water) spectralWaterGeneration.mutate();
+        if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) spectralOsmConsensusGeneration.mutate();
+      }}
       jrcThreshold={jrcThreshold}
       onJrcThresholdChange={setJrcThreshold}
       trainingAction={<TrainingCaptureButton controller={trainingCapture} />}
@@ -81,11 +112,13 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
       onFitSite={() => mapRef.current?.fitSite()}
       onFitTile={() => mapRef.current?.fitTile()}
     />
-    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} modelPrediction={result.prediction} />
+    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} modelPrediction={result.prediction} />
     <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{site.data.display_name || siteId} · 模型 {result.model.name} · 阈值 {threshold.toFixed(2)} · 水体像元 {metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · {result.model.device || ""}</Typography></Box>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <TrainingCaptureStatus controller={trainingCapture} />
+        {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
+        {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
       </Box>
     </Box>
   </Box>;

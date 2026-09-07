@@ -15,6 +15,10 @@ from lake_workbench.imagery.formats import local_imagery_paths, local_imagery_pa
 from lake_workbench.imagery.display import display_band_indexes
 from lake_workbench.imagery.tiles import render_tci_xyz_tile
 from lake_workbench.imagery.validity import valid_pixel_mask
+from lake_workbench.training.patch_processing import (
+    label_geometries,
+    rasterize_geometries,
+)
 
 
 class ImageryRasterTests(unittest.TestCase):
@@ -162,6 +166,59 @@ class ImageryRasterTests(unittest.TestCase):
                 pixels = np.asarray(image)
             self.assertEqual(pixels[0, 0].tolist(), [0, 0, 0])
             self.assertGreater(int(pixels.max()), 0)
+
+    def test_training_label_geometry_preserves_three_state_values(self) -> None:
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]],
+                    },
+                    "properties": {"label_class": label_class},
+                }
+                for label_class in ("background", "water", "ignore")
+            ],
+        }
+
+        geometries = label_geometries(payload, "EPSG:4326")
+
+        self.assertEqual([value for _geometry, value in geometries], [0, 1, 255])
+
+    def test_later_ignore_geometry_overrides_water(self) -> None:
+        payload = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]],
+                    },
+                    "properties": {"label_value": 1},
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[2, 0], [4, 0], [4, 4], [2, 4], [2, 0]]],
+                    },
+                    "properties": {"label_value": 255},
+                },
+            ],
+        }
+        geometries = label_geometries(payload, "EPSG:4326")
+
+        mask = rasterize_geometries(
+            geometries,
+            (4, 4),
+            from_bounds(0, 0, 4, 4, 4, 4),
+        )
+
+        self.assertTrue(np.all(mask[:, :2] == 1))
+        self.assertTrue(np.all(mask[:, 2:] == 255))
 
 
 if __name__ == "__main__":

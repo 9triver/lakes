@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import json
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 
 from lake_workbench.training.catalog import TrainingCatalogMixin
 
@@ -67,6 +71,65 @@ class CurrentViewLabelTests(unittest.TestCase):
         self.assertEqual(len(layer["features"]), 1)
         self.assertEqual(layer["features"][0]["properties"]["label_id"], "label_1")
         self.assertEqual(layer["features"][0]["properties"]["training_layer"], "local_label")
+
+    def test_generated_labels_are_loaded_as_independent_annotation_sources(self) -> None:
+        catalog = TrainingCatalogStub()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            label_id = "derived_0123456789abcdef0123"
+            for index, source in enumerate(("spectral_water", "spectral_osm_consensus")):
+                source_dir = root / source
+                source_dir.mkdir()
+                (source_dir / f"{label_id}.geojson").write_text(
+                    json.dumps(
+                        {
+                            "type": "FeatureCollection",
+                            "properties": {"site_id": "site_1", "source": source},
+                            "features": [
+                                {
+                                    "type": "Feature",
+                                    "geometry": {
+                                        "type": "Polygon",
+                                        "coordinates": [
+                                            [
+                                                [index, 0],
+                                                [index + 1, 0],
+                                                [index + 1, 1],
+                                                [index, 0],
+                                            ]
+                                        ],
+                                    },
+                                    "properties": {"label_value": 1},
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            layer = catalog.current_view_training_label_layer(
+                SimpleNamespace(site_id="site_1"),
+                {
+                    "visible_layers": {
+                        "spectral_water": True,
+                        "spectral_osm_consensus": True,
+                    },
+                    "selected_generated_labels": {
+                        "spectral_water": {"id": label_id},
+                        "spectral_osm_consensus": {"id": label_id},
+                    },
+                },
+                derived_label_dir=root,
+            )
+
+        self.assertEqual(len(layer["features"]), 2)
+        self.assertEqual(
+            {
+                feature["properties"]["training_layer"]
+                for feature in layer["features"]
+            },
+            {"spectral_water", "spectral_osm_consensus"},
+        )
 
 if __name__ == "__main__":
     unittest.main()

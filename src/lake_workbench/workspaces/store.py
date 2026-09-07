@@ -107,6 +107,12 @@ class WorkspaceStore:
     def workspace_training_label_dir(self, workspace_id: str, region: str) -> Path:
         return self.workspace_samples_dir(workspace_id, region) / "labels"
 
+    def workspace_derived_label_dir(self, workspace_id: str, region: str) -> Path:
+        self._workspace_record(workspace_id)
+        if region not in self.regions:
+            raise WorkspaceError(f"Unknown region: {region}")
+        return self.root / workspace_id / "derived_labels" / region
+
     def ensure_workspace_training_samples(self, workspace_id: str, region: str) -> Path:
         """Return the workspace sample manifest, migrating legacy default rows once."""
         path = self.workspace_training_samples(workspace_id, region)

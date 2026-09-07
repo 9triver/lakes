@@ -147,7 +147,7 @@ def region_from_mapping(
     local_imagery_root = value.get("local_imagery_root")
     if data_root is not None:
         region_root = data_root / key
-        data_dir = region_root
+        data_dir = region_root / "raw"
         processed_dir = region_root / "processed"
         local_imagery_root = region_root / "raw" / "local_imagery"
     else:

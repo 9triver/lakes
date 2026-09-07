@@ -7,11 +7,18 @@ import threading
 from http import HTTPStatus
 from urllib.parse import parse_qs
 
+from lake_workbench.automatic_labels import (
+    DERIVED_LABEL_SOURCES,
+    generate_derived_label,
+)
 from lake_workbench.imagery.display import blank_png
 from lake_workbench.routes.regions import site_list_options
 
 
 TILE_RENDER_SEMAPHORE = threading.BoundedSemaphore(max(1, int(os.environ.get("LAKES_TILE_RENDER_WORKERS", "1"))))
+DERIVED_LABEL_SEMAPHORE = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("LAKES_DERIVED_LABEL_WORKERS", "1")))
+)
 
 
 def _site(handler, site_key: str):
@@ -167,6 +174,47 @@ def handle_site_get(handler, path: str, query_string: str) -> bool:
 
 
 def handle_site_post(handler, path: str) -> bool:
+    generated_label_match = re.fullmatch(
+        r"/api/sites/([^/]+)/generated-labels/([^/]+)", path
+    )
+    if generated_label_match:
+        site = _site(handler, generated_label_match.group(1))
+        if site is None:
+            return True
+        source = generated_label_match.group(2)
+        if source not in DERIVED_LABEL_SOURCES:
+            handler._error(
+                HTTPStatus.BAD_REQUEST,
+                f"Unknown generated annotation source: {source}",
+            )
+            return True
+        workspace_id = getattr(handler, "workspace_id", None)
+        store = getattr(handler.__class__, "workspace_store", None)
+        if not workspace_id or store is None:
+            handler._error(
+                HTTPStatus.NOT_FOUND,
+                "Generated annotations require a workspace-scoped path",
+            )
+            return True
+        payload = handler._read_json()
+        try:
+            with DERIVED_LABEL_SEMAPHORE:
+                result = generate_derived_label(
+                    handler.catalog,
+                    site,
+                    source,
+                    payload,
+                    store.workspace_derived_label_dir(
+                        workspace_id, handler.catalog.region.key
+                    ),
+                )
+        except FileNotFoundError as exc:
+            handler._error(HTTPStatus.NOT_FOUND, str(exc))
+        except ValueError as exc:
+            handler._error(HTTPStatus.BAD_REQUEST, str(exc))
+        else:
+            handler._json(result)
+        return True
     if not re.fullmatch(r"/api/sites/[^/]+/imagery/active", path):
         return False
     site = _site(handler, path.split("/")[-3])

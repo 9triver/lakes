@@ -202,11 +202,26 @@ def _build_sample_logical_patches(
             label_payload = json.loads(label_path.read_text(encoding="utf-8"))
             geometries = label_geometries(label_payload, src.crs)
             scope_geometry = _sample_scope_geometry(sample, src.crs)
-            row_offsets = _scope_grid_offsets(
-                src.height, patch_size, stride, scope_geometry, src.transform, axis="row"
+            label_bounds = _water_label_bounds(geometries)
+            candidate_bounds = _intersect_bounds(
+                label_bounds,
+                scope_geometry.bounds if scope_geometry is not None else None,
             )
-            col_offsets = _scope_grid_offsets(
-                src.width, patch_size, stride, scope_geometry, src.transform, axis="col"
+            row_offsets = _bounds_grid_offsets(
+                src.height,
+                patch_size,
+                stride,
+                candidate_bounds,
+                src.transform,
+                axis="row",
+            )
+            col_offsets = _bounds_grid_offsets(
+                src.width,
+                patch_size,
+                stride,
+                candidate_bounds,
+                src.transform,
+                axis="col",
             )
             for row_off in row_offsets:
                 for col_off in col_offsets:
@@ -253,7 +268,6 @@ def _build_sample_logical_patches(
                         if "include" in old
                         else old_status == "included"
                     )
-                    # Negative patches stay available for review but do not enter the workspace by default.
                     is_new = not old
                     has_review_metadata = "exclude_reason" in old
                     auto_excluded = water_pixels == 0 and (
@@ -336,19 +350,52 @@ def _sample_scope_geometry(sample: dict, crs: Any) -> Any | None:
     return geometry
 
 
-def _scope_grid_offsets(
+def _water_label_bounds(
+    geometries: list[tuple[Any, int]],
+) -> tuple[float, float, float, float] | None:
+    """Return the extent of water labels, excluding background and ignore labels."""
+    water_geometries = [geometry for geometry, value in geometries if value == 1]
+    if not water_geometries:
+        return None
+    bounds = [geometry.bounds for geometry in water_geometries]
+    return (
+        min(item[0] for item in bounds),
+        min(item[1] for item in bounds),
+        max(item[2] for item in bounds),
+        max(item[3] for item in bounds),
+    )
+
+
+def _intersect_bounds(
+    first: tuple[float, float, float, float] | None,
+    second: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float] | None:
+    if first is None:
+        return None
+    if second is None:
+        return first
+    bounds = (
+        max(first[0], second[0]),
+        max(first[1], second[1]),
+        min(first[2], second[2]),
+        min(first[3], second[3]),
+    )
+    return bounds if bounds[2] > bounds[0] and bounds[3] > bounds[1] else None
+
+
+def _bounds_grid_offsets(
     length: int,
     patch_size: int,
     stride: int,
-    scope_geometry: Any | None,
+    bounds: tuple[float, float, float, float] | None,
     transform: Any,
     *,
     axis: str,
 ) -> list[int]:
     offsets = grid_offsets(length, patch_size, stride)
-    if scope_geometry is None:
-        return offsets
-    window = from_bounds(*scope_geometry.bounds, transform=transform)
+    if bounds is None:
+        return []
+    window = from_bounds(*bounds, transform=transform)
     start = float(window.row_off if axis == "row" else window.col_off)
     stop = start + float(window.height if axis == "row" else window.width)
     return [offset for offset in offsets if offset < stop and offset + patch_size > start]

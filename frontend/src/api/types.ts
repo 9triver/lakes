@@ -80,7 +80,32 @@ export type GeoJsonGeometry = Record<string, unknown>;
 export interface FeatureCollection {
   type: "FeatureCollection";
   features: Array<{ type: "Feature"; geometry: Record<string, unknown>; properties?: Record<string, unknown> }>;
+  properties?: Record<string, unknown>;
 }
+
+export type GeneratedLabelSource = "spectral_water" | "spectral_osm_consensus";
+
+export interface GeneratedLabelResult {
+  label_id: string;
+  source: GeneratedLabelSource;
+  label: FeatureCollection;
+  stats: {
+    pixels: number;
+    valid_pixels: number;
+    water_pixels: number;
+    background_pixels: number;
+    ignore_pixels: number;
+    water_ratio: number;
+    confident_ratio: number;
+    polygon_count: number;
+    ignore_polygon_count: number;
+    mean_water_score: number;
+    max_water_score: number;
+  };
+  details: Record<string, unknown>;
+}
+
+export type GeneratedLabelResults = Partial<Record<GeneratedLabelSource, GeneratedLabelResult>>;
 
 export interface SiteDetail extends SiteSummary {
   site_id: string;

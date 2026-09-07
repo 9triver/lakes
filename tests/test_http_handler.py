@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from lake_workbench.auth import AuthError, AuthIdentity
 from lake_workbench.http_handler import create_site_handler
 from lake_workbench.routes.models import handle_model_get
-from lake_workbench.routes.sites import handle_site_get
+from lake_workbench.routes.sites import handle_site_get, handle_site_post
 from lake_workbench.routes.training import handle_training_get, handle_training_post
 
 
@@ -202,6 +202,25 @@ class HandlerAuthenticationTests(unittest.TestCase):
 
 
 class SiteRouteTests(unittest.TestCase):
+    def test_generated_label_route_requires_workspace_scope(self) -> None:
+        site = SimpleNamespace(site_id="gansu_20307")
+        handler = SimpleNamespace(
+            catalog=SimpleNamespace(get_site=lambda _key: site),
+            workspace_id=None,
+            error=None,
+        )
+        handler._error = lambda status, message: setattr(
+            handler, "error", (status, message)
+        )
+
+        handled = handle_site_post(
+            handler,
+            "/api/sites/gansu_20307/generated-labels/spectral_water",
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(handler.error[0], HTTPStatus.NOT_FOUND)
+
     def test_annotation_route_uses_a_source_independent_envelope(self) -> None:
         site = SimpleNamespace(site_id="gansu_20307")
         annotation = {"geometry": {"type": "Polygon", "coordinates": []}, "properties": {}}

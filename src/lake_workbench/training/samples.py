@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ class TrainingSampleCatalogMixin:
         *,
         samples_path: Path | None = None,
         label_dir: Path | None = None,
+        derived_label_dir: Path | None = None,
     ) -> dict:
         label_source = clean_optional(payload.get("label_source")) or "osm"
         label_threshold = clean_optional(payload.get("label_threshold")) or ""
@@ -67,7 +69,10 @@ class TrainingSampleCatalogMixin:
         if is_current_view:
             label_source = "current_view"
             label_layer = self.current_view_training_label_layer(
-                site, view_state, buffer_ratio=buffer_ratio
+                site,
+                view_state,
+                buffer_ratio=buffer_ratio,
+                derived_label_dir=derived_label_dir,
             )
             label_threshold = (
                 clean_optional(label_layer.get("properties", {}).get("jrc_threshold"))
@@ -230,7 +235,11 @@ class TrainingSampleCatalogMixin:
         }
 
     def current_view_training_label_layer(
-        self, site: Any, view_state: dict, buffer_ratio: float = 0.8
+        self,
+        site: Any,
+        view_state: dict,
+        buffer_ratio: float = 0.8,
+        derived_label_dir: Path | None = None,
     ) -> dict:
         visible = (
             dict(view_state.get("visible_layers"))
@@ -311,6 +320,38 @@ class TrainingSampleCatalogMixin:
                     site, "local", {"label_id": clean_optional(local_label.get("id"))}
                 ),
             )
+        generated_labels = (
+            view_state.get("selected_generated_labels")
+            if isinstance(view_state.get("selected_generated_labels"), dict)
+            else {}
+        )
+        generated_label_ids = {}
+        for source in ("spectral_water", "spectral_osm_consensus"):
+            selected = generated_labels.get(source)
+            label_id = (
+                clean_optional(selected.get("id"))
+                if isinstance(selected, dict)
+                else None
+            ) or ""
+            if not visible.get(source) or not label_id:
+                continue
+            if derived_label_dir is None:
+                raise ValueError("generated annotation storage is not configured")
+            if not re.fullmatch(r"derived_[a-f0-9]{20}", label_id):
+                raise ValueError(f"invalid generated annotation id: {label_id}")
+            label_path = derived_label_dir / source / f"{label_id}.geojson"
+            if not label_path.exists():
+                raise ValueError(f"generated annotation not found: {label_id}")
+            label_payload = json.loads(label_path.read_text(encoding="utf-8"))
+            properties = label_payload.get("properties") or {}
+            if properties.get("site_id") != site.site_id:
+                raise ValueError(
+                    "generated annotation does not belong to the selected site"
+                )
+            if properties.get("source") != source:
+                raise ValueError("generated annotation source does not match")
+            add_collection(source, label_payload)
+            generated_label_ids[source] = label_id
         if not features:
             raise ValueError("current view has no visible label geometry")
         return {
@@ -322,6 +363,7 @@ class TrainingSampleCatalogMixin:
                 "jrc_threshold": threshold,
                 "model_prediction_visible": model_prediction_visible,
                 "model_prediction_excluded": True,
+                "generated_label_ids": generated_label_ids,
                 "view_state": view_state,
             },
         }

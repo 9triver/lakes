@@ -221,7 +221,15 @@ def handle_training_post(handler, path: str) -> bool:
             samples_path = store.ensure_workspace_training_samples(handler.workspace_id, handler.catalog.region.key)
             label_dir = store.workspace_training_label_dir(handler.workspace_id, handler.catalog.region.key)
             with store.transaction():
-                result = handler.catalog.create_training_sample(site, payload, samples_path=samples_path, label_dir=label_dir)
+                result = handler.catalog.create_training_sample(
+                    site,
+                    payload,
+                    samples_path=samples_path,
+                    label_dir=label_dir,
+                    derived_label_dir=store.workspace_derived_label_dir(
+                        handler.workspace_id, handler.catalog.region.key
+                    ),
+                )
         except ValueError as exc:
             handler._error(HTTPStatus.BAD_REQUEST, str(exc))
             return True

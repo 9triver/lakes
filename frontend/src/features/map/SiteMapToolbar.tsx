@@ -95,7 +95,9 @@ export function SiteMapToolbar({
             <Typography variant="caption" sx={{ width: 32 }}>{jrcThreshold}%</Typography>
           </Box>
           {showPrediction && checkbox("prediction", "模型预测")}
-          {checkbox("local", "本地标注")}
+          {checkbox("spectralWater", "光谱水体")}
+          {checkbox("spectralOsmConsensus", "光谱 + OSM 一致")}
+          {checkbox("local", "本体标注")}
           {showPatches && <FormControlLabel sx={controlLabelSx} control={<Checkbox size="small" checked={patchReviewEnabled} onChange={(_, checked) => onPatchReviewEnabledChange?.(checked)} />} label="Patch" />}
           {trainingAction && <Box sx={{ display: "flex", alignItems: "center", ml: "auto" }}>{trainingAction}</Box>}
         </Box>

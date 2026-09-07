@@ -52,11 +52,26 @@ def training_view_signature(
     view_state: dict,
 ) -> tuple[str, str, list[float]]:
     visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
+    generated_source_keys = ("spectral_water", "spectral_osm_consensus")
     label_layers = {
         key: bool(visible.get(key))
-        for key in ("osm", "hydrolakes", "context_osm", "context_hydrolakes", "esa", "jrc", "local_label")
+        for key in (
+            "osm",
+            "hydrolakes",
+            "context_osm",
+            "context_hydrolakes",
+            "esa",
+            "jrc",
+            "local_label",
+            *generated_source_keys,
+        )
     }
     local_label = view_state.get("selected_local_label") if isinstance(view_state.get("selected_local_label"), dict) else {}
+    generated_labels = (
+        view_state.get("selected_generated_labels")
+        if isinstance(view_state.get("selected_generated_labels"), dict)
+        else {}
+    )
     extent = normalized_view_extent(view_state)
     base_payload = {
         "site_id": site_id,
@@ -67,6 +82,13 @@ def training_view_signature(
         "jrc_threshold": parse_int_or_default(view_state.get("jrc_threshold"), 75),
         "local_label_id": clean_optional(local_label.get("id")) or "",
         "local_label_path": clean_optional(local_label.get("path")) or "",
+        "generated_label_ids": {
+            source: clean_optional((generated_labels.get(source) or {}).get("id"))
+            or ""
+            for source in generated_source_keys
+            if bool(visible.get(source))
+            and isinstance(generated_labels.get(source), dict)
+        },
     }
     exact_payload = {**base_payload, "extent": extent}
     base_json = json.dumps(base_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

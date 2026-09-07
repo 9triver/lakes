@@ -6,6 +6,7 @@ Lakes is a local Web GIS for multi-region satellite observation, water annotatio
 
 - Browse observation Sites defined by local imagery directories across all configured regions. The current configuration contains 17 provincial regions.
 - Display OSM, HydroLAKES, ESA WorldCover, JRC GSW, and local Shapefile annotations independently.
+- Generate independent automatic labels from multispectral water evidence or conservative multispectral/OSM map consensus.
 - Use local imagery as the primary Site imagery; query and download Sentinel-2 SAFE/TCI products through the API or CLI when needed.
 - Generate Workspace-owned Patches directly from the current map extent, imagery, and visible annotations.
 - Review Patch include/exclude state and contribute selected included Patches to versioned shared Datasets.
@@ -185,6 +186,8 @@ Copernicus requests made by the running Lakes service explicitly ignore proxy en
 COPERNICUS_USERNAME=...
 COPERNICUS_PASSWORD=...
 ```
+
+The `光谱 + OSM 一致` automatic label source downloads standard OSM tiles through the explicit proxy in `LAKES_OSM_PROXY` (default `http://192.168.30.107:7897`) and caches them under the region cache. Set `LAKES_OSM_PROXY=` to disable it. This setting is isolated to OSM evidence downloads; other service downloads continue to ignore proxy environment variables.
 
 Rebuild one Site catalog manually with:
 

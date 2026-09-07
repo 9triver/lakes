@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Typography } from "@mui/material";
 import { ScanLine } from "lucide-react";
 import { getJson, postJson } from "../../api/client";
-import type { LocalLabelItem } from "../../api/types";
+import type { GeneratedLabelResults, LocalLabelItem } from "../../api/types";
 import type { SiteMapHandle } from "../map/SiteMap";
 import { workspaceRegionApi } from "../workspaces/api";
 
@@ -16,6 +16,7 @@ export interface TrainingCaptureProps {
   imagery: { assetId?: string; tile: string; product: string; localLabel?: LocalLabelItem | null };
   mapHandle: React.RefObject<SiteMapHandle | null>;
   modelValidation?: Record<string, unknown> | null;
+  generatedLabels?: GeneratedLabelResults;
   onComplete?: (sampleId: string) => void;
 }
 
@@ -76,10 +77,33 @@ export interface TrainingCaptureController {
   overwriteConflict: () => void;
 }
 
-export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null, onComplete }: TrainingCaptureProps): TrainingCaptureController {
+export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, localLabel, imagery, mapHandle, modelValidation = null, generatedLabels = {}, onComplete }: TrainingCaptureProps): TrainingCaptureController {
   const [message, setMessage] = useState("");
   const [conflict, setConflict] = useState<TrainingPatchConflict | null>(null);
+  const messageTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
+  const clearMessageTimeout = () => {
+    if (messageTimeout.current) {
+      clearTimeout(messageTimeout.current);
+      messageTimeout.current = null;
+    }
+  };
+  const setStatusMessage = (nextMessage: string) => {
+    clearMessageTimeout();
+    setMessage(nextMessage);
+  };
+  const showTemporaryMessage = (nextMessage: string) => {
+    setStatusMessage(nextMessage);
+    messageTimeout.current = setTimeout(() => {
+      setMessage("");
+      messageTimeout.current = null;
+    }, 5000);
+  };
+  useEffect(() => () => clearMessageTimeout(), []);
+  useEffect(() => {
+    clearMessageTimeout();
+    setMessage("");
+  }, [region, siteId, imagery.assetId, imagery.tile, imagery.product]);
   const invalidateTrainingQueries = async () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["training-samples"] }),
     queryClient.invalidateQueries({ queryKey: ["logical-patches"] }),
@@ -97,6 +121,11 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
         ...captured,
         jrc_threshold: jrcThreshold,
         selected_local_label: selectedLocalLabel ? { id: selectedLocalLabel.id, name: selectedLocalLabel.name, path: selectedLocalLabel.path, date: selectedLocalLabel.date || "" } : null,
+        selected_generated_labels: Object.fromEntries(
+          Object.entries(generatedLabels)
+            .filter(([source]) => captured.visible_layers[source])
+            .map(([source, result]) => [source, { id: result.label_id }]),
+        ),
         selected_tile: imagery.tile,
         selected_product: imagery.product,
         selected_imagery_asset_id: imagery.assetId || imagery.product,
@@ -114,7 +143,7 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
         const job = await waitForPatchJob(
           workspaceRegionApi(workspaceId, region, `/training-patches/export-jobs/${encodeURIComponent(result.patch_job.job_id)}`),
           result.sample.sample_id,
-          setMessage,
+          setStatusMessage,
         );
         return { result, patches: job.result?.patches || 0 };
       }
@@ -123,17 +152,17 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
     onSuccess: async ({ result, patches }) => {
       const similar = result.sample.similar_samples?.length || 0;
       const action = result.sample.duplicate ? "已更新已有训练区域" : "已记录训练区域";
-      setMessage(`${action}${patches == null ? "" : `，生成 ${patches} 个 Patch`}${similar ? `，${similar} 个相似视图` : ""}`);
+      showTemporaryMessage(`${action}${patches == null ? "" : `，生成 ${patches} 个 Patch`}${similar ? `，${similar} 个相似视图` : ""}`);
       await invalidateTrainingQueries();
       onComplete?.(result.sample.sample_id);
     },
     onError: (error) => {
       if (error instanceof PatchConflictError) {
         setConflict(error.details);
-        setMessage("发现重复或空间重叠 Patch，请选择如何处理");
+        setStatusMessage("发现重复或空间重叠 Patch，请选择如何处理");
         return;
       }
-      setMessage(error instanceof Error ? error.message : String(error));
+      setStatusMessage(error instanceof Error ? error.message : String(error));
     },
   });
   const retryPatch = useMutation({
@@ -152,24 +181,24 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
       const completed = await waitForPatchJob(
         workspaceRegionApi(workspaceId, region, `/training-patches/export-jobs/${encodeURIComponent(job.job_id)}`),
         conflict.sampleId,
-        setMessage,
+        setStatusMessage,
       );
       return { sampleId: conflict.sampleId, patches: completed.result?.patches || 0 };
     },
     onSuccess: async ({ sampleId, patches }) => {
       save.reset();
       setConflict(null);
-      setMessage(`已覆盖冲突 Patch，当前 Patch 已纳入 Workspace（${patches} 个）`);
+      showTemporaryMessage(`已覆盖冲突 Patch，当前 Patch 已纳入 Workspace（${patches} 个）`);
       await invalidateTrainingQueries();
       onComplete?.(sampleId);
     },
     onError: (error) => {
       if (error instanceof PatchConflictError) {
         setConflict(error.details);
-        setMessage("仍存在 Patch 冲突，请重新选择处理方式");
+        setStatusMessage("仍存在 Patch 冲突，请重新选择处理方式");
         return;
       }
-      setMessage(error instanceof Error ? error.message : String(error));
+      setStatusMessage(error instanceof Error ? error.message : String(error));
     },
   });
 
@@ -178,9 +207,9 @@ export function useTrainingCapture({ workspaceId, region, siteId, jrcThreshold, 
     isPending: save.isPending || retryPatch.isPending,
     isError: save.isError || retryPatch.isError,
     conflict,
-    record: () => { setConflict(null); retryPatch.reset(); setMessage("保存中"); save.mutate(); },
-    cancelConflict: () => { if (!retryPatch.isPending) { save.reset(); retryPatch.reset(); setConflict(null); setMessage("已取消覆盖，训练区域已保存"); } },
-    overwriteConflict: () => { if (conflict && !retryPatch.isPending) { setMessage("正在覆盖冲突 Patch"); retryPatch.mutate(); } },
+    record: () => { setConflict(null); retryPatch.reset(); setStatusMessage("保存中"); save.mutate(); },
+    cancelConflict: () => { if (!retryPatch.isPending) { save.reset(); retryPatch.reset(); setConflict(null); setStatusMessage("已取消覆盖，训练区域已保存"); } },
+    overwriteConflict: () => { if (conflict && !retryPatch.isPending) { setStatusMessage("正在覆盖冲突 Patch"); retryPatch.mutate(); } },
   };
 }
 
@@ -204,6 +233,7 @@ export function TrainingCaptureButton({ controller }: { controller: TrainingCapt
 }
 
 export function TrainingCaptureStatus({ controller }: { controller: TrainingCaptureController }) {
+  if (!controller.message) return null;
   return <Typography variant="caption" color={controller.isError ? "error" : "text.secondary"}>{controller.message}</Typography>;
 }
 
