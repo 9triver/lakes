@@ -187,7 +187,7 @@ COPERNICUS_USERNAME=...
 COPERNICUS_PASSWORD=...
 ```
 
-The `光谱 ∩ OSM（高置信种子）`, `光谱主导 · OSM 约束`, and `OSM 主导 · 光谱候选` automatic label sources use the same `https://tile.openstreetmap.de/{z}/{x}/{y}.png` tiles as the browser basemap. The server stores every successfully downloaded tile under the region cache and validates the cached PNG before using it; annotation generation reads this cache first and only downloads missing or invalid tiles. The default is direct access. Set `LAKES_OSM_PROXY` explicitly when the server network requires a proxy. This setting is isolated to OSM evidence downloads; other service downloads continue to ignore proxy environment variables.
+The `光谱 ∩ OSM（高置信种子）`, `光谱主导 · OSM 约束`, and `OSM 主导 · 光谱候选` automatic label sources use the same `https://tile.openstreetmap.de/{z}/{x}/{y}.png` tiles as the browser basemap. The server stores every successfully downloaded tile under the region cache and validates the cached PNG before using it. It also caches the common spectral evidence, the aligned OSM water mask shared by all three fusion variants, and completed generated-label results. Missing or temporarily unavailable OSM tiles use a five-minute negative cache so switching variants does not repeat the same network timeout; configure this interval with `LAKES_OSM_NEGATIVE_CACHE_SECONDS`. The default is direct access. Set `LAKES_OSM_PROXY` explicitly when the server network requires a proxy. This setting is isolated to OSM evidence downloads; other service downloads continue to ignore proxy environment variables.
 
 Rebuild one Site catalog manually with:
 

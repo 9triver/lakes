@@ -26,6 +26,7 @@ DEFAULT_OSM_PROXY = ""
 OSM_TILE_USER_AGENT = "LakesWorkbench/0.1 (+https://github.com/9triver/lakes)"
 OSM_TILE_REQUEST_ATTEMPTS = 3
 OSM_TILE_RETRY_DELAY_SECONDS = 0.25
+DEFAULT_OSM_NEGATIVE_CACHE_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,7 @@ def aligned_osm_rgb(
     max_tiles: int = 64,
 ) -> BasemapEvidence:
     """Download and align standard OSM map tiles for water evidence."""
-    tile_url = os.environ.get("LAKES_OSM_TILE_URL", DEFAULT_OSM_TILE_URL).strip()
-    proxy = os.environ.get("LAKES_OSM_PROXY", DEFAULT_OSM_PROXY).strip()
+    tile_url, proxy = osm_tile_settings()
     return _aligned_xyz_rgb(
         bounds_wgs84,
         requested_zoom,
@@ -66,6 +66,14 @@ def aligned_osm_rgb(
         provider="osm_de",
         max_tiles=max_tiles,
         proxy=proxy,
+    )
+
+
+def osm_tile_settings() -> tuple[str, str]:
+    """Return the configured OSM tile URL and optional explicit proxy."""
+    return (
+        os.environ.get("LAKES_OSM_TILE_URL", DEFAULT_OSM_TILE_URL).strip(),
+        os.environ.get("LAKES_OSM_PROXY", DEFAULT_OSM_PROXY).strip(),
     )
 
 
@@ -229,6 +237,7 @@ def _cached_tile(
     cache_suffix: str,
 ) -> bytes | None:
     path = cache_dir / "basemap" / cache_key / str(zoom) / str(x) / f"{y}.{cache_suffix}"
+    missing_path = path.with_suffix(f"{path.suffix}.missing")
     if path.exists() and path.stat().st_size > 0:
         cached = path.read_bytes()
         try:
@@ -238,6 +247,14 @@ def _cached_tile(
             pass
         else:
             return cached
+    negative_cache_seconds = _negative_cache_seconds()
+    if (
+        negative_cache_seconds > 0
+        and missing_path.is_file()
+        and time.time() - missing_path.stat().st_mtime < negative_cache_seconds
+    ):
+        return None
+    missing_path.unlink(missing_ok=True)
     url = tile_url.format(z=zoom, x=x, y=y)
     for attempt in range(OSM_TILE_REQUEST_ATTEMPTS):
         try:
@@ -249,6 +266,7 @@ def _cached_tile(
             if response.status_code == 404:
                 # OSM.de uses 404 for some empty/out-of-coverage tiles. They
                 # contribute no evidence, but must not abort the whole label.
+                _write_missing_marker(missing_path)
                 return None
             response.raise_for_status()
             payload = response.content
@@ -258,6 +276,7 @@ def _cached_tile(
             if attempt + 1 >= OSM_TILE_REQUEST_ATTEMPTS:
                 # A single unavailable tile should behave like an uncovered
                 # map area. The caller records it as invalid and continues.
+                _write_missing_marker(missing_path)
                 return None
             time.sleep(OSM_TILE_RETRY_DELAY_SECONDS * (attempt + 1))
         else:
@@ -276,4 +295,35 @@ def _cached_tile(
         except OSError:
             pass
         raise
+    missing_path.unlink(missing_ok=True)
     return payload
+
+
+def _negative_cache_seconds() -> int:
+    try:
+        return max(
+            0,
+            int(
+                os.environ.get(
+                    "LAKES_OSM_NEGATIVE_CACHE_SECONDS",
+                    str(DEFAULT_OSM_NEGATIVE_CACHE_SECONDS),
+                )
+            ),
+        )
+    except ValueError:
+        return DEFAULT_OSM_NEGATIVE_CACHE_SECONDS
+
+
+def _write_missing_marker(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(str(int(time.time())))
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise

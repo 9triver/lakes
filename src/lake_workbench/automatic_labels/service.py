@@ -20,7 +20,13 @@ from shapely.validation import make_valid
 
 from lake_workbench.automatic_labels.basemap import (
     aligned_osm_rgb,
-    osm_water_mask,
+    osm_tile_settings,
+)
+from lake_workbench.automatic_labels.evidence_cache import (
+    INCOMPLETE_OSM_CACHE_SECONDS,
+    OSM_WATER_MASK_VERSION,
+    cached_osm_mask,
+    cached_spectral_evidence,
 )
 from lake_workbench.automatic_labels.spectral import (
     BACKGROUND_LABEL,
@@ -29,7 +35,6 @@ from lake_workbench.automatic_labels.spectral import (
     STABLE_LABEL_MAX_DIMENSION,
     SPECTRAL_ALGORITHM_VERSION,
     WATER_LABEL,
-    read_spectral_evidence,
 )
 from lake_workbench.training.identity import normalized_view_extent
 from lake_workbench.utils import (
@@ -101,13 +106,52 @@ def generate_derived_label(
         if safe_path_text
         else None
     )
-    spectral = read_spectral_evidence(
+    if quality_path is not None and not quality_path.exists():
+        quality_path = None
+    requested_osm_zoom = (
+        _bounded_int(payload.get("osm_zoom"), 14, 8, 19)
+        if source != SPECTRAL_WATER
+        else None
+    )
+    osm_tile_url = osm_tile_settings()[0] if requested_osm_zoom is not None else ""
+    image_stat = image_path.stat()
+    identity = {
+        "schema": "derived_label_v2",
+        "source": source,
+        "site_id": site.site_id,
+        "image_path": display_path(image_path),
+        "image_size": image_stat.st_size,
+        "image_mtime_ns": image_stat.st_mtime_ns,
+        "quality_path": display_path(quality_path) if quality_path else "",
+        "quality_size": quality_path.stat().st_size if quality_path else None,
+        "quality_mtime_ns": quality_path.stat().st_mtime_ns if quality_path else None,
+        "extent": extent,
+        "max_dimension": max_dimension,
+        "threshold": threshold,
+        "spectral_algorithm": SPECTRAL_ALGORITHM_VERSION,
+        "osm_mask_algorithm": OSM_WATER_MASK_VERSION if requested_osm_zoom else None,
+        "osm_zoom": requested_osm_zoom,
+        "osm_tile_url": osm_tile_url,
+    }
+    label_id = "derived_" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:20]
+    source_dir = output_dir / source
+    path = source_dir / f"{label_id}.geojson"
+    mask_path = source_dir / f"{label_id}.npz"
+    cached_result = _load_cached_result(path, mask_path, source, site.site_id)
+    if cached_result is not None:
+        return cached_result
+
+    spectral, spectral_cache_key, spectral_cache_hit = cached_spectral_evidence(
+        catalog.region.cache_dir,
         image_path,
         bounds,
         max_dimension=max_dimension,
         threshold=threshold,
-        quality_path=quality_path if quality_path and quality_path.exists() else None,
+        quality_path=quality_path,
     )
+    osm_cache_hit: bool | None = None
     details: dict[str, Any]
     valid: np.ndarray
     labels: np.ndarray
@@ -132,15 +176,23 @@ def generate_derived_label(
         SPECTRAL_OSM_CONSENSUS,
         OSM_SPECTRAL_CONSENSUS,
     }:
-        osm = aligned_osm_rgb(
-            bounds,
-            _bounded_int(payload.get("osm_zoom"), 14, 8, 19),
-            spectral.crs,
-            spectral.transform,
-            spectral.shape,
+        assert requested_osm_zoom is not None
+        osm, osm_cache_hit = cached_osm_mask(
             catalog.region.cache_dir,
+            spectral_cache_key,
+            bounds,
+            requested_osm_zoom,
+            osm_tile_url,
+            lambda: aligned_osm_rgb(
+                bounds,
+                requested_osm_zoom,
+                spectral.crs,
+                spectral.transform,
+                spectral.shape,
+                catalog.region.cache_dir,
+            ),
         )
-        osm_water = osm_water_mask(osm.rgb, osm.valid)
+        osm_water = osm.water
         valid = spectral.valid & osm.valid
         spectral_water = spectral.labels == WATER_LABEL
         spectral_water_valid = valid & spectral_water
@@ -247,6 +299,13 @@ def generate_derived_label(
                     ),
                 }
             )
+    details["cache"] = {
+        "result": "miss",
+        "spectral": "hit" if spectral_cache_hit else "miss",
+        "osm": None
+        if osm_cache_hit is None
+        else ("hit" if osm_cache_hit else "miss"),
+    }
     valid_mask: np.ndarray = np.asarray(valid, dtype=bool)
     label_array: np.ndarray = np.asarray(labels)
     water: np.ndarray = np.logical_and(valid_mask, label_array == WATER_LABEL)
@@ -285,25 +344,7 @@ def generate_derived_label(
         if valid_pixels
         else 0.0,
     }
-    identity = {
-        "source": source,
-        "site_id": site.site_id,
-        "image_path": display_path(image_path),
-        "image_size": image_path.stat().st_size,
-        "image_mtime_ns": image_path.stat().st_mtime_ns,
-        "extent": extent,
-        "max_dimension": max_dimension,
-        "threshold": threshold,
-        "provider": details.get("provider"),
-        "algorithm": details.get("algorithm") or details.get("provider"),
-        "zoom": details.get("osm", {}).get("zoom"),
-    }
-    label_id = "derived_" + hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:20]
-    source_dir = output_dir / source
     source_dir.mkdir(parents=True, exist_ok=True)
-    mask_path = source_dir / f"{label_id}.npz"
     _write_label_mask(
         mask_path,
         label_array.astype(np.uint8, copy=False),
@@ -332,6 +373,7 @@ def generate_derived_label(
             "overlay_values": [WATER_LABEL, IGNORE_LABEL],
         },
         "threshold": threshold,
+        "identity": identity,
         "details": details,
         "stats": stats,
     }
@@ -340,7 +382,6 @@ def generate_derived_label(
         "properties": properties,
         "features": features,
     }
-    path = source_dir / f"{label_id}.geojson"
     temporary_path = path.with_name(f".{path.name}.tmp")
     temporary_path.write_text(json.dumps(label, ensure_ascii=False), encoding="utf-8")
     os.replace(temporary_path, path)
@@ -351,6 +392,53 @@ def generate_derived_label(
         "stats": stats,
         "details": details,
     }
+
+
+def _load_cached_result(
+    path: Path,
+    mask_path: Path,
+    source: str,
+    site_id: str,
+) -> dict | None:
+    """Return one complete generated label without rebuilding its evidence."""
+    if not path.is_file() or not mask_path.is_file():
+        return None
+    try:
+        label = json.loads(path.read_text(encoding="utf-8"))
+        with np.load(mask_path, allow_pickle=False) as mask:
+            if not {"labels", "valid", "transform", "crs"}.issubset(mask.files):
+                return None
+        properties = label["properties"]
+        if (
+            properties.get("source") != source
+            or properties.get("site_id") != site_id
+            or properties.get("raster_label", {}).get("path") != mask_path.name
+        ):
+            return None
+        details = properties["details"]
+        missing_tiles = int(details.get("osm_missing_tile_count") or 0)
+        if (
+            missing_tiles > 0
+            and time.time() - path.stat().st_mtime
+            > INCOMPLETE_OSM_CACHE_SECONDS
+        ):
+            return None
+        response_details = {
+            **details,
+            "cache": {
+                **(details.get("cache") or {}),
+                "result": "hit",
+            },
+        }
+        return {
+            "label_id": properties["label_id"],
+            "source": source,
+            "label": label,
+            "stats": properties["stats"],
+            "details": response_details,
+        }
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def _write_label_mask(

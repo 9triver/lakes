@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import requests
@@ -15,10 +15,15 @@ from PIL import Image
 from rasterio.transform import from_bounds
 
 from lake_workbench.automatic_labels.basemap import (
+    BasemapEvidence,
     DEFAULT_OSM_PROXY,
     DEFAULT_OSM_TILE_URL,
     _cached_tile,
     bounded_tile_range,
+)
+from lake_workbench.automatic_labels.evidence_cache import (
+    cached_osm_mask,
+    cached_spectral_evidence,
 )
 from lake_workbench.automatic_labels.service import (
     OSM_SPECTRAL_CONSENSUS,
@@ -30,6 +35,7 @@ from lake_workbench.automatic_labels.service import (
 from lake_workbench.automatic_labels.spectral import (
     ExternalQualityMasks,
     IGNORE_LABEL,
+    SpectralEvidence,
     WATER_LABEL,
     _normalized_difference,
     classify_spectral_array,
@@ -124,21 +130,107 @@ class AutomaticLabelTests(unittest.TestCase):
                     raise requests.HTTPError("404")
 
             class Network:
+                calls = 0
+
                 def get(self, *_args, **_kwargs):
+                    self.calls += 1
                     return MissingTile()
 
-            self.assertIsNone(
-                _cached_tile(
-                    Network(),
-                    DEFAULT_OSM_TILE_URL,
-                    Path(directory),
-                    11,
-                    1610,
-                    815,
-                    "osm_test",
-                    "png",
+            network = Network()
+            for _attempt in range(2):
+                self.assertIsNone(
+                    _cached_tile(
+                        network,
+                        DEFAULT_OSM_TILE_URL,
+                        Path(directory),
+                        11,
+                        1610,
+                        815,
+                        "osm_test",
+                        "png",
+                    )
+                )
+            self.assertEqual(network.calls, 1)
+
+    def test_common_spectral_and_osm_evidence_are_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "image.tif"
+            image_path.write_bytes(b"image")
+            transform = Affine(1, 0, 100, 0, -1, 24)
+            spectral = SpectralEvidence(
+                water_score=np.full((2, 2), 0.75, dtype=np.float32),
+                labels=np.array([[1, 0], [255, 0]], dtype=np.uint8),
+                valid=np.ones((2, 2), dtype=bool),
+                quality_valid=np.ones((2, 2), dtype=bool),
+                methods={"method": np.array([[1, 0], [0, 0]], dtype=bool)},
+                indexes={"ndwi": np.full((2, 2), 0.5, dtype=np.float32)},
+                bands={"green": 2, "nir": 4},
+                diagnostics={"algorithm": "test"},
+                transform=transform,
+                crs="EPSG:4326",
+            )
+            with patch(
+                "lake_workbench.automatic_labels.evidence_cache.read_spectral_evidence",
+                return_value=spectral,
+            ) as spectral_reader:
+                first, first_key, first_hit = cached_spectral_evidence(
+                    root / "cache",
+                    image_path,
+                    (100, 20, 104, 24),
+                    max_dimension=2048,
+                    threshold=0.62,
+                    quality_path=None,
+                )
+                second, second_key, second_hit = cached_spectral_evidence(
+                    root / "cache",
+                    image_path,
+                    (100, 20, 104, 24),
+                    max_dimension=2048,
+                    threshold=0.62,
+                    quality_path=None,
+                )
+
+            self.assertFalse(first_hit)
+            self.assertTrue(second_hit)
+            self.assertEqual(first_key, second_key)
+            self.assertEqual(spectral_reader.call_count, 1)
+            np.testing.assert_array_equal(first.labels, second.labels)
+
+            rgb = np.full((2, 2, 3), (170, 211, 223), dtype=np.uint8)
+            producer = Mock(
+                return_value=BasemapEvidence(
+                    rgb=rgb,
+                    valid=np.ones((2, 2), dtype=bool),
+                    zoom=14,
+                    tile_count=1,
+                    available_tile_count=1,
+                    missing_tile_count=0,
+                    provider="osm_de",
+                    tile_url=DEFAULT_OSM_TILE_URL,
                 )
             )
+            first_osm, first_osm_hit = cached_osm_mask(
+                root / "cache",
+                first_key,
+                (100, 20, 104, 24),
+                14,
+                DEFAULT_OSM_TILE_URL,
+                producer,
+            )
+            second_osm, second_osm_hit = cached_osm_mask(
+                root / "cache",
+                first_key,
+                (100, 20, 104, 24),
+                14,
+                DEFAULT_OSM_TILE_URL,
+                producer,
+            )
+
+            self.assertFalse(first_osm_hit)
+            self.assertTrue(second_osm_hit)
+            self.assertEqual(producer.call_count, 1)
+            np.testing.assert_array_equal(first_osm.water, second_osm.water)
 
     def test_generated_sources_are_persisted_as_independent_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -180,9 +272,9 @@ class AutomaticLabelTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "lake_workbench.automatic_labels.service.read_spectral_evidence",
-                    return_value=spectral,
-                ),
+                    "lake_workbench.automatic_labels.service.cached_spectral_evidence",
+                    return_value=(spectral, "spectral-key", False),
+                ) as spectral_reader,
             ):
                 spectral_result = generate_derived_label(
                     catalog,
@@ -191,7 +283,16 @@ class AutomaticLabelTests(unittest.TestCase):
                     {"extent": [0, 0, 200, 200]},
                     root / "labels",
                 )
+                cached_result = generate_derived_label(
+                    catalog,
+                    site,
+                    SPECTRAL_WATER,
+                    {"extent": [0, 0, 200, 200]},
+                    root / "labels",
+                )
 
+            self.assertEqual(spectral_reader.call_count, 1)
+            self.assertEqual(cached_result["details"]["cache"]["result"], "hit")
             self.assertEqual(spectral_result["source"], SPECTRAL_WATER)
             path = root / "labels" / SPECTRAL_WATER / f"{spectral_result['label_id']}.geojson"
             self.assertTrue(path.exists())
@@ -259,6 +360,7 @@ class AutomaticLabelTests(unittest.TestCase):
             )
             osm_rgb = np.full((4, 4, 3), 245, dtype="uint8")
             osm_rgb[:2, :2] = (170, 211, 223)
+            osm_rgb[2, 2] = (170, 211, 223)
             osm = SimpleNamespace(
                 rgb=osm_rgb,
                 valid=np.ones((4, 4), dtype=bool),
@@ -269,39 +371,13 @@ class AutomaticLabelTests(unittest.TestCase):
             )
             with (
                 patch(
-                    "lake_workbench.automatic_labels.service.read_spectral_evidence",
-                    return_value=spectral,
+                    "lake_workbench.automatic_labels.service.cached_spectral_evidence",
+                    return_value=(spectral, "spectral-key", False),
                 ),
                 patch(
                     "lake_workbench.automatic_labels.service.aligned_osm_rgb",
-                    side_effect=[
-                        osm,
-                        osm,
-                        SimpleNamespace(
-                            rgb=np.concatenate(
-                                [
-                                    osm_rgb[:2],
-                                    np.array(
-                                        [[
-                                            (245, 245, 245),
-                                            (245, 245, 245),
-                                            (170, 211, 223),
-                                            (245, 245, 245),
-                                        ]],
-                                        dtype="uint8",
-                                    ),
-                                    osm_rgb[3:],
-                                ],
-                                axis=0,
-                            ),
-                            valid=np.ones((4, 4), dtype=bool),
-                            provider="osm_standard",
-                            zoom=14,
-                            tile_count=4,
-                            tile_url="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                        ),
-                    ],
-                ),
+                    return_value=osm,
+                ) as align_osm,
             ):
                 intersection_result = generate_derived_label(
                     catalog,
@@ -325,10 +401,11 @@ class AutomaticLabelTests(unittest.TestCase):
                     root / "labels",
                 )
 
+            self.assertEqual(align_osm.call_count, 1)
             self.assertEqual(intersection_result["source"], SPECTRAL_OSM_INTERSECTION)
             self.assertEqual(intersection_result["stats"]["water_pixels"], 4)
-            self.assertEqual(intersection_result["stats"]["background_pixels"], 7)
-            self.assertEqual(intersection_result["stats"]["ignore_pixels"], 5)
+            self.assertEqual(intersection_result["stats"]["background_pixels"], 6)
+            self.assertEqual(intersection_result["stats"]["ignore_pixels"], 6)
             self.assertEqual(
                 intersection_result["details"]["processing_mode"],
                 "spectral_osm_intersection",
