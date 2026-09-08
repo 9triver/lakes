@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,14 +8,22 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import requests
 import rasterio
 from affine import Affine
+from PIL import Image
 from rasterio.transform import from_bounds
 
-from lake_workbench.automatic_labels.basemap import bounded_tile_range
+from lake_workbench.automatic_labels.basemap import (
+    DEFAULT_OSM_PROXY,
+    DEFAULT_OSM_TILE_URL,
+    _cached_tile,
+    bounded_tile_range,
+)
 from lake_workbench.automatic_labels.service import (
     OSM_SPECTRAL_CONSENSUS,
     SPECTRAL_OSM_CONSENSUS,
+    SPECTRAL_OSM_INTERSECTION,
     SPECTRAL_WATER,
     generate_derived_label,
 )
@@ -22,6 +31,7 @@ from lake_workbench.automatic_labels.spectral import (
     ExternalQualityMasks,
     IGNORE_LABEL,
     WATER_LABEL,
+    _normalized_difference,
     classify_spectral_array,
     normalize_reflectance,
     read_spectral_evidence,
@@ -32,6 +42,104 @@ from lake_workbench.automatic_labels.spectral import (
 
 
 class AutomaticLabelTests(unittest.TestCase):
+    def test_osm_defaults_use_direct_osm_de_tiles(self) -> None:
+        self.assertEqual(
+            DEFAULT_OSM_TILE_URL,
+            "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
+        )
+        self.assertEqual(DEFAULT_OSM_PROXY, "")
+
+    def test_cached_osm_tile_is_read_before_network(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache_path = root / "basemap" / "osm_test" / "11" / "1610" / "815.png"
+            cache_path.parent.mkdir(parents=True)
+            image = Image.new("RGB", (256, 256), (170, 211, 223))
+            image.save(cache_path, format="PNG")
+
+            class UnexpectedNetwork:
+                def get(self, *_args, **_kwargs):
+                    raise AssertionError("a valid cached tile must avoid the network")
+
+            self.assertEqual(
+                _cached_tile(
+                    UnexpectedNetwork(),
+                    "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
+                    root,
+                    11,
+                    1610,
+                    815,
+                    "osm_test",
+                    "png",
+                ),
+                cache_path.read_bytes(),
+            )
+
+    def test_cached_osm_tile_retries_connection_abort(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = Image.new("RGB", (256, 256), (170, 211, 223))
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            payload = buffer.getvalue()
+
+            class Response:
+                status_code = 200
+                content = payload
+
+                def raise_for_status(self):
+                    return None
+
+            class FlakyNetwork:
+                attempts = 0
+
+                def get(self, *_args, **_kwargs):
+                    self.attempts += 1
+                    if self.attempts < 3:
+                        raise requests.ConnectionError("Connection aborted.")
+                    return Response()
+
+            network = FlakyNetwork()
+            with patch("lake_workbench.automatic_labels.basemap.time.sleep"):
+                result = _cached_tile(
+                    network,
+                    DEFAULT_OSM_TILE_URL,
+                    root,
+                    11,
+                    1610,
+                    815,
+                    "osm_test",
+                    "png",
+                )
+            self.assertEqual(result, payload)
+            self.assertEqual(network.attempts, 3)
+
+    def test_missing_osm_tile_is_treated_as_uncovered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            class MissingTile:
+                status_code = 404
+                content = b""
+
+                def raise_for_status(self):
+                    raise requests.HTTPError("404")
+
+            class Network:
+                def get(self, *_args, **_kwargs):
+                    return MissingTile()
+
+            self.assertIsNone(
+                _cached_tile(
+                    Network(),
+                    DEFAULT_OSM_TILE_URL,
+                    Path(directory),
+                    11,
+                    1610,
+                    815,
+                    "osm_test",
+                    "png",
+                )
+            )
+
     def test_generated_sources_are_persisted_as_independent_layers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,10 +200,26 @@ class AutomaticLabelTests(unittest.TestCase):
                     feature["properties"]["label_value"]
                     for feature in spectral_result["label"]["features"]
                 },
-                {WATER_LABEL, IGNORE_LABEL},
+                {WATER_LABEL},
+            )
+            mask_path = path.with_suffix(".npz")
+            self.assertTrue(mask_path.exists())
+            with np.load(mask_path, allow_pickle=False) as mask:
+                np.testing.assert_array_equal(mask["labels"], spectral.labels)
+                np.testing.assert_array_equal(
+                    mask["valid"], spectral.valid.astype("uint8")
+                )
+                np.testing.assert_array_equal(
+                    mask["transform"], np.asarray(tuple(spectral.transform)[:6])
+                )
+                self.assertEqual(str(mask["crs"].item()), "EPSG:4326")
+            self.assertEqual(
+                spectral_result["label"]["properties"]["raster_label"]["path"],
+                mask_path.name,
             )
             self.assertEqual(spectral_result["stats"]["water_pixels"], 4)
             self.assertEqual(spectral_result["stats"]["ignore_pixels"], 4)
+            self.assertEqual(spectral_result["stats"]["ignore_polygon_count"], 0)
             self.assertEqual(spectral_result["label"]["properties"]["extent"], [100.0, 20.0, 104.0, 24.0])
 
     def test_xyz_range_reduces_zoom_to_respect_tile_limit(self) -> None:
@@ -152,6 +276,7 @@ class AutomaticLabelTests(unittest.TestCase):
                     "lake_workbench.automatic_labels.service.aligned_osm_rgb",
                     side_effect=[
                         osm,
+                        osm,
                         SimpleNamespace(
                             rgb=np.concatenate(
                                 [
@@ -178,6 +303,13 @@ class AutomaticLabelTests(unittest.TestCase):
                     ],
                 ),
             ):
+                intersection_result = generate_derived_label(
+                    catalog,
+                    site,
+                    SPECTRAL_OSM_INTERSECTION,
+                    {"extent": [98, 28, 99, 29]},
+                    root / "labels",
+                )
                 result = generate_derived_label(
                     catalog,
                     site,
@@ -193,6 +325,14 @@ class AutomaticLabelTests(unittest.TestCase):
                     root / "labels",
                 )
 
+            self.assertEqual(intersection_result["source"], SPECTRAL_OSM_INTERSECTION)
+            self.assertEqual(intersection_result["stats"]["water_pixels"], 4)
+            self.assertEqual(intersection_result["stats"]["background_pixels"], 7)
+            self.assertEqual(intersection_result["stats"]["ignore_pixels"], 5)
+            self.assertEqual(
+                intersection_result["details"]["processing_mode"],
+                "spectral_osm_intersection",
+            )
             self.assertEqual(result["source"], SPECTRAL_OSM_CONSENSUS)
             self.assertEqual(result["stats"]["water_pixels"], 6)
             self.assertEqual(result["stats"]["ignore_pixels"], 3)
@@ -284,6 +424,14 @@ class AutomaticLabelTests(unittest.TestCase):
         self.assertEqual(divisor, 10000.0)
         self.assertFalse(metadata_applied)
         self.assertAlmostEqual(float(reflectance[0, 0, 1]), -0.0099, places=6)
+
+    def test_normalized_difference_is_bounded_with_negative_reflectance(self) -> None:
+        first = np.array([[0.01, 0.01, -0.02]], dtype="float32")
+        second = np.array([[-0.0099, 0.02, 0.0199]], dtype="float32")
+
+        result = _normalized_difference(first, second)
+
+        np.testing.assert_allclose(result, [[1.0, -1.0 / 3.0, 1.0]])
 
     def test_scene_adaptive_classification_is_reproducible(self) -> None:
         rng = np.random.default_rng(7)
@@ -443,6 +591,25 @@ class AutomaticLabelTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(
             labels, np.array([[IGNORE_LABEL, 0, WATER_LABEL]], dtype="uint8")
+        )
+
+    def test_otsu_and_dswx_consensus_survives_missing_cluster_vote(self) -> None:
+        water_score = np.array([[0.54, 0.54, 0.2]], dtype="float32")
+        valid = np.ones((1, 3), dtype=bool)
+        labels = spectral_labels(
+            water_score,
+            {
+                "waterdetect_cluster": np.array([[False, False, False]]),
+                "bounded_mndwi_otsu": np.array([[True, True, False]]),
+                "dswx_five_band_subset": np.array([[True, False, False]]),
+            },
+            valid,
+            valid,
+        )
+
+        np.testing.assert_array_equal(
+            labels,
+            np.array([[WATER_LABEL, IGNORE_LABEL, 0]], dtype="uint8"),
         )
 
 

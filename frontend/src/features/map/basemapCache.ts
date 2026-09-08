@@ -1,7 +1,7 @@
 import type { LoadFunction } from "ol/Tile";
 import ImageTile from "ol/ImageTile";
 
-const DATABASE_NAME = "lakes-basemap-cache";
+const DATABASE_NAME = "lakes-basemap-cache-v2";
 const STORE_NAME = "tiles";
 const DATABASE_VERSION = 1;
 const MAX_TILES = 5000;

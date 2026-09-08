@@ -90,6 +90,15 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     mapHandle: mapRef,
     onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_water: result })),
   });
+  const spectralOsmIntersectionGeneration = useGeneratedLabel({
+    workspaceId: activeWorkspaceId,
+    region: selectedRegion,
+    siteId: selectedSiteId,
+    source: "spectral_osm_intersection",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_osm_intersection: result })),
+  });
   const spectralOsmConsensusGeneration = useGeneratedLabel({
     workspaceId: activeWorkspaceId,
     region: selectedRegion,
@@ -150,7 +159,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   useEffect(() => {
     setImagerySelection({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmIntersection: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setPatchReviewEnabled(false);
@@ -160,7 +169,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmIntersection: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [imagerySelection.assetId]);
   useEffect(() => {
     if (!patchGroups.length) setPatchGroupKey("");
@@ -186,13 +195,16 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     if (layer === "spectralWater" && !generatedLabels.spectral_water) {
       spectralWaterGeneration.mutate();
     }
+    if (layer === "spectralOsmIntersection" && !generatedLabels.spectral_osm_intersection) {
+      spectralOsmIntersectionGeneration.mutate();
+    }
     if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) {
       spectralOsmConsensusGeneration.mutate();
     }
     if (layer === "osmSpectralConsensus" && !generatedLabels.osm_spectral_consensus) {
       osmSpectralConsensusGeneration.mutate();
     }
-  }, [generatedLabels, osmSpectralConsensusGeneration, spectralOsmConsensusGeneration, spectralWaterGeneration]);
+  }, [generatedLabels, osmSpectralConsensusGeneration, spectralOsmConsensusGeneration, spectralOsmIntersectionGeneration, spectralWaterGeneration]);
   const handlePatchClick = useCallback((patchId: string) => {
     setActivePatchId(patchId);
     const patch = visiblePatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
@@ -329,6 +341,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
               jrc={jrc.data}
               localLabel={localLabel.data}
               spectralWater={generatedLabels.spectral_water?.label}
+              spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label}
               spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label}
               osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label}
               modelPrediction={modelPrediction.data?.prediction}
@@ -342,6 +355,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             {!patchReviewEnabled && <Box sx={{ position: "absolute", zIndex: 5, left: { xs: 8, sm: 12 }, right: { xs: 8, sm: "auto" }, bottom: 12, maxWidth: { sm: "calc(100% - 24px)" }, px: 1.5, py: .75, bgcolor: "rgba(255,255,255,.92)", border: 1, borderColor: "divider", borderRadius: 1, boxShadow: 2, backdropFilter: "blur(5px)", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", pointerEvents: "none", "&:empty": { display: "none" } }}>
                 <TrainingCaptureStatus controller={trainingCapture} />
                 {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
+                {layerVisibility.spectralOsmIntersection && <GeneratedLabelStatus source="spectral_osm_intersection" result={generatedLabels.spectral_osm_intersection} pending={spectralOsmIntersectionGeneration.isPending} error={spectralOsmIntersectionGeneration.error} />}
                 {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
                 {layerVisibility.osmSpectralConsensus && <GeneratedLabelStatus source="osm_spectral_consensus" result={generatedLabels.osm_spectral_consensus} pending={osmSpectralConsensusGeneration.isPending} error={osmSpectralConsensusGeneration.error} />}
                 {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}

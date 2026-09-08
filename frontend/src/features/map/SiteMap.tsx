@@ -16,6 +16,8 @@ import { createBasemapTileLoadFunction } from "./basemapCache";
 
 export type BasemapType = "osm" | "satellite" | "none";
 
+const OSM_BASEMAP_TILE_URL = "https://tile.openstreetmap.de/{z}/{x}/{y}.png";
+
 export interface SiteLayerVisibility {
   image: boolean;
   tile: boolean;
@@ -26,6 +28,7 @@ export interface SiteLayerVisibility {
   jrc: boolean;
   local: boolean;
   spectralWater: boolean;
+  spectralOsmIntersection: boolean;
   spectralOsmConsensus: boolean;
   osmSpectralConsensus: boolean;
   prediction: boolean;
@@ -41,6 +44,7 @@ export const DEFAULT_SITE_LAYER_VISIBILITY: SiteLayerVisibility = {
   jrc: false,
   local: false,
   spectralWater: false,
+  spectralOsmIntersection: false,
   spectralOsmConsensus: false,
   osmSpectralConsensus: false,
   prediction: true,
@@ -60,6 +64,7 @@ interface SiteMapProps {
   jrc?: GeoJsonLayer | null;
   localLabel?: FeatureCollection | null;
   spectralWater?: FeatureCollection | null;
+  spectralOsmIntersection?: FeatureCollection | null;
   spectralOsmConsensus?: FeatureCollection | null;
   osmSpectralConsensus?: FeatureCollection | null;
   modelPrediction?: FeatureCollection;
@@ -85,11 +90,11 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmIntersection, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const basemapTileLoadFunction = createBasemapTileLoadFunction();
-  const osmBasemapLayerRef = useRef(new TileLayer({ source: new OSM({ crossOrigin: "anonymous", tileLoadFunction: basemapTileLoadFunction }), visible: true }));
+  const osmBasemapLayerRef = useRef(new TileLayer({ source: new OSM({ url: OSM_BASEMAP_TILE_URL, crossOrigin: "anonymous", tileLoadFunction: basemapTileLoadFunction }), visible: true }));
   const satelliteBasemapLayerRef = useRef(new TileLayer({
     source: new XYZ({
       url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -110,6 +115,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   const jrcSourceRef = useRef(new VectorSource());
   const localSourceRef = useRef(new VectorSource());
   const spectralWaterSourceRef = useRef(new VectorSource());
+  const spectralOsmIntersectionSourceRef = useRef(new VectorSource());
   const spectralOsmConsensusSourceRef = useRef(new VectorSource());
   const osmSpectralConsensusSourceRef = useRef(new VectorSource());
   const predictionSourceRef = useRef(new VectorSource());
@@ -122,6 +128,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   const jrcLayerRef = useRef(new VectorLayer({ source: jrcSourceRef.current, style: vectorStyle("#0b9c64", "rgba(11,156,100,.24)") }));
   const localLayerRef = useRef(new VectorLayer({ source: localSourceRef.current, style: vectorStyle("#ffffff", "rgba(0,0,0,.08)") }));
   const spectralWaterLayerRef = useRef(new VectorLayer({ source: spectralWaterSourceRef.current, style: vectorStyle("#ff8a00", "rgba(255,138,0,.25)") }));
+  const spectralOsmIntersectionLayerRef = useRef(new VectorLayer({ source: spectralOsmIntersectionSourceRef.current, style: vectorStyle("#1976d2", "rgba(25,118,210,.28)") }));
   const spectralOsmConsensusLayerRef = useRef(new VectorLayer({ source: spectralOsmConsensusSourceRef.current, style: vectorStyle("#00a896", "rgba(0,168,150,.30)") }));
   const osmSpectralConsensusLayerRef = useRef(new VectorLayer({ source: osmSpectralConsensusSourceRef.current, style: vectorStyle("#7b61ff", "rgba(123,97,255,.28)") }));
   const predictionLayerRef = useRef(new VectorLayer({ source: predictionSourceRef.current, style: vectorStyle("#ff3b30", "rgba(255,59,48,.32)") }));
@@ -159,6 +166,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
           jrc: visibility.jrc,
           local_label: visibility.local,
           spectral_water: visibility.spectralWater && Boolean(spectralWater),
+          spectral_osm_intersection: visibility.spectralOsmIntersection && Boolean(spectralOsmIntersection),
           spectral_osm_consensus: visibility.spectralOsmConsensus && Boolean(spectralOsmConsensus),
           osm_spectral_consensus: visibility.osmSpectralConsensus && Boolean(osmSpectralConsensus),
           model_prediction: visibility.prediction && Boolean(modelPrediction),
@@ -172,14 +180,14 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
     },
     fitSite: () => fitBounds(tileMeta?.site_bounds || site.bbox),
     fitTile: () => fitBounds(tileMeta?.tile_bounds),
-  }), [basemap, modelPrediction, osmSpectralConsensus, site.bbox, spectralOsmConsensus, spectralWater, tileMeta, visibility]);
+  }), [basemap, modelPrediction, osmSpectralConsensus, site.bbox, spectralOsmIntersection, spectralOsmConsensus, spectralWater, tileMeta, visibility]);
 
   useEffect(() => {
     if (!targetRef.current || mapRef.current) return;
     mapRef.current = new Map({
       target: targetRef.current,
       interactions: defaultInteractions({ doubleClickZoom: false, keyboard: false, pinchZoom: false, shiftDragZoom: false }),
-      layers: [osmBasemapLayerRef.current, satelliteBasemapLayerRef.current, imageLayerRef.current, tileLayerRef.current, contextOsmLayerRef.current, contextHydroLayerRef.current, osmLayerRef.current, hydroLayerRef.current, esaLayerRef.current, jrcLayerRef.current, spectralWaterLayerRef.current, spectralOsmConsensusLayerRef.current, osmSpectralConsensusLayerRef.current, predictionLayerRef.current, localLayerRef.current, patchLayerRef.current],
+      layers: [osmBasemapLayerRef.current, satelliteBasemapLayerRef.current, imageLayerRef.current, tileLayerRef.current, contextOsmLayerRef.current, contextHydroLayerRef.current, osmLayerRef.current, hydroLayerRef.current, esaLayerRef.current, jrcLayerRef.current, spectralWaterLayerRef.current, spectralOsmIntersectionLayerRef.current, spectralOsmConsensusLayerRef.current, osmSpectralConsensusLayerRef.current, predictionLayerRef.current, localLayerRef.current, patchLayerRef.current],
       view: new View({ center: [0, 0], zoom: 6, minZoom: 4, maxZoom: 17 }),
     });
     return () => { mapRef.current?.setTarget(undefined); mapRef.current = null; };
@@ -212,6 +220,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
     jrcLayerRef.current.setVisible(visibility.jrc);
     localLayerRef.current.setVisible(visibility.local);
     spectralWaterLayerRef.current.setVisible(visibility.spectralWater);
+    spectralOsmIntersectionLayerRef.current.setVisible(visibility.spectralOsmIntersection);
     spectralOsmConsensusLayerRef.current.setVisible(visibility.spectralOsmConsensus);
     osmSpectralConsensusLayerRef.current.setVisible(visibility.osmSpectralConsensus);
     predictionLayerRef.current.setVisible(visibility.prediction);
@@ -261,6 +270,11 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
       (feature) => feature.properties?.label_class !== "ignore" && Number(feature.properties?.label_value) !== 255,
     );
     setCollection(
+      spectralOsmIntersectionSourceRef.current,
+      spectralOsmIntersection,
+      (feature) => feature.properties?.label_class !== "ignore" && Number(feature.properties?.label_value) !== 255,
+    );
+    setCollection(
       spectralOsmConsensusSourceRef.current,
       spectralOsmConsensus,
       (feature) => feature.properties?.label_class !== "ignore" && Number(feature.properties?.label_value) !== 255,
@@ -271,7 +285,7 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
       (feature) => feature.properties?.label_class !== "ignore" && Number(feature.properties?.label_value) !== 255,
     );
     setCollection(predictionSourceRef.current, modelPrediction);
-  }, [osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, osmSpectralConsensus, spectralOsmConsensus, spectralWater, modelPrediction]);
+  }, [osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, osmSpectralConsensus, spectralOsmIntersection, spectralOsmConsensus, spectralWater, modelPrediction]);
 
   useEffect(() => {
     const format = new GeoJSON({ dataProjection: "EPSG:4326", featureProjection: "EPSG:3857" });

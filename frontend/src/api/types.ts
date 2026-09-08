@@ -83,7 +83,7 @@ export interface FeatureCollection {
   properties?: Record<string, unknown>;
 }
 
-export type GeneratedLabelSource = "spectral_water" | "spectral_osm_consensus" | "osm_spectral_consensus";
+export type GeneratedLabelSource = "spectral_water" | "spectral_osm_intersection" | "spectral_osm_consensus" | "osm_spectral_consensus";
 
 export interface GeneratedLabelResult {
   label_id: string;

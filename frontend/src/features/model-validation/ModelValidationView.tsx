@@ -59,6 +59,15 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
     mapHandle: mapRef,
     onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, spectral_water: value })),
   });
+  const spectralOsmIntersectionGeneration = useGeneratedLabel({
+    workspaceId,
+    region,
+    siteId,
+    source: "spectral_osm_intersection",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (value) => setGeneratedLabels((current) => ({ ...current, spectral_osm_intersection: value })),
+  });
   const spectralOsmConsensusGeneration = useGeneratedLabel({
     workspaceId,
     region,
@@ -82,7 +91,7 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
   }, []);
   useEffect(() => {
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmIntersection: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [imagerySelection.assetId]);
   const trainingCapture = useTrainingCapture({
     workspaceId,
@@ -110,6 +119,7 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
         setLayerVisibility((current) => ({ ...current, [layer]: visible }));
         if (!visible) return;
         if (layer === "spectralWater" && !generatedLabels.spectral_water) spectralWaterGeneration.mutate();
+        if (layer === "spectralOsmIntersection" && !generatedLabels.spectral_osm_intersection) spectralOsmIntersectionGeneration.mutate();
         if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) spectralOsmConsensusGeneration.mutate();
         if (layer === "osmSpectralConsensus" && !generatedLabels.osm_spectral_consensus) osmSpectralConsensusGeneration.mutate();
       }}
@@ -122,12 +132,13 @@ function ValidationWorkspace({ workspaceId, result, threshold, onTrainingDataGen
       onFitSite={() => mapRef.current?.fitSite()}
       onFitTile={() => mapRef.current?.fitTile()}
     />
-    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={result.prediction} />
+    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={result.prediction} />
     <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{site.data.display_name || siteId} · 模型 {result.model.name} · 阈值 {threshold.toFixed(2)} · 水体像元 {metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · {result.model.device || ""}</Typography></Box>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <TrainingCaptureStatus controller={trainingCapture} />
         {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
+        {layerVisibility.spectralOsmIntersection && <GeneratedLabelStatus source="spectral_osm_intersection" result={generatedLabels.spectral_osm_intersection} pending={spectralOsmIntersectionGeneration.isPending} error={spectralOsmIntersectionGeneration.error} />}
         {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
         {layerVisibility.osmSpectralConsensus && <GeneratedLabelStatus source="osm_spectral_consensus" result={generatedLabels.osm_spectral_consensus} pending={osmSpectralConsensusGeneration.isPending} error={osmSpectralConsensusGeneration.error} />}
       </Box>
@@ -172,7 +183,7 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
     <Box sx={{ p: { xs: 1.5, sm: 2 }, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
         <IconButton sx={{ display: { md: "none" } }} onClick={onBack}><ArrowLeft size={19} /></IconButton>
-        <FormControl sx={{ minWidth: { xs: 230, sm: 300 }, flex: 1 }}><InputLabel>模型权重</InputLabel><Select label="模型权重" value={selectedModel} onChange={(event) => { const model = event.target.value; setSelectedModel(model); random.reset(); onRouteModel(model); }}>{(models.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key} disabled={Boolean(item.error)}>{item.label}{Number.isFinite(Number(item.best_iou)) ? ` · IoU ${metric(item.best_iou)}` : ""}{item.error ? " · 不可用" : ""}</MenuItem>)}</Select></FormControl>
+        <FormControl sx={{ minWidth: { xs: 230, sm: 300 }, flex: 1 }}><InputLabel id="model-weight-label">模型权重</InputLabel><Select id="model-weight" labelId="model-weight-label" label="模型权重" value={selectedModel} onChange={(event) => { const model = event.target.value; setSelectedModel(model); random.reset(); onRouteModel(model); }}>{(models.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key} disabled={Boolean(item.error)}>{item.label}{Number.isFinite(Number(item.best_iou)) ? ` · IoU ${metric(item.best_iou)}` : ""}{item.error ? " · 不可用" : ""}</MenuItem>)}</Select></FormControl>
         {allowForeignModels && <ToggleButtonGroup exclusive size="small" value={visibility} onChange={(_, value) => { if (value) { setVisibility(value); setSelectedModel(""); } }}><ToggleButton value="current">当前工作区</ToggleButton><ToggleButton value="all">全部工作区</ToggleButton></ToggleButtonGroup>}
         <Box sx={{ width: 180, display: "flex", alignItems: "center", gap: 1 }}><Typography variant="caption">阈值</Typography><Slider min={.05} max={.95} step={.05} value={threshold} onChange={(_, value) => setThreshold(value as number)} /><Typography variant="caption">{threshold.toFixed(2)}</Typography></Box>
         <Button variant="contained" startIcon={<Dices size={16} />} disabled={!selectedModel || random.isPending || prediction.isFetching || models.isLoading} onClick={() => random.mutate({ model: selectedModel, threshold }, { onSuccess: (value) => onRouteResult(value.site_id, value.site?.region || value.region, selectedModel) })}>{random.isPending ? "推理中" : "随机验证一个区域"}</Button>

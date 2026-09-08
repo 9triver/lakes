@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -145,6 +147,11 @@ class TrainingSampleCatalogMixin:
         sample_id = (exact_existing or {}).get(
             "sample_id"
         ) or f"{site.site_id}_{fingerprint[:12]}"
+        label_layer = _snapshot_raster_label_sources(
+            label_layer,
+            sample_id,
+            label_dir or self.region.training_label_dir,
+        )
         label_path = write_training_label(
             self.region,
             sample_id,
@@ -326,8 +333,10 @@ class TrainingSampleCatalogMixin:
             else {}
         )
         generated_label_ids = {}
+        raster_label_sources = []
         for source in (
             "spectral_water",
+            "spectral_osm_intersection",
             "spectral_osm_consensus",
             "osm_spectral_consensus",
         ):
@@ -356,6 +365,26 @@ class TrainingSampleCatalogMixin:
                 raise ValueError("generated annotation source does not match")
             add_collection(source, label_payload)
             generated_label_ids[source] = label_id
+            raster_label = properties.get("raster_label")
+            if isinstance(raster_label, dict):
+                relative_path = clean_optional(raster_label.get("path")) or ""
+                if not relative_path or Path(relative_path).name != relative_path:
+                    raise ValueError(
+                        f"generated annotation has invalid raster label: {label_id}"
+                    )
+                raster_path = label_path.parent / relative_path
+                if not raster_path.is_file():
+                    raise ValueError(
+                        f"generated annotation raster label not found: {label_id}"
+                    )
+                raster_label_sources.append(
+                    {
+                        **raster_label,
+                        "source": source,
+                        "label_id": label_id,
+                        "path": str(raster_path),
+                    }
+                )
         if not features:
             raise ValueError("current view has no visible label geometry")
         return {
@@ -368,6 +397,7 @@ class TrainingSampleCatalogMixin:
                 "model_prediction_visible": model_prediction_visible,
                 "model_prediction_excluded": True,
                 "generated_label_ids": generated_label_ids,
+                "raster_label_sources": raster_label_sources,
                 "view_state": view_state,
             },
         }
@@ -539,3 +569,34 @@ def _clip_label_layer(layer: dict | None, extent: list[float]) -> dict | None:
         "features": clipped,
         "properties": dict(layer.get("properties") or {}),
     }
+
+
+def _snapshot_raster_label_sources(
+    layer: dict,
+    sample_id: str,
+    output_dir: Path,
+) -> dict:
+    """Copy generated raster labels into the immutable sample snapshot."""
+    properties = dict(layer.get("properties") or {})
+    sources = properties.get("raster_label_sources")
+    if not isinstance(sources, list) or not sources:
+        return layer
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", sample_id)
+    snapshots = []
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            raise ValueError("invalid generated raster label metadata")
+        source_path = Path(clean_optional(source.get("path")) or "")
+        if not source_path.is_file():
+            raise ValueError(f"generated raster label not found: {source_path}")
+        source_name = re.sub(
+            r"[^A-Za-z0-9_.-]+", "_", clean_optional(source.get("source")) or "label"
+        )
+        target_path = output_dir / f"{safe_id}.raster-{index:02d}-{source_name}.npz"
+        temporary_path = target_path.with_name(f".{target_path.name}.tmp")
+        shutil.copyfile(source_path, temporary_path)
+        os.replace(temporary_path, target_path)
+        snapshots.append({**source, "path": target_path.name})
+    properties["raster_label_sources"] = snapshots
+    return {**layer, "properties": properties}
