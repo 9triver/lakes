@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, FormControlLabel, InputLabel, MenuItem, Pagination, Select, Switch, Typography } from "@mui/material";
 import { RotateCcw, Share2, X } from "lucide-react";
 import type { TrainingPatch } from "../../api/types";
@@ -25,31 +25,20 @@ export function PatchReviewView({ workspaceId, scope, siteId = "", sourceSampleI
   const [page, setPage] = useState(1);
   const [active, setActive] = useState<TrainingPatch | null>(null);
   const [showLabelOverlay, setShowLabelOverlay] = useState(true);
-  const query = useTrainingPatches(workspaceId, scope, "", sourceSampleId, siteId);
+  const query = useTrainingPatches(workspaceId, scope, filter, sourceSampleId, siteId, page, water);
   const update = useUpdateTrainingPatch(workspaceId, scope);
   const contribute = useContributePatches(workspaceId, scope);
-  const allItems = query.data?.items || [];
-  const counts = useMemo(() => ({
-    all: allItems.length,
-    included: allItems.filter((patch) => patch.included).length,
-    excluded: allItems.filter((patch) => !patch.included).length,
-    contributed: allItems.filter((patch) => patch.contributed).length,
-    uncontributed: allItems.filter((patch) => !patch.contributed).length,
-  }), [allItems]);
-  const filtered = useMemo(() => allItems.filter((patch) => {
-    const statusMatches = filter === "all" || (filter === "included" && patch.included) || (filter === "excluded" && !patch.included) || (filter === "contributed" && patch.contributed) || (filter === "uncontributed" && !patch.contributed);
-    const waterMatches = water === "water" ? Number(patch.water_pixels || 0) > 0 : water === "negative" ? Number(patch.water_pixels || 0) <= 0 : true;
-    return statusMatches && waterMatches;
-  }), [allItems, filter, water]);
+  const counts = query.data?.counts || { all: 0, included: 0, excluded: 0, contributed: 0, uncontributed: 0 };
   const pageSize = 18;
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const pageCount = Math.max(1, Math.ceil((query.data?.total || 0) / pageSize));
   const currentPage = Math.min(page, pageCount);
-  const items = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const items = query.data?.items || [];
   const busy = update.isPending || contribute.isPending;
   const activeShared = Boolean(active?.contribution_scopes?.includes(scope));
   const activePreviewUrl = active?.preview_url ? `${active.preview_url}${active.preview_url.includes("?") ? "&" : "?"}overlay=${showLabelOverlay ? "1" : "0"}` : "";
 
   useEffect(() => { setPage(1); }, [scope, siteId, sourceSampleId, filter, water]);
+  useEffect(() => { if (query.data && page > pageCount) setPage(pageCount); }, [query.data, page, pageCount]);
   const contributePatch = (patch: TrainingPatch) => contribute.mutate({ patches: [patch] }, {
     onSuccess: () => {
       if (active && patchId(active) === patchId(patch)) setActive({ ...active, contributed: true, contribution_scopes: [...new Set([...(active.contribution_scopes || []), scope])] });

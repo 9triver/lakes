@@ -100,6 +100,13 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
     if _workspace_path(path) and not _require_workspace(handler):
         return True
     params = parse_qs(query_string)
+    if path in {"/api/logical-patches", "/api/all/logical-patches"} and ("limit" in params or params.get("view") == ["sites"]):
+        from lake_workbench.training.review_pages import workspace_review_payload
+        try:
+            handler._json(workspace_review_payload(handler, params, all_regions=path.startswith("/api/all/")))
+        except ValueError as exc:
+            handler._error(HTTPStatus.BAD_REQUEST, str(exc))
+        return True
     if path == "/api/all/training-samples":
         store = _workspace_store(handler)
         handler._json(handler.__class__.region_service.all_training_samples_payload(store, handler.workspace_id))
@@ -190,7 +197,10 @@ def handle_training_get(handler, path: str, query_string: str) -> bool:
             from lake_workbench.training.logical_patches import workspace_logical_patch_preview
 
             manifest = store.ensure_workspace_logical_patch_manifest(handler.workspace_id, handler.catalog.region.key)
-            patch = handler.catalog.logical_patch_by_id(patch_id, manifest)
+            row = store._workspace_logical_index(handler.workspace_id, handler.catalog.region.key).get(patch_id)
+            if row is None:
+                raise KeyError(f"logical patch not found: {patch_id}")
+            patch = handler.catalog._logical_patch_summary(row, manifest)
             overlay = truthy_flag(params.get("overlay", ["1"])[0], default=True)
             payload = workspace_logical_patch_preview(handler.catalog.region, patch, store, handler.workspace_id, overlay=overlay)
             content_type = "image/png"

@@ -1,10 +1,10 @@
-const CACHE_NAME = "lakes-basemap-v1";
+const CACHE_NAME = "lakes-basemap-v2";
 const MAX_TILES = 5000;
 
 function isBasemapTile(request) {
   if (request.method !== "GET") return false;
   const url = new URL(request.url);
-  if (url.hostname === "tile.openstreetmap.org") {
+  if (url.hostname === "tile.openstreetmap.de") {
     return url.pathname.endsWith(".png");
   }
   return url.hostname === "server.arcgisonline.com"

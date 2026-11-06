@@ -8,9 +8,10 @@ import type { SiteMapHandle } from "../map/SiteMap";
 import { workspaceRegionApi } from "../workspaces/api";
 
 const SOURCE_LABELS: Record<GeneratedLabelSource, string> = {
-  spectral_water: "光谱水体",
-  spectral_osm_consensus: "光谱 + OSM 连通补全",
-  osm_spectral_consensus: "OSM + 光谱连通补全",
+  spectral_water: "光谱水体（当前影像）",
+  spectral_osm_intersection: "光谱 ∩ OSM（高置信种子）",
+  spectral_osm_consensus: "光谱主导 · OSM 约束",
+  osm_spectral_consensus: "OSM 主导 · 光谱候选",
 };
 
 interface GeneratedLabelOptions {

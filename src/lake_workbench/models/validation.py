@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import threading
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +16,8 @@ from lake_workbench.geo import padded_bounds
 from lake_workbench.imagery.mosaic import mosaic_source_meta
 from lake_workbench.imagery.prediction import predict_water_geojson
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.models.features import feature_names, OPTICAL
 from lake_workbench.utils import display_path, safe_filename
-
-
-MODEL_INFERENCE_SEMAPHORE = threading.BoundedSemaphore(1)
 
 
 class ModelInferenceBusy(RuntimeError):
@@ -31,14 +30,18 @@ class ModelValidationMixin:
     region: Any
     sites: list[Any]
 
-    def model_validation_random(self, threshold: float = 0.5, model: Any = None) -> dict:
+    def model_validation_random(
+        self, threshold: float = 0.5, model: Any = None,
+        *, candidates: Iterable[Any] | None = None,
+    ) -> dict:
         if model is None:
             raise ValueError("A loaded workspace model is required")
-        candidates = list(self.sites)
-        random.shuffle(candidates)
+        if candidates is None:
+            candidates = list(self.sites)
+            random.shuffle(candidates)
         skipped = []
         for site in candidates:
-            rows = self._model_validation_rows(site, model.in_channels)
+            rows = self._model_validation_rows(site, len(OPTICAL))
             if not rows:
                 continue
             try:
@@ -72,7 +75,9 @@ class ModelValidationMixin:
     ) -> dict:
         if model is None:
             raise ValueError("A loaded workspace model is required")
-        rows = rows or self._model_validation_rows(site, model.in_channels)
+        # Input channels can include reordered optical bands and derived slope.
+        feature_names(model.config,model.in_channels)
+        rows = rows or self._model_validation_rows(site, len(OPTICAL))
         if not rows:
             raise FileNotFoundError(f"No active imagery matching model bands for site {site.site_id}")
         rows = sorted(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
@@ -84,14 +89,9 @@ class ModelValidationMixin:
             return payload
 
         row = rows[0]
-        if not MODEL_INFERENCE_SEMAPHORE.acquire(blocking=False):
-            raise ModelInferenceBusy("模型推理正在运行，请稍后再试")
-        try:
-            prediction, stats = predict_water_geojson(
-                row["tci_path"], model, threshold=threshold, bounds=prediction_bounds
-            )
-        finally:
-            MODEL_INFERENCE_SEMAPHORE.release()
+        prediction, stats = predict_water_geojson(
+            row["tci_path"], model, threshold=threshold, bounds=prediction_bounds
+        )
         payload = {
             "region": self.region.key,
             "site_id": site.site_id,
@@ -118,7 +118,19 @@ class ModelValidationMixin:
             "prediction": prediction,
         }
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        # Concurrent predictions may share a cache key; publish complete JSON only.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent,
+                                         prefix=cache_path.name+".", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                json.dump(payload, stream, ensure_ascii=False)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+        try:
+            temporary.replace(cache_path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return payload
 
     def _model_validation_cache_dir(self, model_path: Path) -> Path:
@@ -137,6 +149,7 @@ class ModelValidationMixin:
         prediction_bounds: tuple[float, float, float, float],
     ) -> Path:
         payload = {
+            "feature_pipeline": "optical5-explicit-features-metric30m-slope-v1",
             "site_id": site.site_id,
             "threshold": round(float(threshold), 4),
             "bounds": [round(value, 8) for value in prediction_bounds],

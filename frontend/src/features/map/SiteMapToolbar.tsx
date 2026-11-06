@@ -1,11 +1,12 @@
-import type { ReactNode } from "react";
-import { Box, Checkbox, FormControl, FormControlLabel, IconButton, InputLabel, MenuItem, Select, Slider, Tooltip, Typography } from "@mui/material";
-import { Focus, Grid2X2 } from "lucide-react";
+import { useState, type MouseEvent, type ReactNode } from "react";
+import { Box, Button, Checkbox, FormControl, FormControlLabel, IconButton, InputLabel, Menu, MenuItem, Select, Slider, Tooltip, Typography } from "@mui/material";
+import { Focus, Grid2X2, Layers3 } from "lucide-react";
 import type { BasemapType, SiteLayerVisibility } from "./SiteMap";
 
 interface SiteMapToolbarProps {
   leading?: ReactNode;
   imageryControl?: ReactNode;
+  predictionAction?: ReactNode;
   title: string;
   subtitle: string;
   basemap: BasemapType;
@@ -30,6 +31,7 @@ const controlLabelSx = { m: 0, whiteSpace: "nowrap", "& .MuiFormControlLabel-lab
 export function SiteMapToolbar({
   leading,
   imageryControl,
+  predictionAction,
   title,
   subtitle,
   basemap,
@@ -48,6 +50,7 @@ export function SiteMapToolbar({
   onFitSite,
   onFitTile,
 }: SiteMapToolbarProps) {
+  const [referenceAnchor, setReferenceAnchor] = useState<HTMLElement | null>(null);
   const checkbox = (layer: keyof SiteLayerVisibility, label: string) => (
     <FormControlLabel
       key={layer}
@@ -55,6 +58,14 @@ export function SiteMapToolbar({
       control={<Checkbox size="small" checked={visibility[layer]} onChange={(_, checked) => onVisibilityChange(layer, checked)} />}
       label={label}
     />
+  );
+  const referenceLayerCount = [visibility.osm, visibility.hydro, visibility.context, visibility.esa, visibility.jrc].filter(Boolean).length;
+  const openReferenceLayers = (event: MouseEvent<HTMLButtonElement>) => setReferenceAnchor(event.currentTarget);
+  const referenceCheckbox = (layer: keyof SiteLayerVisibility, label: string) => (
+    <MenuItem key={layer} dense disableRipple onClick={() => onVisibilityChange(layer, !visibility[layer])}>
+      <Checkbox size="small" checked={visibility[layer]} tabIndex={-1} disableRipple slotProps={{ input: { "aria-label": label } }} />
+      <Typography variant="body2">{label}</Typography>
+    </MenuItem>
   );
 
   return (
@@ -66,6 +77,7 @@ export function SiteMapToolbar({
           <Typography variant="caption" component="div" noWrap title={subtitle}>{subtitle}</Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: .5, flexWrap: "wrap" }}>
+          {predictionAction}
           <FormControl size="small" sx={{ minWidth: 125 }}>
             <InputLabel id="basemap-label">底图</InputLabel>
             <Select labelId="basemap-label" value={basemap} label="底图" onChange={(event) => onBasemapChange(event.target.value as BasemapType)}>
@@ -85,20 +97,26 @@ export function SiteMapToolbar({
       <Box sx={{ px: { xs: 1, sm: 2 }, py: .5, borderTop: 1, borderColor: "divider", overflowX: "auto" }}>
         <Box sx={{ minWidth: "max-content", display: "flex", alignItems: "center", gap: .75 }}>
           {checkbox("tile", "Tile")}
-          {checkbox("osm", "OSM 水体")}
-          {checkbox("hydro", "HydroLAKES")}
-          {checkbox("context", "其他")}
-          {checkbox("esa", "ESA")}
-          <Box sx={{ display: "flex", alignItems: "center", gap: .5 }}>
-            {checkbox("jrc", "JRC")}
-            <Slider aria-label="JRC 阈值" size="small" sx={{ width: 92 }} min={1} max={100} value={jrcThreshold} onChangeCommitted={(_, value) => onJrcThresholdChange(value as number)} />
-            <Typography variant="caption" sx={{ width: 32 }}>{jrcThreshold}%</Typography>
-          </Box>
-          {showPrediction && checkbox("prediction", "模型预测")}
-          {checkbox("spectralWater", "光谱水体")}
-          {checkbox("spectralOsmConsensus", "光谱 + OSM 连通补全")}
-          {checkbox("osmSpectralConsensus", "OSM + 光谱连通补全")}
+          <Button size="small" variant="outlined" color="inherit" startIcon={<Layers3 size={16} />} onClick={openReferenceLayers} aria-haspopup="menu" aria-expanded={Boolean(referenceAnchor)}>
+            参考图层{referenceLayerCount ? ` ${referenceLayerCount}` : ""}
+          </Button>
+          <Menu anchorEl={referenceAnchor} open={Boolean(referenceAnchor)} onClose={() => setReferenceAnchor(null)} slotProps={{ paper: { sx: { minWidth: 250 } } }}>
+            {referenceCheckbox("osm", "OSM 水体（矢量）")}
+            {referenceCheckbox("hydro", "HydroLAKES")}
+            {referenceCheckbox("context", "其他水体")}
+            {referenceCheckbox("esa", "ESA")}
+            {referenceCheckbox("jrc", "JRC")}
+            <Box sx={{ px: 2, pt: .5, pb: 1, display: "grid", gridTemplateColumns: "1fr 40px", alignItems: "center", gap: 1 }} onClick={(event) => event.stopPropagation()}>
+              <Slider aria-label="JRC 阈值" size="small" min={1} max={100} value={jrcThreshold} onChangeCommitted={(_, value) => onJrcThresholdChange(value as number)} />
+              <Typography variant="caption" textAlign="right">{jrcThreshold}%</Typography>
+            </Box>
+          </Menu>
+          {checkbox("spectralWater", "光谱水体（当前影像）")}
+          {checkbox("spectralOsmIntersection", "光谱 ∩ OSM（高置信种子）")}
+          {checkbox("spectralOsmConsensus", "光谱主导 · OSM 约束")}
+          {checkbox("osmSpectralConsensus", "OSM 主导 · 光谱候选")}
           {checkbox("local", "本体标注")}
+          {showPrediction && checkbox("prediction", "模型预测")}
           {showPatches && <FormControlLabel sx={controlLabelSx} control={<Checkbox size="small" checked={patchReviewEnabled} onChange={(_, checked) => onPatchReviewEnabledChange?.(checked)} />} label="Patch" />}
           {trainingAction && <Box sx={{ display: "flex", alignItems: "center", ml: "auto" }}>{trainingAction}</Box>}
         </Box>

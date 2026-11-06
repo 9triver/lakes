@@ -17,6 +17,7 @@ from pathlib import Path
 from lake_workbench.sentinel.download import disable_proxy_env
 from lake_workbench.jobs import DownloadManager, PatchExportManager, TrainingManager
 from lake_workbench.catalog import SiteCatalog
+from lake_workbench.regions.deferred_catalog import DeferredSiteCatalog
 from lake_workbench.http_handler import create_site_handler
 from lake_workbench.models.metadata import persisted_training_job
 from lake_workbench.models.validation import ModelInferenceBusy
@@ -40,13 +41,16 @@ REGIONS, DEFAULT_REGION_KEY = load_region_configs()
 
 
 def main() -> None:
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     disable_proxy_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     catalogs = {
-        key: SiteCatalog(region, DEFAULT_REGION_KEY) for key, region in REGIONS.items()
+        key: DeferredSiteCatalog(region, DEFAULT_REGION_KEY) for key, region in REGIONS.items()
     }
     workspace_store = WorkspaceStore(REGIONS, model_root=PROJECT_ROOT / "data" / "models")
     dataset_registry = DatasetRegistry(PROJECT_ROOT / "data" / "global_datasets")
@@ -130,11 +134,9 @@ def main() -> None:
     for key, catalog in catalogs.items():
         site_count = catalog.site_count()
         status = "ready" if catalog.load_error is None else catalog.load_error
-        imagery_summary = catalog.imagery_inventory_summary()
         print(
             f"Region {key}: {site_count} sites, "
-            f"{imagery_summary['tci_tile_count']} imagery tiles, "
-            f"{imagery_summary['active_imagery_count']} active imagery selections, {status}"
+            f"imagery loaded on demand, {status}"
         )
     server.serve_forever()
 

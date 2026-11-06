@@ -89,7 +89,11 @@ def handle_site_get(handler, path: str, query_string: str) -> bool:
                         x=int(match.group(3)),
                         y=int(match.group(4)),
                         padding=float(params.get("padding", ["0.8"])[0]),
+                        asset=params.get("asset", [""])[0],
                     )
+            except ValueError as exc:
+                handler._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return True
             except FileNotFoundError:
                 payload = blank_png(256)
             handler._send_bytes(payload, "image/png", cache_control="public, max-age=600")

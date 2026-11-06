@@ -90,6 +90,15 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     mapHandle: mapRef,
     onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_water: result })),
   });
+  const spectralOsmIntersectionGeneration = useGeneratedLabel({
+    workspaceId: activeWorkspaceId,
+    region: selectedRegion,
+    siteId: selectedSiteId,
+    source: "spectral_osm_intersection",
+    imagery: imagerySelection,
+    mapHandle: mapRef,
+    onGenerated: (result) => setGeneratedLabels((current) => ({ ...current, spectral_osm_intersection: result })),
+  });
   const spectralOsmConsensusGeneration = useGeneratedLabel({
     workspaceId: activeWorkspaceId,
     region: selectedRegion,
@@ -150,7 +159,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   useEffect(() => {
     setImagerySelection({ assetId: "", tile: "", product: "", localLabelId: "", localLabel: null });
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, prediction: false, spectralWater: false, spectralOsmIntersection: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setPatchReviewEnabled(false);
@@ -160,7 +169,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   }, [selectedRegion, selectedSiteId]);
   useEffect(() => {
     setGeneratedLabels({});
-    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
+    setLayerVisibility((current) => ({ ...current, spectralWater: false, spectralOsmIntersection: false, spectralOsmConsensus: false, osmSpectralConsensus: false }));
   }, [imagerySelection.assetId]);
   useEffect(() => {
     if (!patchGroups.length) setPatchGroupKey("");
@@ -186,13 +195,16 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
     if (layer === "spectralWater" && !generatedLabels.spectral_water) {
       spectralWaterGeneration.mutate();
     }
+    if (layer === "spectralOsmIntersection" && !generatedLabels.spectral_osm_intersection) {
+      spectralOsmIntersectionGeneration.mutate();
+    }
     if (layer === "spectralOsmConsensus" && !generatedLabels.spectral_osm_consensus) {
       spectralOsmConsensusGeneration.mutate();
     }
     if (layer === "osmSpectralConsensus" && !generatedLabels.osm_spectral_consensus) {
       osmSpectralConsensusGeneration.mutate();
     }
-  }, [generatedLabels, osmSpectralConsensusGeneration, spectralOsmConsensusGeneration, spectralWaterGeneration]);
+  }, [generatedLabels, osmSpectralConsensusGeneration, spectralOsmConsensusGeneration, spectralOsmIntersectionGeneration, spectralWaterGeneration]);
   const handlePatchClick = useCallback((patchId: string) => {
     setActivePatchId(patchId);
     const patch = visiblePatches.find((item) => (item.logical_patch_id || item.patch_id) === patchId);
@@ -225,7 +237,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
   const sidebarWidth = sidebarCollapsed ? 76 : 360;
   const openSites = () => navigate(`${workspacePrefix}/regions/${region}/sites`);
   const openTraining = () => navigate(`${workspacePrefix}/regions/${region}/training-data`);
-  const openModel = () => navigate(`${workspacePrefix}/regions/${region}/models/validate`);
+  const openModel = () => navigate(selectedSiteId ? `${workspacePrefix}/regions/${selectedRegion}/models/validate/${encodeURIComponent(selectedSiteId)}?site_region=${encodeURIComponent(selectedRegion)}` : `${workspacePrefix}/regions/${region}/models/validate`);
   const navItems = [
     { label: "观测区域", icon: <Images size={18} />, selected: isSiteWorkspace, onClick: openSites },
     { label: "训练数据", icon: <Database size={18} />, selected: isTraining, onClick: openTraining },
@@ -285,7 +297,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
       </Box>
       <Box component="main" sx={{ minWidth: 0, minHeight: 0, height: "100%", overflow: "hidden", display: { xs: selectedSiteId || isTraining || isModel ? "grid" : "none", md: "grid" }, gridTemplateRows: { xs: selectedSiteId ? "auto auto minmax(0, 1fr) auto" : isTraining ? "auto minmax(0, 1fr)" : isModel ? "auto minmax(0, 1fr)" : "1fr", md: selectedSiteId ? "auto minmax(0, 1fr) auto" : "1fr" }, color: "text.secondary" }}>
         <Box sx={{ display: { xs: "block", md: "none" }, px: 1.5, py: .75, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}><CurrentUserBar compact user={user} logoutUrl={logoutUrl} /></Box>
-        {isModel ? <ModelWorkbench workspaceId={activeWorkspaceId} scope={region} regionOptions={regions.data?.items || []} onScopeChange={handleRegionChange} stage={modelStage} defaults={activeWorkspace?.training_defaults} selectedRunId={modelRunId} onRunSelect={handleModelRunSelect} routeSiteId={modelSiteId} routeSiteRegion={modelSiteRegion} routeModel={routeModel} onBack={() => navigate(`${workspacePrefix}/regions/${region}/sites`)} onStageChange={(stage) => navigate(`${workspacePrefix}/regions/${region}/models/${stage}`)} onRouteModel={(model) => navigate(`${workspacePrefix}/regions/${region}/models/validate?model=${encodeURIComponent(model)}`, { replace: true })} onRouteResult={(siteId, siteRegion, model) => navigate(`${workspacePrefix}/regions/${region}/models/validate/${encodeURIComponent(siteId)}?model=${encodeURIComponent(model)}${region === "all" ? `&site_region=${encodeURIComponent(siteRegion)}` : ""}`)} onTrainingDataGenerated={(siteRegion, sampleId, siteId) => navigate(`${workspacePrefix}/regions/${siteRegion}/training-data/${encodeURIComponent(siteId)}?source=${encodeURIComponent(sampleId)}`)} allowForeignModels={user.role === "admin"} /> : isTraining ? <>
+        {isModel ? <ModelWorkbench workspaceId={activeWorkspaceId} scope={region} regionOptions={regions.data?.items || []} onScopeChange={handleRegionChange} stage={modelStage} defaults={activeWorkspace?.training_defaults} selectedRunId={modelRunId} onRunSelect={handleModelRunSelect} routeSiteId={modelSiteId} routeSiteRegion={modelSiteRegion} routeModel={routeModel} onBack={() => navigate(`${workspacePrefix}/regions/${region}/sites`)} onStageChange={(stage) => navigate(`${workspacePrefix}/regions/${region}/models/${stage}`)} onRouteModel={(model) => navigate(`${workspacePrefix}/regions/${region}/models/validate${modelSiteId ? `/${encodeURIComponent(modelSiteId)}` : ""}?model=${encodeURIComponent(model)}&site_region=${encodeURIComponent(modelSiteRegion || region)}`, { replace: true })} onRouteResult={(siteId, siteRegion, model) => navigate(`${workspacePrefix}/regions/${region}/models/validate${siteId ? `/${encodeURIComponent(siteId)}` : ""}?model=${encodeURIComponent(model)}&site_region=${encodeURIComponent(siteRegion)}`)} onTrainingDataGenerated={(siteRegion, sampleId, siteId) => navigate(`${workspacePrefix}/regions/${siteRegion}/training-data/${encodeURIComponent(siteId)}?source=${encodeURIComponent(sampleId)}`)} allowForeignModels={user.role === "admin"} /> : isTraining ? <>
           <Box sx={{ display: { xs: "flex", md: "none" }, alignItems: "center", gap: 1, px: 1.5, py: .75, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
             <IconButton size="small" onClick={() => navigate(`${workspacePrefix}/regions/${trainingScope}/sites`)} aria-label="返回观测区域"><ArrowLeft size={19} /></IconButton>
             <FormControl size="small" sx={{ flex: 1, minWidth: 0 }}><InputLabel id="mobile-training-site-label">训练区域</InputLabel><Select labelId="mobile-training-site-label" label="训练区域" value={(trainingSites.data || []).some((item) => item.siteId === trainingSiteId) ? trainingSiteId : ""} onChange={(event) => handleTrainingSiteSelect(event.target.value)}><MenuItem value="">全部训练数据</MenuItem>{(trainingSites.data || []).map((item) => <MenuItem key={item.key} value={item.siteId}>{item.displayName} ({item.patchCount})</MenuItem>)}</Select></FormControl>
@@ -303,7 +315,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             onVisibilityChange={handleLayerVisibility}
             jrcThreshold={jrcThreshold}
             onJrcThresholdChange={setJrcThreshold}
-            trainingAction={!patchReviewEnabled ? <TrainingCaptureButton controller={trainingCapture} /> : undefined}
+            trainingAction={<Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}><Button size="small" variant="outlined" startIcon={<BrainCircuit size={16} />} onClick={openModel}>多模型对比</Button>{!patchReviewEnabled && <TrainingCaptureButton controller={trainingCapture} />}</Box>}
             showPrediction={Boolean(predictionModel)}
             showPatches={visiblePatches.length > 0}
             patchReviewEnabled={patchReviewEnabled}
@@ -329,6 +341,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
               jrc={jrc.data}
               localLabel={localLabel.data}
               spectralWater={generatedLabels.spectral_water?.label}
+              spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label}
               spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label}
               osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label}
               modelPrediction={modelPrediction.data?.prediction}
@@ -342,6 +355,7 @@ function Workbench({ user, logoutUrl }: { user: WorkbenchUser; logoutUrl: string
             {!patchReviewEnabled && <Box sx={{ position: "absolute", zIndex: 5, left: { xs: 8, sm: 12 }, right: { xs: 8, sm: "auto" }, bottom: 12, maxWidth: { sm: "calc(100% - 24px)" }, px: 1.5, py: .75, bgcolor: "rgba(255,255,255,.92)", border: 1, borderColor: "divider", borderRadius: 1, boxShadow: 2, backdropFilter: "blur(5px)", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", pointerEvents: "none", "&:empty": { display: "none" } }}>
                 <TrainingCaptureStatus controller={trainingCapture} />
                 {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
+                {layerVisibility.spectralOsmIntersection && <GeneratedLabelStatus source="spectral_osm_intersection" result={generatedLabels.spectral_osm_intersection} pending={spectralOsmIntersectionGeneration.isPending} error={spectralOsmIntersectionGeneration.error} />}
                 {layerVisibility.spectralOsmConsensus && <GeneratedLabelStatus source="spectral_osm_consensus" result={generatedLabels.spectral_osm_consensus} pending={spectralOsmConsensusGeneration.isPending} error={spectralOsmConsensusGeneration.error} />}
                 {layerVisibility.osmSpectralConsensus && <GeneratedLabelStatus source="osm_spectral_consensus" result={generatedLabels.osm_spectral_consensus} pending={osmSpectralConsensusGeneration.isPending} error={osmSpectralConsensusGeneration.error} />}
                 {modelPrediction.isFetching && layerVisibility.prediction && <Typography variant="caption" color="text.secondary">模型预测加载中 · {predictionModel?.name || ""}</Typography>}

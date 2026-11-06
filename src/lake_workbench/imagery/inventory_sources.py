@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +15,40 @@ from lake_workbench.utils import (
     parse_float_or_default,
     resolve_data_path,
 )
+
+
+class InventoryPathExists:
+    """Snapshot directory names once per inventory read, retaining exists semantics."""
+
+    def __init__(self):
+        self.directories = {}
+
+    def __call__(self, path: Path) -> bool:
+        parent = path.parent
+        if parent not in self.directories:
+            try:
+                with os.scandir(parent) as entries:
+                    names = set()
+                    for entry in entries:
+                        if entry.is_symlink():
+                            try:
+                                entry.stat()
+                            except OSError:
+                                continue
+                        names.add(entry.name)
+                self.directories[parent] = names
+            except (FileNotFoundError, NotADirectoryError):
+                self.directories[parent] = set()
+            except OSError:
+                self.directories[parent] = None
+        names = self.directories[parent]
+        return path.exists() if names is None else path.name in names
+
+
+def inventory_csv_rows(path):
+    # Streaming avoids a full DataFrame and second list of records at startup.
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        yield from csv.DictReader(stream)
 
 
 def load_tci_index(region) -> dict[str, dict]:
@@ -45,7 +81,8 @@ def load_user_tci_rows(region) -> dict[str, list[dict]]:
     rows: dict[str, list[dict]] = {}
     if not region.user_sentinel_index.exists():
         return rows
-    for row in pd.read_csv(region.user_sentinel_index).to_dict("records"):
+    exists = InventoryPathExists()
+    for row in inventory_csv_rows(region.user_sentinel_index):
         path_text = clean_optional(row.get("tci_path"))
         path = resolve_data_path(path_text, region) if path_text else None
         safe_path_text = clean_optional(row.get("safe_path")) or ""
@@ -72,7 +109,7 @@ def load_user_tci_rows(region) -> dict[str, list[dict]]:
                 else None
             ),
             "tci_path": path,
-            "missing": not path or not path.exists(),
+            "missing": not path or not exists(path),
         }
         rows.setdefault(tile, []).append(item)
     for tile in rows:

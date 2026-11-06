@@ -31,19 +31,22 @@ def workspace_dataset_signature(
     config: dict,
     workspace_store: "WorkspaceStore",
     workspace_id: str,
+    *,
+    logical_rows: list[dict] | None = None,
 ) -> str:
-    members = {
-        patch_id
-        for _region, patch_id in workspace_store.members(workspace_id, region.key)
-    }
-    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(
-        workspace_id, region.key
-    )
-    logical_rows = [
-        row
-        for row in read_csv_records(manifest_path)
-        if row.get("logical_patch_id") in members
-    ]
+    if logical_rows is None:
+        members = {
+            patch_id
+            for _region, patch_id in workspace_store.members(workspace_id, region.key)
+        }
+        manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(
+            workspace_id, region.key
+        )
+        logical_rows = [
+            row
+            for row in read_csv_records(manifest_path)
+            if row.get("logical_patch_id") in members
+        ]
     payload = {"config": config, "logical_rows": logical_rows}
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

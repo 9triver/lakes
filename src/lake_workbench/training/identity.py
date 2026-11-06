@@ -54,6 +54,7 @@ def training_view_signature(
     visible = view_state.get("visible_layers") if isinstance(view_state.get("visible_layers"), dict) else {}
     generated_source_keys = (
         "spectral_water",
+        "spectral_osm_intersection",
         "spectral_osm_consensus",
         "osm_spectral_consensus",
     )

@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from lake_workbench.models.metadata import model_sort_key, model_training_metadata
-from lake_workbench.models.runtime import load_model_checkpoint
+from lake_workbench.models.experiments import checkpoint_description, experimental_models
+from lake_workbench.paths import PROJECT_ROOT
 from lake_workbench.utils import clean_optional, display_path
 
 
@@ -36,7 +37,7 @@ class WorkspaceModelRegistry:
                     prefix = f"{workspace['name']} / " if visibility == "all" else ""
                     label = f"{prefix}{'全部区域' if model_scope == 'all' else model_scope} / {path.parent.name}/{path.name}"
                     try:
-                        model = load_model_checkpoint(path)
+                        model = checkpoint_description(path)
                         item = {
                             "key": key,
                             "label": label,
@@ -48,13 +49,9 @@ class WorkspaceModelRegistry:
                             "workspace_status": workspace["status"],
                             "scope": model_scope,
                             "region": model_scope,
-                            "epoch": model.epoch,
-                            "in_channels": model.in_channels,
-                            "base_channels": model.base_channels,
-                            "model_type": model.model_type,
-                            "model_options": model.model_options,
-                            "architecture_label": model.architecture_label,
+                            **{key:model[key] for key in ['epoch','in_channels','base_channels','model_type','model_options','architecture_label']},
                             **model_training_metadata(path, model_scope),
+                            "completed": (model_training_metadata(path, model_scope).get('history_count',0) >= int(model['config'].get('epochs',1))),
                         }
                     except Exception as exc:  # noqa: BLE001 - broken weights remain discoverable.
                         item = {
@@ -71,6 +68,8 @@ class WorkspaceModelRegistry:
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     items.append(item)
+            if self.model_root.resolve() == (PROJECT_ROOT / 'data/models').resolve():
+                items.extend(experimental_models(workspace['id']))
         unique = {item["key"]: item for item in items}
         items = sorted(unique.values(), key=model_sort_key)
         default = next((item["key"] for item in items if not item.get("error")), items[0]["key"] if items else "")
@@ -93,6 +92,17 @@ class WorkspaceModelRegistry:
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError(f"invalid model key: {key}")
         parts = path.parts
+        if len(parts) == 4 and parts[0] == 'experiments':
+            workspace_id = parts[1]
+            if workspace_id != self.workspace_id and not self.allow_foreign:
+                raise ValueError('无权使用其他训练工作区的模型')
+            self.workspace_store.get(workspace_id)
+            if self.model_root.resolve() != (PROJECT_ROOT / 'data/models').resolve():
+                raise ValueError('invalid experimental model registry')
+            selected = next((item for item in experimental_models(workspace_id) if item['key'] == key), None)
+            if selected is None:
+                raise FileNotFoundError('实验模型不存在')
+            return PROJECT_ROOT / selected['path']
         if len(parts) == 5 and parts[0] == "workspaces":
             workspace_id, scope, run_name, weight = parts[1:]
             if workspace_id != self.workspace_id and not self.allow_foreign:

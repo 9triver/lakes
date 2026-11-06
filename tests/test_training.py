@@ -23,6 +23,7 @@ class TrainingIdentityTests(unittest.TestCase):
                 get=lambda _workspace_id: {"status": "active"},
                 workspace_dataset_dir=lambda _workspace_id, _region, config_id: Path(directory) / config_id,
                 transaction=nullcontext,
+                build_transaction=nullcontext,
             )
             with patch("lake_workbench.training.runner.REGIONS", {"test": region}):
                 result = run_dataset_build("test", {"workspace_id": "workspace-1", "config_id": "resize256_v1"}, store)

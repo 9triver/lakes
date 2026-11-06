@@ -13,6 +13,8 @@ from lake_workbench.workspaces import WorkspaceError, WorkspaceStore
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.training.datasets import current_workspace_training_dataset_summary
 from lake_workbench.training.logical_patches import build_workspace_training_dataset, workspace_training_dataset_status
+from lake_workbench.training.logical_patches import build_global_training_dataset
+from lake_workbench.training.registry import DatasetRegistry
 from lake_workbench.utils import read_csv_records, write_csv_records
 
 
@@ -180,7 +182,23 @@ class WorkspaceStoreTests(unittest.TestCase):
         rows = read_csv_records(self.region_manifest)
         for row in rows:
             sample = next(item for item in read_csv_records(self.region.training_samples) if item["sample_id"] == row["sample_id"])
-            row.update({"image_path": str(image_path), "label_path": sample["label_path"], "row_off": 0, "col_off": 0})
+            row.update({"region": "test", "image_path": str(image_path), "label_path": sample["label_path"], "row_off": 0, "col_off": 0})
+        osm_label_path = Path(rows[0]["label_path"])
+        sidecar_path = osm_label_path.with_suffix(".npz")
+        labels = np.zeros((512, 512), dtype=np.uint8)
+        labels[:, 256:] = 255
+        np.savez_compressed(
+            sidecar_path,
+            labels=labels,
+            valid=np.ones((512, 512), dtype=np.uint8),
+            transform=np.asarray(tuple(from_origin(0, 1, 1 / 512, 1 / 512))[:6]),
+            crs=np.asarray("EPSG:4326"),
+        )
+        osm_label = json.loads(osm_label_path.read_text(encoding="utf-8"))
+        osm_label["properties"]["raster_label_sources"] = [
+            {"source": "spectral_water", "path": sidecar_path.name}
+        ]
+        osm_label_path.write_text(json.dumps(osm_label), encoding="utf-8")
         self.store.ensure_default_workspace()
         write_csv_records(self.store.workspace_logical_patch_manifest("default", "test"), rows)
         self.store.update_members("default", "test", ["patch-osm"], "include")
@@ -192,7 +210,28 @@ class WorkspaceStoreTests(unittest.TestCase):
         self.assertEqual(manifest[0]["workspace_id"], "default")
         with np.load(Path(manifest[0]["npz_path"])) as data:
             self.assertGreater(int(np.count_nonzero(data["mask"] == 1)), 0)
+            self.assertGreater(int(np.count_nonzero(data["mask"] == 255)), 0)
         self.assertEqual(workspace_training_dataset_status(self.region, "resize256_v1", self.store, "default")["status"], "ready")
+
+        registry = DatasetRegistry(self.root / "global")
+        registry.contribute(
+            self.store,
+            "default",
+            "test",
+            "test",
+            ["patch-osm"],
+        )
+        shared = build_global_training_dataset(
+            "test",
+            "resize256_v1",
+            {"test": self.region},
+            self.store,
+            registry,
+        )
+        shared_manifest = read_csv_records(Path(shared["manifest"]))
+        with np.load(Path(shared_manifest[0]["npz_path"])) as data:
+            self.assertGreater(int(np.count_nonzero(data["mask"] == 1)), 0)
+            self.assertGreater(int(np.count_nonzero(data["mask"] == 255)), 0)
 
     def test_empty_workspace_exposes_global_dataset_config_without_manifest_error(self) -> None:
         self.store.ensure_default_workspace()

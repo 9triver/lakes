@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,60 @@ def display_path(path: Path) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+
+def _random_site_candidates(catalogs, *, site_loader=None):
+    """Yield sites uniformly across provinces, loading only selected catalogs.
+
+    Counts come from cached lists or metadata headers, without loading every
+    province's geometry. Sparse Fisher-Yates removes attempted sites lazily;
+    there is no full-site copy, shuffle, or imagery scan per request.
+    """
+    pools = []
+    total = 0
+    for region_key, catalog in catalogs.items():
+        count = catalog.site_count()
+        if count:
+            pools.append([region_key, catalog, count, None, {}])
+            total += count
+    while total:
+        slot = random.randrange(total)
+        for pool in pools:
+            if slot < pool[2]:
+                break
+            slot -= pool[2]
+        region_key, catalog, remaining, sites, swaps = pool
+        if sites is None:
+            sites = site_loader(catalog) if site_loader is not None else catalog.sites
+            pool[3] = sites
+            if len(sites) != remaining:
+                # Loading may reveal unavailable/stale metadata. Reweight before
+                # drawing any site from this catalog, preserving equal odds.
+                total += len(sites) - remaining
+                pool[2] = len(sites)
+                continue
+        index = swaps.get(slot, slot)
+        remaining -= 1
+        replacement = swaps.pop(remaining, remaining)
+        if slot != remaining:
+            swaps[slot] = replacement
+        pool[2] = remaining
+        total -= 1
+        yield region_key, catalog, sites[index]
+
+
+@lru_cache(maxsize=32)
+def _cached_validation_metadata(path_string, mtime_ns, size):
+    """Read Site geometry only; do not initialize the province raster inventory."""
+    from types import SimpleNamespace
+    from lake_workbench.catalog import SiteCatalog
+    holder = SimpleNamespace(region=SimpleNamespace(site_metadata=Path(path_string)))
+    return SiteCatalog._load_sites(holder)
+
+def _metadata_validation_sites(catalog):
+    path = catalog.region.site_metadata
+    stat = path.stat()
+    return _cached_validation_metadata(str(path), stat.st_mtime_ns, stat.st_size)
 
 
 class RegionService:
@@ -152,13 +207,26 @@ class RegionService:
             })
         return {"workspace_id": workspace_id, "region": "all", "items": items}
 
+    def random_model_validation_target(self) -> dict:
+        """Select an imagery Site without loading weights, raster indexes or DEMs."""
+        from shapely.geometry import mapping
+        for region_key, catalog, site in _random_site_candidates(self.catalogs, site_loader=_metadata_validation_sites):
+            if int(site.properties.get("image_count") or 0) <= 0:
+                continue
+            return dict(region=region_key, site_id=site.site_id, site=dict(
+                site_id=site.site_id, region=region_key, region_name=catalog.region.name,
+                display_name=site.display_name, coverage_area_km2=site.area_km2,
+                bbox=list(site.bbox), geometry=mapping(site.geometry),
+                image_count=int(site.properties.get("image_count") or 0)))
+        raise FileNotFoundError("No observation site with imagery metadata is available")
+
     def all_model_validation_random_loaded(self, model, threshold: float, model_key: str) -> dict:
-        catalogs = list(self.catalogs.items())
-        random.shuffle(catalogs)
         errors = []
-        for region_key, catalog in catalogs:
+        for region_key, catalog, site in _random_site_candidates(self.catalogs):
             try:
-                result = catalog.model_validation_random(threshold=threshold, model=model)
+                result = catalog.model_validation_random(
+                    threshold=threshold, model=model, candidates=(site,),
+                )
             except FileNotFoundError as exc:
                 errors.append(str(exc))
                 continue

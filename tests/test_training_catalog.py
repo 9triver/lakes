@@ -6,7 +6,10 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 from lake_workbench.training.catalog import TrainingCatalogMixin
+from lake_workbench.training.samples import _snapshot_raster_label_sources
 
 
 class TrainingCatalogStub(TrainingCatalogMixin):
@@ -78,7 +81,12 @@ class CurrentViewLabelTests(unittest.TestCase):
             root = Path(directory)
             label_id = "derived_0123456789abcdef0123"
             for index, source in enumerate(
-                ("spectral_water", "spectral_osm_consensus", "osm_spectral_consensus")
+                (
+                    "spectral_water",
+                    "spectral_osm_intersection",
+                    "spectral_osm_consensus",
+                    "osm_spectral_consensus",
+                )
             ):
                 source_dir = root / source
                 source_dir.mkdir()
@@ -114,11 +122,13 @@ class CurrentViewLabelTests(unittest.TestCase):
                 {
                     "visible_layers": {
                         "spectral_water": True,
+                        "spectral_osm_intersection": True,
                         "spectral_osm_consensus": True,
                         "osm_spectral_consensus": True,
                     },
                     "selected_generated_labels": {
                         "spectral_water": {"id": label_id},
+                        "spectral_osm_intersection": {"id": label_id},
                         "spectral_osm_consensus": {"id": label_id},
                         "osm_spectral_consensus": {"id": label_id},
                     },
@@ -126,14 +136,56 @@ class CurrentViewLabelTests(unittest.TestCase):
                 derived_label_dir=root,
             )
 
-        self.assertEqual(len(layer["features"]), 3)
+        self.assertEqual(len(layer["features"]), 4)
         self.assertEqual(
             {
                 feature["properties"]["training_layer"]
                 for feature in layer["features"]
             },
-            {"spectral_water", "spectral_osm_consensus", "osm_spectral_consensus"},
+            {
+                "spectral_water",
+                "spectral_osm_intersection",
+                "spectral_osm_consensus",
+                "osm_spectral_consensus",
+            },
         )
+
+    def test_generated_raster_label_is_snapshotted_with_training_label(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "derived.npz"
+            np.savez_compressed(
+                source_path,
+                labels=np.array([[0, 1], [255, 0]], dtype=np.uint8),
+                valid=np.ones((2, 2), dtype=np.uint8),
+                transform=np.array([1, 0, 0, 0, -1, 2], dtype=np.float64),
+                crs=np.asarray("EPSG:4326"),
+            )
+            layer = {
+                "type": "FeatureCollection",
+                "features": [],
+                "properties": {
+                    "raster_label_sources": [
+                        {
+                            "source": "spectral_water",
+                            "label_id": "derived_0123456789abcdef0123",
+                            "path": str(source_path),
+                        }
+                    ]
+                },
+            }
+
+            snapshot = _snapshot_raster_label_sources(
+                layer, "site/sample", root / "training_labels"
+            )
+            copied_name = snapshot["properties"]["raster_label_sources"][0]["path"]
+            copied_path = root / "training_labels" / copied_name
+
+            self.assertTrue(copied_path.is_file())
+            self.assertNotEqual(copied_path, source_path)
+            source_path.unlink()
+            with np.load(copied_path, allow_pickle=False) as copied:
+                self.assertEqual(copied["labels"].tolist(), [[0, 1], [255, 0]])
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { getJson } from "../../api/client";
-import type { FeatureCollection, SiteSummary } from "../../api/types";
+import type { FeatureCollection, SiteSummary, SiteDetail } from "../../api/types";
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
 import { workspaceRegionApi } from "../workspaces/api";
 
@@ -15,7 +15,7 @@ export interface ModelOption {
   epoch?: number;
   in_channels?: number;
   base_channels?: number;
-  model_type?: "unet" | "pixel_mlp";
+  model_type?: "unet" | "pixel_mlp" | "aer_unet_adapted" | "resddsc_unetpp_adapted";
   model_options?: Record<string, unknown>;
   architecture_label?: string;
   best_iou?: number;
@@ -28,13 +28,19 @@ export interface ModelOption {
   workspace_id?: string;
   workspace_name?: string;
   workspace_status?: string;
+  completed?: boolean;
+  experimental?: boolean;
+  selection?: string;
+  selected_validation_iou?: number;
+  selected_validation_loss?: number;
+  max_validation_iou?: number | null;
 }
 
 export interface ModelValidationResult {
   region: string;
   site_id: string;
   site?: SiteSummary;
-  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number };
+  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp" | "aer_unet_adapted" | "resddsc_unetpp_adapted"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number };
   prediction: FeatureCollection;
   stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
   imagery?: { tile?: string; product?: string; product_name?: string; date?: string; products?: string[]; tiles?: string[] };
@@ -58,10 +64,22 @@ export function useValidationModels(workspaceId: string, scope: string, visibili
     queryKey: ["validation-models", workspaceId, scope, visibility],
     queryFn: async () => {
       const result = await getJson<{ default: string; items: ModelOption[] }>(workspaceRegionApi(workspaceId, scope, `/model-validation/models?visibility=${visibility}`));
-      return { ...result, items: sortedModels(result.items.filter((item) => item.weight === "best.pt")) };
+      return { ...result, items: sortedModels(result.items) };
     },
     enabled: Boolean(workspaceId && scope),
   });
+}
+
+export interface RandomModelValidationTarget {
+  region: string;
+  site_id: string;
+  site: SiteDetail;
+}
+
+export function useRandomModelValidationTarget(workspaceId: string) {
+  return useMutation({ mutationFn: () => getJson<RandomModelValidationTarget>(
+    workspaceRegionApi(workspaceId, "all", "/model-validation/random-target"),
+  ) });
 }
 
 export function useRandomModelValidation(workspaceId: string, scope: string) {
@@ -79,6 +97,6 @@ export function useSiteModelPrediction(workspaceId: string, region: string, site
       return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
     },
     enabled: enabled && Boolean(workspaceId && region && siteId && model),
-    retry: false,
+    retry: false, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
   });
 }

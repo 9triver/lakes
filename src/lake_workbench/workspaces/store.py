@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Iterable
 
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.workspaces.file_lock import process_lock
 from lake_workbench.regions.config import RegionConfig
 from lake_workbench.utils import read_csv_records, write_csv_records
 from lake_workbench.workspaces.membership import (
     find_patch_conflicts,
     included_members,
+    patch_is_included,
 )
 
 
@@ -69,7 +71,9 @@ class WorkspaceStore:
         self.model_root = model_root or PROJECT_ROOT / "data" / "models"
         self.registry_path = self.root / "workspaces.json"
         self._lock = threading.RLock()
+        self._build_lock = threading.RLock()
         self._logical_rows_cache: dict[tuple[str, str], tuple[int, dict[str, dict]]] = {}
+        self._selection_summary_cache: dict[str, tuple[tuple, dict[str, int]]] = {}
 
     def ensure_default_workspace(self) -> dict:
         with self._lock:
@@ -92,7 +96,13 @@ class WorkspaceStore:
     @contextmanager
     def transaction(self):
         """Serialize a Workspace filesystem transaction within this server."""
-        with self._lock:
+        with self._lock, process_lock(self.root / ".locks" / "metadata.lock"):
+            yield
+
+    @contextmanager
+    def build_transaction(self):
+        """Serialize artifact builders without blocking authentication or review."""
+        with self._build_lock, process_lock(self.root / ".locks" / "build.lock"):
             yield
 
     def workspace_samples_dir(self, workspace_id: str, region: str) -> Path:
@@ -203,7 +213,7 @@ class WorkspaceStore:
             for key in ([region] if region else self.regions):
                 path = self.workspace_logical_patch_manifest(workspace_id, key)
                 if path.exists():
-                    members.update(included_members(read_csv_records(path), key))
+                    members.update(included_members(self._workspace_logical_index(workspace_id, key).values(), key))
             return members
 
     def patch_counts(self, workspace_id: str, region: str) -> dict[str, int]:
@@ -237,7 +247,7 @@ class WorkspaceStore:
             raise WorkspaceError("operation must be include, restore, or exclude")
         if region not in self.regions:
             raise WorkspaceError(f"Unknown region: {region}")
-        with self._lock:
+        with self.transaction():
             workspace = self._workspace_record(workspace_id)
             if workspace.get("status") == "archived":
                 raise WorkspaceError(f"训练工作区已归档: {workspace_id}")
@@ -386,11 +396,33 @@ class WorkspaceStore:
 
     def _summary(self, workspace: dict) -> dict:
         workspace_id = workspace["id"]
-        members = self.members(workspace_id)
+        paths = [(region, self.workspace_logical_patch_manifest(workspace_id, region)) for region in self.regions]
+        signature = []
+        for region, path in paths:
+            try:
+                stat = path.stat()
+                signature.append((region, stat.st_mtime_ns, stat.st_size))
+            except FileNotFoundError:
+                signature.append((region, None, None))
+        signature = tuple(signature)
+        cached = self._selection_summary_cache.get(workspace_id)
+        if cached and cached[0] == signature:
+            selection = cached[1]
+        else:
+            selected_count, sites = 0, set()
+            for (region, path), (_, modified, _) in zip(paths, signature):
+                if modified is None:
+                    continue
+                for row in self._logical_index_for_path((workspace_id, region), path).values():
+                    if patch_is_included(row):
+                        selected_count += 1
+                        if row.get("site_id"):
+                            sites.add(row["site_id"])
+            selection = {"selected_patch_count": selected_count, "site_count": len(sites)}
+            self._selection_summary_cache[workspace_id] = (signature, selection)
         return {
             **workspace,
-            "selected_patch_count": len(members),
-            "site_count": len(self._member_sites(workspace_id, members)) if members else 0,
+            **selection,
             "default": workspace_id == DEFAULT_WORKSPACE_ID,
         }
 
@@ -432,5 +464,15 @@ class WorkspaceStore:
             }
             for row in rows
         ]
-        write_csv_records(self.workspace_logical_patch_manifest(workspace_id, region), owned_rows)
+        target = self.workspace_logical_patch_manifest(workspace_id, region)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".manifest.", suffix=".csv", dir=target.parent)
+        os.close(fd)
+        try:
+            write_csv_records(Path(name), owned_rows)
+            os.replace(name, target)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
         self._logical_rows_cache.pop((workspace_id, region), None)
+        self._selection_summary_cache.pop(workspace_id, None)

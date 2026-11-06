@@ -100,9 +100,9 @@ test("authenticated user is routed to the assigned workspace", async ({ page }) 
 test("site browser filters by region and renders all map layers", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.goto("#/users/default/workspaces/default/regions/gansu/sites/gansu_17407");
-  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("区域 17407（Suhai附近）", { exact: true }).last()).toBeVisible();
   await expectSidebarUserVisible(page);
-  await expect(page.getByRole("button", { name: /区域 17407（苏干湖附近）/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /区域 17407（Suhai附近）/ }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "切换用户" })).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: "区域" })).toContainText("甘肃省 (19)");
   for (const label of ["覆盖面积", "名称提示", "影像", "OSM 标注", "HydroLAKES", "本地标注"]) {
@@ -111,26 +111,32 @@ test("site browser filters by region and renders all map layers", async ({ page 
   await expect(page.getByRole("combobox", { name: "底图" })).toContainText("卫星图");
   await expect(page.getByRole("combobox", { name: "本地影像期次" })).toHaveCount(1);
   await expect(page.getByTestId("site-map-toolbar").getByRole("combobox", { name: "本地影像期次" })).toBeVisible();
-  await expect(page.getByText(/29 期本地影像/).first()).toBeVisible();
+  await expect(page.getByText(/3 期本地影像/).first()).toBeVisible();
   await expect(page.getByText(/最近影像 2025-07-31/).first()).toBeVisible();
   await page.getByRole("button", { name: "收起侧栏" }).click();
   await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await page.getByRole("button", { name: "展开侧栏" }).click();
   await expect(page.getByRole("button", { name: "收起侧栏" })).toBeVisible();
-  for (const label of ["影像", "Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 连通补全", "OSM + 光谱连通补全", "本体标注"]) {
+  for (const label of ["影像", "Tile", "光谱水体（当前影像）", "光谱 ∩ OSM（高置信种子）", "光谱主导 · OSM 约束", "OSM 主导 · 光谱候选", "本体标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).toBeVisible();
   }
   await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
-  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 连通补全", "OSM + 光谱连通补全", "本体标注"]) {
+  for (const label of ["Tile", "光谱水体（当前影像）", "光谱 ∩ OSM（高置信种子）", "光谱主导 · OSM 约束", "OSM 主导 · 光谱候选", "本体标注"]) {
     await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
   }
+  await page.getByRole("button", { name: "参考图层", exact: true }).click();
+  for (const label of ["OSM 水体（矢量）", "HydroLAKES", "其他水体", "ESA", "JRC"]) {
+    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
+  }
+  await expect(page.getByRole("slider", { name: "JRC 阈值" })).toBeVisible();
+  await page.keyboard.press("Escape");
   await expectToolbarOutsideMap(page);
   await expectUsableMap(page);
   await page.screenshot({ path: `${screenshotDir}/lake-desktop.png`, fullPage: true });
   await page.getByRole("combobox", { name: "区域" }).click();
   await page.getByRole("option", { name: "陕西省 (80)" }).click();
   await expect(page).toHaveURL(/#\/users\/default\/workspaces\/default\/regions\/shaanxi\/sites$/);
-  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("区域 17407（Suhai附近）", { exact: true })).toHaveCount(0);
   await expect(page.getByText(/^共 80 个/)).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -147,7 +153,7 @@ test("training data and model training views load", async ({ page }) => {
   const sidebar = page.locator("aside");
   await expect(sidebar.getByText(/^\d+ 个训练区域 · \d+ 个 Patch$/)).toBeVisible();
   await expect(sidebar.getByText("全部训练数据", { exact: true })).toBeVisible();
-  const trainingSite = sidebar.getByRole("button").filter({ hasText: "区域 17407（苏干湖附近）" });
+  const trainingSite = sidebar.getByRole("button").filter({ hasText: "区域 17407（Suhai附近）" });
   await expect(trainingSite).toBeVisible();
   const sitePatchCount = Number((await trainingSite.getByText(/^\d+ 个 Patch/).textContent())?.match(/^\d+/)?.[0]);
   expect(sitePatchCount).toBeGreaterThan(0);
@@ -179,17 +185,13 @@ test("training data and model training views load", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("cached model validation deep link restores prediction", async ({ page }) => {
+test("model validation presents an actionable empty state without weights", async ({ page }) => {
   const errors = await observePageErrors(page);
-  await page.goto("#/users/default/workspaces/default/regions/shaanxi/models/validate/shaanxi_23294?model=workspaces%2Fdefault%2Fall%2Funet_20260823_123157%2Fbest.pt");
-  await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_20260823_123157/)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("checkbox", { name: "影像", exact: true })).toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "模型预测", exact: true })).toBeChecked();
-  for (const label of ["Tile", "OSM 水体", "HydroLAKES", "其他", "ESA", "JRC", "光谱水体", "光谱 + OSM 连通补全", "OSM + 光谱连通补全", "本体标注"]) {
-    await expect(page.getByRole("checkbox", { name: label, exact: true })).not.toBeChecked();
-  }
-  await expectToolbarOutsideMap(page);
-  await expectUsableMap(page);
+  await page.goto("#/users/default/workspaces/default/regions/all/models/validate");
+  await expect(page.getByRole("tab", { name: "验证", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("combobox", { name: "模型权重" })).toHaveText("");
+  await expect(page.getByRole("button", { name: "随机验证一个区域" })).toBeDisabled();
+  await expect(page.getByText("选择模型后随机验证一个有可用影像的观测区域", { exact: true })).toBeVisible();
   await page.screenshot({ path: `${screenshotDir}/model-validation-desktop.png`, fullPage: true });
   expect(errors).toEqual([]);
 });
@@ -198,7 +200,7 @@ test("mobile site and training pages do not overflow", async ({ page }) => {
   const errors = await observePageErrors(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("#/users/default/workspaces/default/regions/gansu/sites/gansu_17407");
-  await expect(page.getByText("区域 17407（苏干湖附近）", { exact: true }).last()).toBeVisible();
+  await expect(page.getByText("区域 17407（Suhai附近）", { exact: true }).last()).toBeVisible();
   await expectToolbarOutsideMap(page);
   await expectUsableMap(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
@@ -236,9 +238,9 @@ test("remaining mobile workspaces stay usable", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/training-mobile.png`, fullPage: true });
 
-  await page.goto("#/users/default/workspaces/default/regions/shaanxi/models/validate/shaanxi_23294?model=workspaces%2Fdefault%2Fall%2Funet_20260823_123157%2Fbest.pt");
-  await expect(page.getByText(/区域 23294（喜河水库附近） · 模型 unet_20260823_123157/)).toBeVisible({ timeout: 30_000 });
-  await expectUsableMap(page);
+  await page.goto("#/users/default/workspaces/default/regions/all/models/validate");
+  await expect(page.getByRole("tab", { name: "验证", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("选择模型后随机验证一个有可用影像的观测区域", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await page.screenshot({ path: `${screenshotDir}/model-validation-mobile.png`, fullPage: true });
   expect(errors).toEqual([]);

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from PIL import Image
 from pyproj import Transformer
+from affine import Affine
 from rasterio.features import rasterize
+from rasterio.warp import Resampling, reproject
 from rasterio.windows import Window, transform as window_transform
 from shapely.geometry import shape
 from shapely.ops import transform as shapely_transform
@@ -21,6 +24,14 @@ from lake_workbench.utils import display_path
 
 
 DEFAULT_PATCH_SIZE = 512
+
+
+@dataclass(frozen=True)
+class RasterLabelOverlay:
+    """One three-state label mask aligned to its target imagery grid."""
+
+    labels: np.ndarray
+    apply: np.ndarray
 
 
 def resize_patch(
@@ -66,6 +77,7 @@ def read_patch_window(
     patch_size: int,
     label_geometries: list[tuple[Any, int]],
     scope_geometry: Any | None = None,
+    raster_label_overlays: list[RasterLabelOverlay] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Read one fixed-size raster window and rasterize its label and scope."""
     window = Window(col_off, row_off, patch_size, patch_size)
@@ -78,6 +90,11 @@ def read_patch_window(
         (patch_size, patch_size),
         transform,
     )
+    for overlay in raster_label_overlays or []:
+        overlay_labels, overlay_apply = _raster_label_window(
+            overlay, row_off, col_off, patch_size
+        )
+        label[overlay_apply] = overlay_labels[overlay_apply]
     if scope_geometry is not None:
         scope = rasterize_geometries(
             [(scope_geometry, 1)],
@@ -160,6 +177,139 @@ def label_geometries(payload: dict, crs: Any) -> list[tuple[Any, int]]:
             raise ValueError(f"label_value must be 0, 1 or 255: {value}")
         geometries.append((geometry, value))
     return geometries
+
+
+def raster_label_overlays(
+    payload: dict,
+    label_path: Path,
+    target: Any,
+) -> list[RasterLabelOverlay]:
+    """Load sample raster-label sidecars and align each one to the image grid."""
+    properties = payload.get("properties") or {}
+    sources = properties.get("raster_label_sources") or []
+    if not isinstance(sources, list):
+        raise ValueError("raster_label_sources must be a list")
+    overlays = []
+    for source in sources:
+        if not isinstance(source, dict):
+            raise ValueError("invalid raster label source metadata")
+        source_path = _raster_label_path(label_path, source)
+        with np.load(source_path, allow_pickle=False) as arrays:
+            labels = np.asarray(arrays["labels"], dtype=np.uint8)
+            valid = np.asarray(arrays["valid"], dtype=bool)
+            transform_values = np.asarray(arrays["transform"], dtype=np.float64)
+            crs = str(np.asarray(arrays["crs"]).item())
+        if labels.ndim != 2 or labels.shape != valid.shape:
+            raise ValueError(f"invalid raster label dimensions: {source_path}")
+        if transform_values.size != 6 or not crs:
+            raise ValueError(f"invalid raster label grid: {source_path}")
+        values = set(int(value) for value in np.unique(labels))
+        if not values.issubset({0, 1, 255}):
+            raise ValueError(f"invalid raster label values: {source_path}")
+        overlays.append(
+            _align_raster_label(
+                labels,
+                valid & (labels != 0),
+                Affine(*transform_values.tolist()),
+                crs,
+                target,
+            )
+        )
+    return overlays
+
+
+def training_label_fingerprint(label_path: Path, payload: dict | None = None) -> str:
+    """Fingerprint a label snapshot together with all raster sidecars."""
+    if payload is None:
+        serialized = label_path.read_bytes()
+        payload = json.loads(serialized.decode("utf-8"))
+    else:
+        serialized = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    digest = hashlib.sha256(serialized)
+    sources = (payload.get("properties") or {}).get("raster_label_sources") or []
+    for source in sources:
+        if not isinstance(source, dict):
+            raise ValueError("invalid raster label source metadata")
+        source_path = _raster_label_path(label_path, source)
+        digest.update(source_path.name.encode("utf-8"))
+        digest.update(source_path.read_bytes())
+    return digest.hexdigest()
+
+
+def _raster_label_path(label_path: Path, source: dict) -> Path:
+    path_text = str(source.get("path") or "").strip()
+    if not path_text:
+        raise ValueError("raster label source has no path")
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = label_path.parent / path
+    if not path.is_file():
+        raise FileNotFoundError(f"raster label not found: {path}")
+    return path
+
+
+def _align_raster_label(
+    labels: np.ndarray,
+    apply: np.ndarray,
+    transform: Affine,
+    crs: str,
+    target: Any,
+) -> RasterLabelOverlay:
+    target_shape = (target.height, target.width)
+    if (
+        labels.shape == target_shape
+        and str(target.crs or "") == crs
+        and transform.almost_equals(target.transform)
+    ):
+        return RasterLabelOverlay(labels=labels, apply=apply)
+    if not target.crs:
+        raise ValueError("target imagery has no CRS for raster label alignment")
+    aligned_labels = np.zeros(target_shape, dtype=np.uint8)
+    aligned_apply = np.zeros(target_shape, dtype=np.uint8)
+    reproject(
+        source=labels,
+        destination=aligned_labels,
+        src_transform=transform,
+        src_crs=crs,
+        dst_transform=target.transform,
+        dst_crs=target.crs,
+        resampling=Resampling.nearest,
+    )
+    reproject(
+        source=apply.astype(np.uint8),
+        destination=aligned_apply,
+        src_transform=transform,
+        src_crs=crs,
+        dst_transform=target.transform,
+        dst_crs=target.crs,
+        resampling=Resampling.nearest,
+    )
+    return RasterLabelOverlay(labels=aligned_labels, apply=aligned_apply.astype(bool))
+
+
+def _raster_label_window(
+    overlay: RasterLabelOverlay,
+    row_off: int,
+    col_off: int,
+    patch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    labels = np.zeros((patch_size, patch_size), dtype=np.uint8)
+    apply = np.zeros((patch_size, patch_size), dtype=bool)
+    source_row_stop = min(row_off + patch_size, overlay.labels.shape[0])
+    source_col_stop = min(col_off + patch_size, overlay.labels.shape[1])
+    if source_row_stop <= row_off or source_col_stop <= col_off:
+        return labels, apply
+    height = source_row_stop - row_off
+    width = source_col_stop - col_off
+    labels[:height, :width] = overlay.labels[
+        row_off:source_row_stop, col_off:source_col_stop
+    ]
+    apply[:height, :width] = overlay.apply[
+        row_off:source_row_stop, col_off:source_col_stop
+    ]
+    return labels, apply
 
 
 def rasterize_geometries(

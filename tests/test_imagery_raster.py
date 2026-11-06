@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from io import BytesIO
@@ -17,7 +18,9 @@ from lake_workbench.imagery.tiles import render_tci_xyz_tile
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.training.patch_processing import (
     label_geometries,
+    raster_label_overlays,
     rasterize_geometries,
+    read_patch_window,
 )
 
 
@@ -219,6 +222,73 @@ class ImageryRasterTests(unittest.TestCase):
 
         self.assertTrue(np.all(mask[:, :2] == 1))
         self.assertTrue(np.all(mask[:, 2:] == 255))
+
+    def test_raster_labels_overlay_only_water_and_ignore_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "image.tif"
+            transform = from_bounds(0, 0, 4, 4, 4, 4)
+            with rasterio.open(
+                image_path,
+                "w",
+                driver="GTiff",
+                width=4,
+                height=4,
+                count=3,
+                dtype="uint16",
+                crs="EPSG:4326",
+                transform=transform,
+            ) as dataset:
+                dataset.write(np.full((3, 4, 4), 100, dtype=np.uint16))
+            sidecar_path = root / "labels.npz"
+            labels = np.tile(
+                np.array([0, 255, 1, 255], dtype=np.uint8), (4, 1)
+            )
+            valid = np.ones((4, 4), dtype=np.uint8)
+            valid[:, 3] = 0
+            np.savez_compressed(
+                sidecar_path,
+                labels=labels,
+                valid=valid,
+                transform=np.asarray(tuple(transform)[:6]),
+                crs=np.asarray("EPSG:4326"),
+            )
+            payload = {
+                "type": "FeatureCollection",
+                "properties": {
+                    "raster_label_sources": [{"path": sidecar_path.name}]
+                },
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"label_value": 1},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]
+                            ],
+                        },
+                    }
+                ],
+            }
+            label_path = root / "sample.geojson"
+            label_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with rasterio.open(image_path) as source:
+                overlays = raster_label_overlays(payload, label_path, source)
+                _, target, _ = read_patch_window(
+                    source,
+                    0,
+                    0,
+                    4,
+                    label_geometries(payload, source.crs),
+                    raster_label_overlays=overlays,
+                )
+
+            np.testing.assert_array_equal(
+                target,
+                np.tile(np.array([1, 255, 1, 1], dtype=np.uint8), (4, 1)),
+            )
 
 
 if __name__ == "__main__":

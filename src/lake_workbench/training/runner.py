@@ -34,21 +34,29 @@ def run_patch_export(region_key: str, options: dict, workspace_store) -> dict:
     workspace_id = clean_optional(options.get("workspace_id"))
     if not workspace_id:
         raise ValueError("workspace_id is required")
-    with workspace_store.transaction():
+    with workspace_store.build_transaction():
         return _run_patch_export_locked(region_key, options, workspace_store, workspace_id)
 
 
 def _run_patch_export_locked(region_key: str, options: dict, workspace_store, workspace_id: str) -> dict:
-    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(workspace_id, region_key)
-    existing_rows = read_csv_records(manifest_path)
-    before = {row.get("logical_patch_id", "") for row in existing_rows}
-    output_dir = manifest_path.parent
-    requested_sample_id = clean_optional(options.get("sample_id"))
-    sample_path = workspace_store.ensure_workspace_training_samples(workspace_id, region_key)
-    samples = read_csv_records(sample_path)
-    sample_ids = {row.get("sample_id", "") for row in samples if row.get("sample_id")}
+    with workspace_store.transaction():
+        manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(workspace_id, region_key)
+        existing_rows = read_csv_records(manifest_path)
+        before = {row.get("logical_patch_id", "") for row in existing_rows}
+        output_dir = manifest_path.parent
+        requested_sample_id = clean_optional(options.get("sample_id"))
+        sample_path = workspace_store.ensure_workspace_training_samples(workspace_id, region_key)
+        samples = read_csv_records(sample_path)
+    requested_ids = {str(value) for value in options.get("sample_ids") or []}
     if requested_sample_id:
-        sample_ids.add(requested_sample_id)
+        requested_ids.add(requested_sample_id)
+    sample_ids = {row.get("sample_id", "") for row in samples if row.get("sample_id")}
+    if requested_ids:
+        missing = requested_ids - sample_ids
+        if missing:
+            raise ValueError(f"Unknown Workspace sample IDs: {sorted(missing)}")
+        sample_ids = requested_ids
+        samples = [row for row in samples if row.get("sample_id") in sample_ids]
     patch_size = parse_int_or_default(options.get("patch_size"), 512)
     stride = parse_int_or_default(options.get("stride"), patch_size)
     result = build_logical_patches(
@@ -58,7 +66,13 @@ def _run_patch_export_locked(region_key: str, options: dict, workspace_store, wo
         samples=samples,
         patch_size=patch_size,
         stride=stride,
+        commit_context=workspace_store.transaction,
     )
+    with workspace_store.transaction():
+        return _finalize_patch_export(region_key, options, workspace_store, workspace_id, manifest_path, before, result)
+
+
+def _finalize_patch_export(region_key, options, workspace_store, workspace_id, manifest_path, before, result):
     after = {
         row.get("logical_patch_id", "")
         for row in read_csv_records(manifest_path)
@@ -111,7 +125,7 @@ def run_dataset_build(region_key: str, options: dict, workspace_store) -> dict:
     workspace_id = clean_optional(options.get("workspace_id"))
     if not workspace_id:
         raise ValueError("workspace_id is required")
-    with workspace_store.transaction():
+    with workspace_store.build_transaction():
         status = workspace_training_dataset_status(REGIONS[region_key], config_id, workspace_store, workspace_id)
         if status["status"] == "missing_selection":
             return {

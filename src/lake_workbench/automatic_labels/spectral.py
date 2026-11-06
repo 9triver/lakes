@@ -27,7 +27,7 @@ IGNORE_LABEL = 255
 DEFAULT_WATER_THRESHOLD = 0.62
 DEFAULT_SPECTRAL_MAX_DIMENSION = 1024
 STABLE_LABEL_MAX_DIMENSION = 2048
-SPECTRAL_ALGORITHM_VERSION = "spectral_consensus_v3"
+SPECTRAL_ALGORITHM_VERSION = "spectral_consensus_v4"
 
 
 @dataclass(frozen=True)
@@ -279,6 +279,8 @@ def classify_spectral_array(
     labels = spectral_labels(
         water_score, methods, valid, quality_valid, threshold=threshold
     )
+    index_consensus = methods["bounded_mndwi_otsu"] & methods["dswx_five_band_subset"]
+    index_consensus_fallback = index_consensus & (water_score < threshold)
 
     valid_pixels = int(np.count_nonzero(valid))
     quality_pixels = int(np.count_nonzero(quality_valid))
@@ -303,6 +305,9 @@ def classify_spectral_array(
         "waterdetect_vote_ratio": _valid_mean(methods["waterdetect_cluster"], quality_valid),
         "otsu_vote_ratio": _valid_mean(otsu_vote, quality_valid),
         "dswx_subset_vote_ratio": _valid_mean(dswx_vote, quality_valid),
+        "index_consensus_fallback_pixels": int(
+            np.count_nonzero(index_consensus_fallback)
+        ),
         "spectral_water_score_mean": _valid_mean(water_score, quality_valid),
         "score_is_calibrated_probability": False,
         "quality_mask_sources": list(external_quality.sources) if external_quality else [],
@@ -340,7 +345,21 @@ def spectral_labels(
         & (water_score <= min(0.40, 1.0 - bounded_threshold + 0.05))
     )
     confident_water = (
-        quality_valid & (agreement >= 2) & (water_score >= bounded_threshold)
+        quality_valid
+        & (agreement >= 2)
+        & (
+            (water_score >= bounded_threshold)
+            | (
+                methods.get(
+                    "bounded_mndwi_otsu",
+                    np.zeros(water_score.shape, dtype=bool),
+                )
+                & methods.get(
+                    "dswx_five_band_subset",
+                    np.zeros(water_score.shape, dtype=bool),
+                )
+            )
+        )
     )
     labels[confident_background] = BACKGROUND_LABEL
     labels[confident_water] = WATER_LABEL
@@ -571,12 +590,17 @@ def _reproject_quality_layer(
 
 def _normalized_difference(first: np.ndarray, second: np.ndarray) -> np.ndarray:
     denominator = first + second
-    return np.divide(
+    result = np.divide(
         first - second,
         denominator,
         out=np.zeros_like(first, dtype=np.float32),
         where=np.abs(denominator) > 1e-6,
     )
+    # Atmospheric correction can produce small negative reflectances. Near a
+    # zero denominator the raw ratio then becomes unbounded and can dominate
+    # scene-adaptive clustering, although normalized differences are only
+    # meaningful in their conventional [-1, 1] range.
+    return np.clip(result, -1.0, 1.0)
 
 
 def _valid_mean(values: np.ndarray, valid: np.ndarray) -> float:

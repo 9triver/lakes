@@ -10,8 +10,9 @@ import shutil
 import tempfile
 from io import BytesIO
 from collections import defaultdict
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import rasterio
@@ -27,8 +28,10 @@ from lake_workbench.training.patch_processing import (
     image_fingerprint,
     label_geometries,
     preview_image,
+    raster_label_overlays,
     read_patch_window,
     resize_patch,
+    training_label_fingerprint,
     write_preview,
 )
 from lake_workbench.utils import (
@@ -80,10 +83,12 @@ def build_logical_patches(
     samples: list[dict] | None = None,
     patch_size: int = LOGICAL_PATCH_SIZE,
     stride: int | None = None,
+    commit_context: Callable[[], AbstractContextManager] | None = None,
 ) -> dict:
     logical_dir = output_dir
     manifest_path = logical_dir / "manifest.csv"
-    previous_rows = read_csv_records(manifest_path)
+    with (commit_context or nullcontext)():
+        previous_rows = read_csv_records(manifest_path)
     previous = {
         row.get("logical_patch_id", ""): row
         for row in previous_rows
@@ -102,18 +107,6 @@ def build_logical_patches(
     rebuilt_sample_ids = {
         row.get("sample_id", "") for row in samples if row.get("sample_id")
     }
-    retained = [
-        row
-        for row in previous_rows
-        if not (
-            row.get("sample_id") in rebuilt_sample_ids
-            and int(row.get("logical_size") or LOGICAL_PATCH_SIZE) == patch_size
-            and int(
-                row.get("grid_stride") or row.get("logical_size") or LOGICAL_PATCH_SIZE
-            )
-            == stride
-        )
-    ]
     parent = logical_dir.parent
     parent.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix="logical_patches.", dir=parent))
@@ -133,32 +126,40 @@ def build_logical_patches(
                     stride,
                 )
             )
-        retained_ids = {row.get("logical_patch_id", "") for row in retained}
-        for row in retained:
-            for field in ("preview_path", "preview_base_path"):
-                preview_path = (
-                    resolve_data_path(row.get(field, ""), region)
-                    if row.get(field)
-                    else None
+        # Raster processing runs outside the Workspace lock. Re-read committed
+        # review metadata immediately before publishing so reviews made during
+        # a long export are preserved for both retained and rebuilt patches.
+        with (commit_context or nullcontext)():
+            current_rows = read_csv_records(manifest_path)
+            current = {row.get("logical_patch_id", ""): row for row in current_rows}
+            retained = [
+                row for row in current_rows
+                if not (
+                    row.get("sample_id") in rebuilt_sample_ids
+                    and int(row.get("logical_size") or LOGICAL_PATCH_SIZE) == patch_size
+                    and int(row.get("grid_stride") or row.get("logical_size") or LOGICAL_PATCH_SIZE) == stride
                 )
-                if preview_path and preview_path.is_file():
-                    shutil.copy2(preview_path, preview_dir / preview_path.name)
-        rows = retained + [
-            row
-            for row in generated
-            if row.get("logical_patch_id", "") not in retained_ids
-        ]
-        rows.sort(
-            key=lambda row: (
-                row["sample_id"],
-                int(row["image_index"]),
-                int(row["row_off"]),
-                int(row["col_off"]),
-                int(row["logical_size"]),
+            ]
+            for row in generated:
+                latest = current.get(row["logical_patch_id"], {})
+                for field in ("include", "review_status", "exclude_reason", "patch_notes"):
+                    if field in latest:
+                        row[field] = latest[field]
+            retained_ids = {row.get("logical_patch_id", "") for row in retained}
+            for row in retained:
+                for field in ("preview_path", "preview_base_path"):
+                    preview_path = resolve_data_path(row[field], region) if row.get(field) else None
+                    if preview_path and preview_path.is_file():
+                        shutil.copy2(preview_path, preview_dir / preview_path.name)
+            rows = retained + [row for row in generated if row.get("logical_patch_id", "") not in retained_ids]
+            rows.sort(
+                key=lambda row: (
+                    row["sample_id"], int(row["image_index"]),
+                    int(row["row_off"]), int(row["col_off"]), int(row["logical_size"]),
+                )
             )
-        )
-        _write_csv(temp_dir / "manifest.csv", rows)
-        _replace_directory(temp_dir, logical_dir)
+            _write_csv(temp_dir / "manifest.csv", rows)
+            _replace_directory(temp_dir, logical_dir)
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
         raise
@@ -190,7 +191,8 @@ def _build_sample_logical_patches(
     ]
     if not sample_id or not label_path.exists():
         return []
-    label_fingerprint = hashlib.sha256(label_path.read_bytes()).hexdigest()
+    label_payload = json.loads(label_path.read_text(encoding="utf-8"))
+    label_fingerprint = training_label_fingerprint(label_path, label_payload)
     products = _split_values(sample.get("products") or sample.get("product_name"))
     dates = _split_values(sample.get("product_dates") or sample.get("product_date"))
     result: list[dict] = []
@@ -199,8 +201,8 @@ def _build_sample_logical_patches(
             continue
         with rasterio.open(image_path) as src:
             image_signature = image_fingerprint(image_path, src)
-            label_payload = json.loads(label_path.read_text(encoding="utf-8"))
             geometries = label_geometries(label_payload, src.crs)
+            raster_overlays = raster_label_overlays(label_payload, label_path, src)
             scope_geometry = _sample_scope_geometry(sample, src.crs)
             label_bounds = _water_label_bounds(geometries)
             candidate_bounds = _intersect_bounds(
@@ -232,6 +234,7 @@ def _build_sample_logical_patches(
                         patch_size,
                         geometries,
                         scope_geometry,
+                        raster_overlays,
                     )
                     if not np.any(valid_patch):
                         continue
@@ -407,23 +410,26 @@ def build_workspace_training_dataset(
     workspace_store: "WorkspaceStore",
     workspace_id: str,
 ) -> dict:
-    workspace_store.assert_trainable(workspace_id)
     configs = dataset_configs()
     if config_id not in configs:
         raise KeyError(f"unknown training dataset config: {config_id}")
     config = configs[config_id]
-    member_ids = {
-        patch_id
-        for _region, patch_id in workspace_store.members(workspace_id, region.key)
-    }
-    manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(
-        workspace_id, region.key
-    )
-    logical_rows = [
-        row
-        for row in read_csv_records(manifest_path)
-        if row.get("logical_patch_id") in member_ids
-    ]
+    with workspace_store.transaction():
+        workspace_store.assert_trainable(workspace_id)
+        member_ids = {
+            patch_id
+            for _region, patch_id in workspace_store.members(workspace_id, region.key)
+        }
+        manifest_path = workspace_store.ensure_workspace_logical_patch_manifest(
+            workspace_id, region.key
+        )
+        logical_rows = [
+            row for row in read_csv_records(manifest_path)
+            if row.get("logical_patch_id") in member_ids
+        ]
+        signature = workspace_dataset_signature(
+            region, config, workspace_store, workspace_id, logical_rows=logical_rows
+        )
     if not logical_rows:
         raise FileNotFoundError(
             f"Workspace has no selected logical patches for {region.key}: {workspace_id}"
@@ -447,7 +453,9 @@ def build_workspace_training_dataset(
             if not image_path.exists():
                 continue
             with rasterio.open(image_path) as src:
-                geometry_cache: dict[Path, list[tuple[Any, int]]] = {}
+                label_cache: dict[
+                    Path, tuple[list[tuple[Any, int]], list[Any]]
+                ] = {}
                 for logical in rows:
                     label_path = resolve_data_path(
                         logical.get("label_path", ""), region
@@ -456,12 +464,16 @@ def build_workspace_training_dataset(
                         continue
                     label_fingerprint = (
                         logical.get("label_fingerprint")
-                        or hashlib.sha256(label_path.read_bytes()).hexdigest()
+                        or training_label_fingerprint(label_path)
                     )
                     source_signature = str(label_fingerprint)
-                    if label_path not in geometry_cache:
+                    if label_path not in label_cache:
                         payload = json.loads(label_path.read_text(encoding="utf-8"))
-                        geometry_cache[label_path] = label_geometries(payload, src.crs)
+                        label_cache[label_path] = (
+                            label_geometries(payload, src.crs),
+                            raster_label_overlays(payload, label_path, src),
+                        )
+                    geometries, raster_overlays = label_cache[label_path]
                     logical_size = int(
                         logical.get("logical_size")
                         or logical.get("window_width")
@@ -472,8 +484,9 @@ def build_workspace_training_dataset(
                         int(logical["row_off"]),
                         int(logical["col_off"]),
                         logical_size,
-                        geometry_cache[label_path],
+                        geometries,
                         _sample_scope_geometry(logical, src.crs),
+                        raster_overlays,
                     )
                     actual = resize_patch(image, target, valid, int(config["output_size"]))
                     patch_id = logical["logical_patch_id"]
@@ -514,9 +527,6 @@ def build_workspace_training_dataset(
             )
         output_rows.sort(key=lambda row: row["logical_patch_id"])
         _write_csv(temp_dir / "manifest.csv", output_rows)
-        signature = workspace_dataset_signature(
-            region, config, workspace_store, workspace_id
-        )
         (temp_dir / "build.json").write_text(
             json.dumps(
                 {
@@ -583,8 +593,20 @@ def _build_global_training_dataset_locked(
         if region_key not in regions:
             continue
         label_snapshot = row.get("label_snapshot_json") or ""
-        signature_source = label_snapshot or row.get("label_fingerprint") or row.get("label_path", "")
-        signature = hashlib.sha256(str(signature_source).encode("utf-8")).hexdigest()
+        label_path = resolve_data_path(row.get("label_path", ""), regions[region_key])
+        if label_snapshot:
+            signature = training_label_fingerprint(
+                label_path, json.loads(label_snapshot)
+            )
+        else:
+            signature_source = (
+                label_snapshot
+                or row.get("label_fingerprint")
+                or row.get("label_path", "")
+            )
+            signature = hashlib.sha256(
+                str(signature_source).encode("utf-8")
+            ).hexdigest()
         grouped[(region_key, row.get("image_path", ""), signature)].append(
             row
         )
@@ -604,6 +626,10 @@ def _build_global_training_dataset_locked(
                         continue
                     payload = json.loads(label_path.read_text(encoding="utf-8"))
                 geometries = label_geometries(payload, src.crs)
+                label_path = resolve_data_path(
+                    group[0].get("label_path", ""), region
+                )
+                raster_overlays = raster_label_overlays(payload, label_path, src)
                 for logical in group:
                     logical_size = int(
                         logical.get("logical_size")
@@ -617,6 +643,7 @@ def _build_global_training_dataset_locked(
                         logical_size,
                         geometries,
                         _sample_scope_geometry(logical, src.crs),
+                        raster_overlays,
                     )
                     actual = resize_patch(image, target, valid, int(config["output_size"]))
                     patch_id = logical.get("source_patch_id") or logical.get(
@@ -718,6 +745,9 @@ def workspace_logical_patch_preview(
         else:
             payload = json.loads(label_path.read_text(encoding="utf-8"))
             geometries = label_geometries(payload, src.crs)
+            raster_overlays = raster_label_overlays(payload, label_path, src)
+        if not label_path.exists():
+            raster_overlays = []
         logical_size = int(
             row.get("logical_size") or row.get("window_width") or LOGICAL_PATCH_SIZE
         )
@@ -728,6 +758,7 @@ def workspace_logical_patch_preview(
             logical_size,
             geometries,
             _sample_scope_geometry(row, src.crs),
+            raster_overlays,
         )
         actual = resize_patch(image, target, valid, LOGICAL_PATCH_SIZE)
     preview = preview_image(
@@ -767,7 +798,7 @@ def _replace_directory(source: Path, target: Path) -> None:
         os.replace(target, backup)
     try:
         os.replace(source, target)
-    except Exception:
+    except BaseException:
         if backup.exists():
             os.replace(backup, target)
         raise

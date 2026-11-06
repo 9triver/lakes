@@ -1,6 +1,7 @@
 """Training metadata and safe model weight discovery."""
 
 from pathlib import Path
+import math
 
 from lake_workbench.training.datasets import dataset_summary_from_config, read_json_file, timestamp_for_path
 from lake_workbench.utils import clean_optional, display_path, parse_float, parse_int_or_default
@@ -16,10 +17,13 @@ def model_training_metadata(model_path: Path, scope: str) -> dict:
         history = []
     best_iou = None
     best_epoch = None
+    max_validation_iou = None
     for record in history:
-        val = record.get("val") or {}
+        val = record.get("val") or record.get("validation") or {}
         train = record.get("train") or {}
         score = parse_float(val.get("iou"))
+        if score is not None and math.isfinite(score) and (max_validation_iou is None or score > max_validation_iou):
+            max_validation_iou = score
         if score is None:
             score = parse_float(train.get("iou"))
         if score is not None and (best_iou is None or score > best_iou):
@@ -59,6 +63,7 @@ def model_training_metadata(model_path: Path, scope: str) -> dict:
         "dataset": dataset_summary_from_config(config) if config else {},
         "history_count": len(history),
         "best_iou": best_iou,
+        "max_validation_iou": max_validation_iou,
         "best_epoch": best_epoch,
         "latest": history[-1] if history else {},
         "updated_at": timestamp_for_path(run_dir / "history.json") or timestamp_for_path(model_path),

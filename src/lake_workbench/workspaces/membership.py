@@ -69,16 +69,19 @@ def find_patch_conflicts(
     """
     conflicts: list[dict] = []
     wanted = set(wanted_ids)
+    existing_by_image: dict[str, list[tuple[str, dict]]] = {}
+    for existing_id in sorted(set(current_ids) - wanted):
+        existing = canonical.get(existing_id)
+        if existing:
+            image = existing.get("image_fingerprint") or existing.get("image_path")
+            if image:
+                existing_by_image.setdefault(image, []).append((existing_id, existing))
     for patch_id in wanted:
         incoming = canonical[patch_id]
         incoming_image = incoming.get("image_fingerprint") or incoming.get("image_path")
-        for existing_id in set(current_ids) - wanted:
-            existing = canonical.get(existing_id)
-            if not existing:
-                continue
-            existing_image = existing.get("image_fingerprint") or existing.get("image_path")
+        for existing_id, existing in existing_by_image.get(incoming_image, []):
             overlap = patch_bbox_iou(incoming, existing)
-            if incoming_image and incoming_image == existing_image and overlap >= minimum_overlap:
+            if overlap >= minimum_overlap:
                 conflicts.append(
                     {
                         "type": "spatial_overlap",

@@ -10,8 +10,10 @@ from typing import Any
 
 import numpy as np
 
+from lake_workbench.devices import resolve_device
 
-SUPPORTED_MODEL_TYPES = ("unet", "pixel_mlp")
+
+SUPPORTED_MODEL_TYPES = ("unet", "pixel_mlp", "aer_unet_adapted", "resddsc_unetpp_adapted")
 PIXEL_MLP_HIDDEN_CHANNELS = (16, 8)
 PIXEL_MLP_INFERENCE_TILE = 512
 
@@ -50,19 +52,30 @@ def normalize_model_type(value: Any) -> str:
 def model_options(model_type: str, config: dict | None = None) -> dict:
     config = config or {}
     stored = config.get("model_options") if isinstance(config.get("model_options"), dict) else {}
+    if model_type in {'aer_unet_adapted','resddsc_unetpp_adapted'}:
+        return {'base_channels':int(stored.get('base_channels') or config.get('base_channels') or 32)}
     if model_type == "pixel_mlp":
         hidden = stored.get("hidden_channels") or PIXEL_MLP_HIDDEN_CHANNELS
         hidden = [int(value) for value in hidden]
         if len(hidden) != 2 or any(value <= 0 for value in hidden):
             raise ValueError("pixel_mlp hidden_channels must contain two positive integers")
         return {"hidden_channels": hidden}
+    if stored.get("encoder"):
+        encoder = str(stored["encoder"])
+        if encoder not in {"tu-mobilenetv3_large_100", "efficientnet-b0"}:
+            raise ValueError(f"Unsupported U-Net encoder: {encoder}")
+        return {"encoder": encoder, "decoder_channels": [256, 128, 64, 32, 16]}
     return {"base_channels": int(stored.get("base_channels") or config.get("base_channels") or 32)}
 
 
 def architecture_label(model_type: str, in_channels: int, options: dict) -> str:
+    if model_type in {'aer_unet_adapted','resddsc_unetpp_adapted'}:
+        return ('AER U-Net' if model_type=='aer_unet_adapted' else 'ResDDSCUNet++')+'（论文结构适配版）'
     if model_type == "pixel_mlp":
         hidden = options["hidden_channels"]
         return " -> ".join(str(value) for value in [in_channels, *hidden, 1])
+    if options.get("encoder"):
+        return f"U-Net ({options['encoder']})"
     return f"U-Net (base {options['base_channels']})"
 
 
@@ -78,6 +91,15 @@ def _build_pixel_mlp(in_channels: int, options: dict):
 
 
 def _build_unet(in_channels: int, options: dict):
+    if options.get("encoder"):
+        import segmentation_models_pytorch as smp
+
+        return smp.Unet(
+            encoder_name=options["encoder"], encoder_depth=5, encoder_weights=None,
+            decoder_channels=tuple(options["decoder_channels"]),
+            in_channels=in_channels, classes=1, activation=None,
+        )
+
     class DoubleConv(nn.Module):
         def __init__(self, input_channels: int, output_channels: int) -> None:
             super().__init__()
@@ -134,10 +156,18 @@ MODEL_BUILDERS = {
 }
 
 
+def _build_paper_model(model_type, in_channels, options):
+    from lake_workbench.models.paper_models import AERUNetAdapted,ResDDSCUNetPPAdapted
+    cls=AERUNetAdapted if model_type=='aer_unet_adapted' else ResDDSCUNetPPAdapted
+    return cls(in_channels,options['base_channels'])
+
+
 def build_model(model_type: str, in_channels: int, options: dict | None = None):
     init_torch()
     model_type = normalize_model_type(model_type)
     resolved_options = model_options(model_type, {"model_options": options or {}})
+    if model_type in {'aer_unet_adapted','resddsc_unetpp_adapted'}:
+        return _build_paper_model(model_type,in_channels,resolved_options)
     return MODEL_BUILDERS[model_type](in_channels, resolved_options)
 
 
@@ -157,21 +187,23 @@ class LoadedWaterModel:
     config: dict
 
 
-_MODEL_CACHE: dict[tuple[Path, str], LoadedWaterModel] = {}
+_MODEL_CACHE: dict[tuple[Path, str, int, int], LoadedWaterModel] = {}
 _MODEL_CACHE_LOCK = threading.Lock()
 
 
 def load_model_checkpoint(path: Path, device: str = "auto") -> LoadedWaterModel:
     init_torch()
     path = path.resolve()
-    resolved_device = torch.device("cuda" if device == "auto" and torch.cuda.is_available() else "cpu" if device == "auto" else device)
-    cache_key = (path, str(resolved_device))
+    resolved_device = resolve_device(device, torch)
+    stat = path.stat()
+    cache_key = (path, str(resolved_device), stat.st_mtime_ns, stat.st_size)
     with _MODEL_CACHE_LOCK:
         cached = _MODEL_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
-    checkpoint = torch.load(path, map_location=resolved_device)
+    # Load weights on CPU first so checkpoints remain portable across CUDA, MPS, and CPU hosts.
+    checkpoint = torch.load(path, map_location="cpu")
     config = checkpoint.get("config") or {}
     normalization = checkpoint.get("normalization") or config.get("normalization") or {}
     in_channels = int(config.get("in_channels") or len(normalization.get("mean") or []))
@@ -202,6 +234,9 @@ def load_model_checkpoint(path: Path, device: str = "auto") -> LoadedWaterModel:
     )
     with _MODEL_CACHE_LOCK:
         _MODEL_CACHE[cache_key] = loaded
+        # Lists inspect metadata only; inference keeps at most two networks resident.
+        while len(_MODEL_CACHE) > 2:
+            del _MODEL_CACHE[next(iter(_MODEL_CACHE))]
     return loaded
 
 
@@ -236,8 +271,9 @@ def _predict_pixel_mlp(model: LoadedWaterModel, data: np.ndarray) -> np.ndarray:
 
 def _predict_unet(model: LoadedWaterModel, data: np.ndarray) -> np.ndarray:
     height, width = data.shape[1:]
-    pad_h = (16 - height % 16) % 16
-    pad_w = (16 - width % 16) % 16
+    stride = 32 if model.model_options.get("encoder") else 16
+    pad_h = (stride - height % stride) % stride
+    pad_w = (stride - width % stride) % stride
     if pad_h or pad_w:
         data = np.pad(data, ((0, 0), (0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
     with torch.no_grad():

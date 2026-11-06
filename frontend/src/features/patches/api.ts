@@ -22,45 +22,31 @@ export interface TrainingPatchSiteSummary {
   includedCount: number;
 }
 
-export function useTrainingPatches(workspaceId: string, scope: string, include = "", sampleId = "", siteId = "") {
-  const params = new URLSearchParams();
-  if (include) params.set("include", include);
+export interface PatchPage {
+  items: TrainingPatch[];
+  total: number;
+  included_count: number;
+  excluded_count: number;
+  counts: Record<string, number>;
+}
+
+export function useTrainingPatches(workspaceId: string, scope: string, include = "", sampleId = "", siteId = "", page = 1, water = "") {
+  const params = new URLSearchParams({ limit: "18", offset: String((page - 1) * 18) });
+  if (include && include !== "all") params.set("include", include);
   if (sampleId) params.set("sample_id", sampleId);
   if (siteId) params.set("site_id", siteId);
-  const suffix = params.size ? `?${params}` : "";
-  return useQuery({ queryKey: ["logical-patches", workspaceId, scope, include, sampleId, siteId], queryFn: () => getJson<{ items: TrainingPatch[]; total: number; included_count: number; excluded_count: number }>(workspaceRegionApi(workspaceId, scope, `/logical-patches${suffix}`)), enabled: Boolean(workspaceId && scope) });
+  if (water) params.set("water", water);
+  return useQuery({ queryKey: ["logical-patches", workspaceId, scope, include, sampleId, siteId, page, water], queryFn: () => getJson<PatchPage>(workspaceRegionApi(workspaceId, scope, `/logical-patches?${params}`)), enabled: Boolean(workspaceId && scope) });
 }
 
 export function useTrainingPatchSites(workspaceId: string, scope: string, enabled: boolean) {
   return useQuery({
-    queryKey: ["logical-patches", workspaceId, scope, "", "", ""],
-    queryFn: () => getJson<{ items: TrainingPatch[]; total: number; included_count: number; excluded_count: number }>(workspaceRegionApi(workspaceId, scope, "/logical-patches")),
+    queryKey: ["logical-patches", workspaceId, scope, "sites"],
+    queryFn: () => getJson<{ items: TrainingPatchSiteSummary[] }>(workspaceRegionApi(workspaceId, scope, "/logical-patches?view=sites")),
     enabled: Boolean(enabled && workspaceId && scope),
-    select: (payload) => {
-      const sites = new Map<string, TrainingPatchSiteSummary>();
-      for (const patch of payload.items) {
-        const patchRegion = patch.region || scope;
-        const key = `${patchRegion}:${patch.site_id}`;
-        const current = sites.get(key);
-        if (current) {
-          current.patchCount += 1;
-          if (patch.included) current.includedCount += 1;
-          continue;
-        }
-        sites.set(key, {
-          key,
-          region: patchRegion,
-          regionName: patch.region_name || patchRegion,
-          siteId: patch.site_id,
-          displayName: patch.site_display_name || patch.site_name || patch.site_id,
-          patchCount: 1,
-          includedCount: patch.included ? 1 : 0,
-        });
-      }
-      return [...sites.values()].sort((left, right) =>
+    select: (payload) => [...payload.items].sort((left, right) =>
         left.region.localeCompare(right.region) || left.displayName.localeCompare(right.displayName, "zh-CN", { numeric: true }),
-      );
-    },
+      ),
   });
 }
 
@@ -101,7 +87,7 @@ export function useContributePatches(workspaceId: string, targetScope: string) {
 }
 
 export function useSiteLogicalPatches(workspaceId: string, region: string, siteId: string) {
-  const params = new URLSearchParams({ site_id: siteId });
+  const params = new URLSearchParams({ site_id: siteId, limit: "1000" });
   return useQuery({
     queryKey: ["logical-patches", workspaceId, region, siteId],
     queryFn: () => getJson<{ items: TrainingPatch[]; total: number; included_count: number; excluded_count: number }>(workspaceRegionApi(workspaceId, region, `/logical-patches?${params}`)),

@@ -12,7 +12,7 @@ from affine import Affine
 from rasterio.enums import Resampling
 from rasterio.features import shapes
 from rasterio.windows import from_bounds, transform as window_transform
-from rasterio.warp import transform_bounds, transform_geom as rasterio_transform_geom
+from rasterio.warp import reproject, transform_bounds, transform_geom as rasterio_transform_geom
 from shapely.geometry import MultiPolygon, mapping, shape
 from shapely.ops import unary_union
 from shapely.validation import make_valid
@@ -20,6 +20,7 @@ from shapely.validation import make_valid
 from lake_workbench.geo import boxes_intersect, transform_geom
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.models.runtime import predict_array
+from lake_workbench.models.features import OPTICAL, aligned_slope, assemble_features, feature_names
 from lake_workbench.paths import PROJECT_ROOT
 
 
@@ -40,9 +41,12 @@ def predict_water_geojson(
     bounds: tuple[float, float, float, float] | None = None,
 ) -> tuple[dict, dict]:
     threshold = float(threshold)
+    names = feature_names(model.config, model.in_channels)
+    source_channels = len(OPTICAL)
+    terrain = None
     with rasterio.open(path) as src:
-        if src.count < model.in_channels:
-            raise ValueError(f"Raster has {src.count} bands, model needs {model.in_channels}: {display_path(path)}")
+        if src.count < source_channels:
+            raise ValueError(f"Raster has {src.count} bands, explicit optical input needs {source_channels}: {display_path(path)}")
         window = None
         if bounds is not None:
             source_bounds = bounds
@@ -65,25 +69,40 @@ def predict_water_geojson(
             scale = MODEL_VALIDATION_MAX_DIM / max(read_height, read_width)
             out_height = max(1, int(round(read_height * scale)))
             out_width = max(1, int(round(read_width * scale)))
-            out_shape = (model.in_channels, out_height, out_width)
+            out_shape = (source_channels, out_height, out_width)
             transform_scale = Affine.scale(read_width / out_width, read_height / out_height)
-        indexes = list(range(1, model.in_channels + 1))
+        indexes = list(range(1, source_channels + 1))
         read_kwargs = {"indexes": indexes, "window": window, "resampling": Resampling.bilinear}
         if out_shape is not None:
             read_kwargs["out_shape"] = out_shape
         image = src.read(**read_kwargs).astype(np.float32)
         mask_kwargs = {"indexes": indexes, "window": window, "resampling": Resampling.nearest}
         if out_shape is not None:
-            mask_kwargs["out_shape"] = (model.in_channels, image.shape[1], image.shape[2])
+            mask_kwargs["out_shape"] = (source_channels, image.shape[1], image.shape[2])
         masks = src.read_masks(**mask_kwargs)
         if image.shape[1] == 0 or image.shape[2] == 0:
             return _empty_prediction_stats(threshold)
         nodata = tuple(src.nodatavals[index - 1] for index in indexes)
         valid = valid_pixel_mask(image, nodata, masks)
-        probability = predict_array(model, image, valid=valid)
-        predicted = (probability >= threshold) & valid
         transform = window_transform(window, src.transform) if window is not None else src.transform
         transform = transform * transform_scale
+        slope = None
+        if 'slope_degrees' in names:
+            native_image = src.read(indexes=indexes).astype(np.float32)
+            native_masks = src.read_masks(indexes=indexes)
+            native_valid = valid_pixel_mask(native_image, nodata, native_masks)
+            native_slope, terrain = aligned_slope(path, native_valid)
+            del native_image, native_masks, native_valid
+            slope = np.full(valid.shape, np.nan, dtype='float32')
+            reproject(native_slope, slope, src_transform=src.transform, src_crs=src.crs,
+                      dst_transform=transform, dst_crs=src.crs, dst_nodata=np.nan,
+                      resampling=Resampling.bilinear)
+            if not np.isfinite(slope[valid]).all():
+                raise ValueError('坡度未覆盖全部有效预测像素，无法完成单模型地图预测')
+            slope = np.nan_to_num(slope, nan=0.)
+        features = assemble_features(image, names, slope)
+        probability = predict_array(model, features, valid=valid)
+        predicted = (probability >= threshold) & valid
         src_crs = src.crs
 
     valid_pixels = int(valid.sum())
@@ -134,6 +153,8 @@ def predict_water_geojson(
             )
 
     stats = {
+        "input_bands": names,
+        "terrain": terrain,
         "threshold": threshold,
         "valid_pixels": valid_pixels,
         "predicted_pixels": predicted_pixels,

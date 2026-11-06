@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
+
+from lake_workbench.models.preparation_progress import report
 
 import numpy as np
 from pyproj import Transformer
@@ -19,7 +22,13 @@ from shapely.validation import make_valid
 
 from lake_workbench.automatic_labels.basemap import (
     aligned_osm_rgb,
-    osm_water_mask,
+    osm_tile_settings,
+)
+from lake_workbench.automatic_labels.evidence_cache import (
+    INCOMPLETE_OSM_CACHE_SECONDS,
+    OSM_WATER_MASK_VERSION,
+    cached_osm_mask,
+    cached_spectral_evidence,
 )
 from lake_workbench.automatic_labels.spectral import (
     BACKGROUND_LABEL,
@@ -28,7 +37,6 @@ from lake_workbench.automatic_labels.spectral import (
     STABLE_LABEL_MAX_DIMENSION,
     SPECTRAL_ALGORITHM_VERSION,
     WATER_LABEL,
-    read_spectral_evidence,
 )
 from lake_workbench.training.identity import normalized_view_extent
 from lake_workbench.utils import (
@@ -39,15 +47,18 @@ from lake_workbench.utils import (
 
 
 SPECTRAL_WATER = "spectral_water"
+SPECTRAL_OSM_INTERSECTION = "spectral_osm_intersection"
 SPECTRAL_OSM_CONSENSUS = "spectral_osm_consensus"
 OSM_SPECTRAL_CONSENSUS = "osm_spectral_consensus"
 DERIVED_LABEL_SOURCES = (
     SPECTRAL_WATER,
+    SPECTRAL_OSM_INTERSECTION,
     SPECTRAL_OSM_CONSENSUS,
     OSM_SPECTRAL_CONSENSUS,
 )
 SPECTRAL_LABEL_SOURCES = (
     SPECTRAL_WATER,
+    SPECTRAL_OSM_INTERSECTION,
     SPECTRAL_OSM_CONSENSUS,
     OSM_SPECTRAL_CONSENSUS,
 )
@@ -59,8 +70,9 @@ def generate_derived_label(
     source: str,
     payload: dict,
     output_dir: Path,
-) -> dict:
-    """Generate and persist one source-specific water polygon layer."""
+    *, cache_only: bool = False,
+) -> dict | None:
+    """Generate and persist one source-specific water label layer."""
     if source not in DERIVED_LABEL_SOURCES:
         raise ValueError(f"Unknown generated annotation source: {source}")
     requested_extent = payload.get("extent") or list(site.bbox)
@@ -97,13 +109,57 @@ def generate_derived_label(
         if safe_path_text
         else None
     )
-    spectral = read_spectral_evidence(
+    if quality_path is not None and not quality_path.exists():
+        quality_path = None
+    requested_osm_zoom = (
+        _bounded_int(payload.get("osm_zoom"), 14, 8, 19)
+        if source != SPECTRAL_WATER
+        else None
+    )
+    osm_tile_url = osm_tile_settings()[0] if requested_osm_zoom is not None else ""
+    image_stat = image_path.stat()
+    identity = {
+        "schema": "derived_label_v2",
+        "source": source,
+        "site_id": site.site_id,
+        "image_path": display_path(image_path),
+        "image_size": image_stat.st_size,
+        "image_mtime_ns": image_stat.st_mtime_ns,
+        "quality_path": display_path(quality_path) if quality_path else "",
+        "quality_size": quality_path.stat().st_size if quality_path else None,
+        "quality_mtime_ns": quality_path.stat().st_mtime_ns if quality_path else None,
+        "extent": extent,
+        "max_dimension": max_dimension,
+        "threshold": threshold,
+        "spectral_algorithm": SPECTRAL_ALGORITHM_VERSION,
+        "osm_mask_algorithm": OSM_WATER_MASK_VERSION if requested_osm_zoom else None,
+        "osm_zoom": requested_osm_zoom,
+        "osm_tile_url": osm_tile_url,
+    }
+    label_id = "derived_" + hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:20]
+    source_dir = output_dir / source
+    path = source_dir / f"{label_id}.geojson"
+    mask_path = source_dir / f"{label_id}.npz"
+    cached_result = _load_cached_result(path, mask_path, source, site.site_id)
+    if cached_result is not None:
+        report('seed_cached', '高置信种子缓存可用', 1, 1)
+        return cached_result
+    if cache_only:
+        return None
+
+    report('seed_spectral', '正在读取影像并计算光谱高置信水体/背景')
+    spectral, spectral_cache_key, spectral_cache_hit = cached_spectral_evidence(
+        catalog.region.cache_dir,
         image_path,
         bounds,
         max_dimension=max_dimension,
         threshold=threshold,
-        quality_path=quality_path if quality_path and quality_path.exists() else None,
+        quality_path=quality_path,
     )
+    report('seed_spectral', '光谱证据已就绪', 1, 1)
+    osm_cache_hit: bool | None = None
     details: dict[str, Any]
     valid: np.ndarray
     labels: np.ndarray
@@ -123,32 +179,50 @@ def generate_derived_label(
             "bands": spectral.bands,
             **spectral.diagnostics,
         }
-    elif source in {SPECTRAL_OSM_CONSENSUS, OSM_SPECTRAL_CONSENSUS}:
-        osm = aligned_osm_rgb(
-            bounds,
-            _bounded_int(payload.get("osm_zoom"), 14, 8, 19),
-            spectral.crs,
-            spectral.transform,
-            spectral.shape,
+    elif source in {
+        SPECTRAL_OSM_INTERSECTION,
+        SPECTRAL_OSM_CONSENSUS,
+        OSM_SPECTRAL_CONSENSUS,
+    }:
+        assert requested_osm_zoom is not None
+        report('seed_osm', '正在获取并对齐 OSM 水体瓦片')
+        osm, osm_cache_hit = cached_osm_mask(
             catalog.region.cache_dir,
+            spectral_cache_key,
+            bounds,
+            requested_osm_zoom,
+            osm_tile_url,
+            lambda: aligned_osm_rgb(
+                bounds,
+                requested_osm_zoom,
+                spectral.crs,
+                spectral.transform,
+                spectral.shape,
+                catalog.region.cache_dir,
+            ),
         )
-        osm_water = osm_water_mask(osm.rgb, osm.valid)
+        report('seed_osm', f'OSM 瓦片处理完成，可用 {osm.available_tile_count}，缺失 {osm.missing_tile_count}', osm.tile_count, osm.tile_count)
+        report('seed_fusion', '正在融合光谱 ∩ OSM 高置信种子')
+        osm_water = osm.water
         valid = spectral.valid & osm.valid
         spectral_water = spectral.labels == WATER_LABEL
         spectral_water_valid = valid & spectral_water
         osm_water_valid = valid & osm_water
         consensus_seed = spectral_water_valid & osm_water
-        primary_mask = (
-            spectral_water_valid
-            if source == SPECTRAL_OSM_CONSENSUS
-            else osm_water_valid
-        )
-        connected_water = _seeded_connected_mask(
-            primary_mask,
-            consensus_seed,
-        )
+        if source == SPECTRAL_OSM_INTERSECTION:
+            connected_water = consensus_seed
+        else:
+            primary_mask = (
+                spectral_water_valid
+                if source == SPECTRAL_OSM_CONSENSUS
+                else osm_water_valid
+            )
+            connected_water = _seeded_connected_mask(primary_mask, consensus_seed)
         labels = np.full(spectral.shape, IGNORE_LABEL, dtype=np.uint8)
-        labels[valid & (spectral.labels == BACKGROUND_LABEL)] = BACKGROUND_LABEL
+        spectral_background = valid & (spectral.labels == BACKGROUND_LABEL)
+        if source == SPECTRAL_OSM_INTERSECTION:
+            spectral_background &= ~osm_water
+        labels[spectral_background] = BACKGROUND_LABEL
         labels[connected_water] = WATER_LABEL
         water_score = np.where(connected_water, spectral.water_score, 0.0).astype(
             np.float32
@@ -160,15 +234,23 @@ def generate_derived_label(
             "score_name": "spectral_water_score",
             "score_is_calibrated_probability": False,
             "processing_mode": (
-                "spectral_water_connected_to_osm_seed"
-                if source == SPECTRAL_OSM_CONSENSUS
-                else "osm_water_connected_to_spectral_seed"
+                "spectral_osm_intersection"
+                if source == SPECTRAL_OSM_INTERSECTION
+                else (
+                    "spectral_water_connected_to_osm_seed"
+                    if source == SPECTRAL_OSM_CONSENSUS
+                    else "osm_water_connected_to_spectral_seed"
+                )
             ),
-            "connectivity": 8,
+            "connectivity": None if source == SPECTRAL_OSM_INTERSECTION else 8,
             "primary_mask": (
-                "spectral_water"
-                if source == SPECTRAL_OSM_CONSENSUS
-                else "osm_blue_water"
+                "spectral_and_osm_intersection"
+                if source == SPECTRAL_OSM_INTERSECTION
+                else (
+                    "spectral_water"
+                    if source == SPECTRAL_OSM_CONSENSUS
+                    else "osm_blue_water"
+                )
             ),
             "processing_max_dimension": max_dimension,
             "bands": spectral.bands,
@@ -177,6 +259,8 @@ def generate_derived_label(
             "osm_water_pixels": int(np.count_nonzero(osm_water_valid)),
             "consensus_seed_pixels": int(np.count_nonzero(consensus_seed)),
             "consensus_water_pixels": int(np.count_nonzero(connected_water)),
+            "osm_available_tile_count": getattr(osm, "available_tile_count", osm.tile_count),
+            "osm_missing_tile_count": getattr(osm, "missing_tile_count", 0),
             "osm": {
                 "provider": osm.provider,
                 "zoom": osm.zoom,
@@ -187,7 +271,18 @@ def generate_derived_label(
             },
             **spectral.diagnostics,
         }
-        if source == SPECTRAL_OSM_CONSENSUS:
+        if source == SPECTRAL_OSM_INTERSECTION:
+            details.update(
+                {
+                    "spectral_only_pixels": int(
+                        np.count_nonzero(spectral_water_valid & ~osm_water)
+                    ),
+                    "osm_only_pixels": int(
+                        np.count_nonzero(osm_water_valid & ~spectral_water)
+                    ),
+                }
+            )
+        elif source == SPECTRAL_OSM_CONSENSUS:
             details.update(
                 {
                     "spectral_only_pixels": int(
@@ -215,6 +310,13 @@ def generate_derived_label(
                     ),
                 }
             )
+    details["cache"] = {
+        "result": "miss",
+        "spectral": "hit" if spectral_cache_hit else "miss",
+        "osm": None
+        if osm_cache_hit is None
+        else ("hit" if osm_cache_hit else "miss"),
+    }
     valid_mask: np.ndarray = np.asarray(valid, dtype=bool)
     label_array: np.ndarray = np.asarray(labels)
     water: np.ndarray = np.logical_and(valid_mask, label_array == WATER_LABEL)
@@ -222,6 +324,7 @@ def generate_derived_label(
     background: np.ndarray = np.logical_and(
         valid_mask, label_array == BACKGROUND_LABEL
     )
+    report('seed_vector', '正在生成种子区域并保存标签栅格')
     water_features, water_polygon_count = _label_features(
         water,
         spectral.transform,
@@ -230,15 +333,7 @@ def generate_derived_label(
         label_class="water",
         label_value=WATER_LABEL,
     )
-    ignore_features, ignore_polygon_count = _label_features(
-        ignore,
-        spectral.transform,
-        spectral.crs,
-        source,
-        label_class="ignore",
-        label_value=IGNORE_LABEL,
-    )
-    features = water_features + ignore_features
+    features = water_features
     valid_pixels = int(np.count_nonzero(valid_mask))
     water_pixels = int(np.count_nonzero(water))
     background_pixels = int(np.count_nonzero(background))
@@ -253,7 +348,7 @@ def generate_derived_label(
         "confident_ratio": (water_pixels + background_pixels)
         / max(valid_pixels, 1),
         "polygon_count": water_polygon_count,
-        "ignore_polygon_count": ignore_polygon_count,
+        "ignore_polygon_count": 0,
         "mean_water_score": float(water_score[valid_mask].mean())
         if valid_pixels
         else 0.0,
@@ -261,22 +356,14 @@ def generate_derived_label(
         if valid_pixels
         else 0.0,
     }
-    identity = {
-        "source": source,
-        "site_id": site.site_id,
-        "image_path": display_path(image_path),
-        "image_size": image_path.stat().st_size,
-        "image_mtime_ns": image_path.stat().st_mtime_ns,
-        "extent": extent,
-        "max_dimension": max_dimension,
-        "threshold": threshold,
-        "provider": details.get("provider"),
-        "algorithm": details.get("algorithm") or details.get("provider"),
-        "zoom": details.get("osm", {}).get("zoom"),
-    }
-    label_id = "derived_" + hashlib.sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:20]
+    source_dir.mkdir(parents=True, exist_ok=True)
+    _write_label_mask(
+        mask_path,
+        label_array.astype(np.uint8, copy=False),
+        valid_mask,
+        spectral.transform,
+        spectral.crs,
+    )
     properties = {
         "source": source,
         "label_id": label_id,
@@ -289,8 +376,16 @@ def generate_derived_label(
             "width": spectral.shape[1],
             "height": spectral.shape[0],
             "crs": str(spectral.crs),
+            "transform": [float(value) for value in tuple(spectral.transform)[:6]],
+        },
+        "raster_label": {
+            "format": "npz",
+            "path": mask_path.name,
+            "labels": [BACKGROUND_LABEL, WATER_LABEL, IGNORE_LABEL],
+            "overlay_values": [WATER_LABEL, IGNORE_LABEL],
         },
         "threshold": threshold,
+        "identity": identity,
         "details": details,
         "stats": stats,
     }
@@ -299,10 +394,10 @@ def generate_derived_label(
         "properties": properties,
         "features": features,
     }
-    source_dir = output_dir / source
-    source_dir.mkdir(parents=True, exist_ok=True)
-    path = source_dir / f"{label_id}.geojson"
-    path.write_text(json.dumps(label, ensure_ascii=False), encoding="utf-8")
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(json.dumps(label, ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary_path, path)
+    report('seed_done', f'高置信种子已生成：水体 {water_pixels} 像素、背景 {background_pixels} 像素', 1, 1)
     return {
         "label_id": label_id,
         "source": source,
@@ -310,6 +405,73 @@ def generate_derived_label(
         "stats": stats,
         "details": details,
     }
+
+
+def _load_cached_result(
+    path: Path,
+    mask_path: Path,
+    source: str,
+    site_id: str,
+) -> dict | None:
+    """Return one complete generated label without rebuilding its evidence."""
+    if not path.is_file() or not mask_path.is_file():
+        return None
+    try:
+        label = json.loads(path.read_text(encoding="utf-8"))
+        with np.load(mask_path, allow_pickle=False) as mask:
+            if not {"labels", "valid", "transform", "crs"}.issubset(mask.files):
+                return None
+        properties = label["properties"]
+        if (
+            properties.get("source") != source
+            or properties.get("site_id") != site_id
+            or properties.get("raster_label", {}).get("path") != mask_path.name
+        ):
+            return None
+        details = properties["details"]
+        missing_tiles = int(details.get("osm_missing_tile_count") or 0)
+        if (
+            missing_tiles > 0
+            and time.time() - path.stat().st_mtime
+            > INCOMPLETE_OSM_CACHE_SECONDS
+        ):
+            return None
+        response_details = {
+            **details,
+            "cache": {
+                **(details.get("cache") or {}),
+                "result": "hit",
+            },
+        }
+        return {
+            "label_id": properties["label_id"],
+            "source": source,
+            "label": label,
+            "stats": properties["stats"],
+            "details": response_details,
+        }
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _write_label_mask(
+    path: Path,
+    labels: np.ndarray,
+    valid: np.ndarray,
+    transform: Any,
+    crs: Any,
+) -> None:
+    """Atomically persist the full three-state label grid used for training."""
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    with temporary_path.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            labels=labels,
+            valid=valid.astype(np.uint8, copy=False),
+            transform=np.asarray(tuple(transform)[:6], dtype=np.float64),
+            crs=np.asarray(str(crs)),
+        )
+    os.replace(temporary_path, path)
 
 
 def _seeded_connected_mask(

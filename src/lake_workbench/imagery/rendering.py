@@ -49,8 +49,14 @@ class ImageryRenderingMixin:
             "tile_url": f"/api{tile_url_prefix}/sites/{site.site_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
 
-    def tile_png_for_site(self, site, z: int, x: int, y: int, padding: float = 0.8, tile_size: int = 256) -> tuple[bytes, dict]:
-        rows = self._tci_rows_for_site(site)
+    def tile_png_for_site(self, site, z: int, x: int, y: int, padding: float = 0.8, tile_size: int = 256, asset: str = "") -> tuple[bytes, dict]:
+        if asset:
+            # Resolve only assets belonging to this Site; do not change its active image.
+            from lake_workbench.models.comparison import _source
+            row, _ = _source(self, site, asset)
+            rows = [row]
+        else:
+            rows = self._tci_rows_for_site(site)
         bounds_3857 = xyz_tile_bounds(z, x, y)
         bounds_4326 = transform_bounds("EPSG:3857", "EPSG:4326", *bounds_3857, densify_pts=21)
         if not box(*bounds_4326).intersects(box(*rows_bounds(rows))):
