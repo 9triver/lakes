@@ -8,13 +8,20 @@ test("random selection shows map before prediction and clears mask on failure", 
   const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aTioAAAAASUVORK5CYII=", "base64");
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
+  let releaseTiles!: () => void;
+  const tilesPending = new Promise<void>((resolve) => { releaseTiles = resolve; });
+  let tileRequests = 0;
   let predictionRequests = 0;
   let oldRandomRequests = 0;
   const hunanListRequests: string[] = [];
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (!url.hostname.match(/^(127[.]0[.]0[.]1|localhost)$/)) return route.abort();
-    if (url.pathname.includes("/tiles/") || url.pathname.startsWith("/mock-tiles/")) return route.fulfill({ contentType: "image/png", body: pixel });
+    if (url.pathname.includes("/tiles/") || url.pathname.startsWith("/mock-tiles/")) {
+      tileRequests++;
+      await tilesPending;
+      return route.fulfill({ contentType: "image/png", body: pixel });
+    }
     if (!url.pathname.startsWith("/api/")) return route.continue();
     if (url.pathname === "/api/auth/session") return route.fulfill({ json: { authenticated: true, mode: "development", identity: {}, user } });
     if (url.pathname === "/api/workspaces/default") return route.fulfill({ json: { workspace } });
@@ -44,6 +51,10 @@ test("random selection shows map before prediction and clears mask on failure", 
   await page.goto("#/users/default/workspaces/default/regions/gansu/models/validate", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "单模型地图", exact: true }).click();
   await page.getByRole("button", { name: "随机验证一个区域", exact: true }).click();
+  await expect.poll(() => tileRequests).toBeGreaterThan(0);
+  await expect(page.getByText("正在优先加载本地影像瓦片，加载后自动开始推理。", { exact: true })).toBeVisible();
+  expect(predictionRequests).toBe(0);
+  releaseTiles();
   await expect.poll(() => predictionRequests).toBe(1);
   await expect(page.getByTestId("site-map")).toBeVisible();
   await expect(page.locator(".ol-viewport")).toBeVisible();
