@@ -52,10 +52,9 @@ test("random selection shows map before prediction and clears mask on failure", 
   await page.getByRole("button", { name: "单模型地图", exact: true }).click();
   await page.getByRole("button", { name: "随机验证一个区域", exact: true }).click();
   await expect.poll(() => tileRequests).toBeGreaterThan(0);
-  await expect(page.getByText("正在优先加载本地影像瓦片，加载后自动开始推理。", { exact: true })).toBeVisible();
-  expect(predictionRequests).toBe(0);
-  releaseTiles();
+  // Tile responses are still blocked: inference must start independently.
   await expect.poll(() => predictionRequests).toBe(1);
+  releaseTiles();
   await expect(page.getByTestId("site-map")).toBeVisible();
   await expect(page.locator(".ol-viewport")).toBeVisible();
   await expect(page.getByText("地图已加载，正在生成预测结果…", { exact: true })).toBeVisible();

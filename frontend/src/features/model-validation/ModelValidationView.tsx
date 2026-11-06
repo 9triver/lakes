@@ -49,7 +49,7 @@ function requiresSlope(model?: ModelOption): boolean {
   return Array.isArray(bands) ? bands.includes("slope_degrees") : model?.in_channels === 6 && Boolean(config.slope_features);
 }
 
-function ValidationWorkspace({ slopeRequired, workspaceId, result, threshold, hasPrediction = true, onPredict, predictionPending, canPredict, onTrainingDataGenerated, onImageryReady }: { onImageryReady?: () => void; slopeRequired: boolean; onPredict: () => void; predictionPending: boolean; canPredict: boolean; hasPrediction?: boolean; workspaceId: string; result: NonNullable<ReturnType<typeof useRandomModelValidation>["data"]>; threshold: number; onTrainingDataGenerated?: (region: string, sampleId: string, siteId: string) => void }) {
+function ValidationWorkspace({ slopeRequired, workspaceId, result, threshold, hasPrediction = true, onPredict, predictionPending, canPredict, onTrainingDataGenerated }: { slopeRequired: boolean; onPredict: () => void; predictionPending: boolean; canPredict: boolean; hasPrediction?: boolean; workspaceId: string; result: NonNullable<ReturnType<typeof useRandomModelValidation>["data"]>; threshold: number; onTrainingDataGenerated?: (region: string, sampleId: string, siteId: string) => void }) {
   const region = result.site?.region || result.region;
   const siteId = result.site_id;
   const [terrainRetry, setTerrainRetry] = useState(0);
@@ -177,7 +177,7 @@ function ValidationWorkspace({ slopeRequired, workspaceId, result, threshold, ha
       onFitSite={() => mapRef.current?.fitSite()}
       onFitTile={() => mapRef.current?.fitTile()}
     />
-    <SiteMap ref={mapRef} onImageryReady={onImageryReady} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={hasPrediction ? result.prediction : undefined} />
+    <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={hasPrediction ? result.prediction : undefined} />
     <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{hasPrediction ? `${site.data.display_name || siteId} · 模型 ${result.model.name} · 阈值 ${threshold.toFixed(2)} · 水体像元 ${metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · ${result.model.device || ""}` : `${site.data.display_name || siteId} · 尚未运行模型预测`}</Typography></Box>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -213,8 +213,6 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
   const [selectedModel, setSelectedModel] = useState("");
   const [threshold, setThreshold] = useState(.5);
   const [requestedIdentity, setRequestedIdentity] = useState("");
-  const [imageryReadyIdentity, setImageryReadyIdentity] = useState("");
-  const [imageryTimedOutIdentity, setImageryTimedOutIdentity] = useState("");
   const [validationRegion, setValidationRegion] = useState(routeSiteRegion || (scope === "all" ? "" : scope));
   const [siteQuery, setSiteQuery] = useState("");
   const [sitePickerOpen, setSitePickerOpen] = useState(false);
@@ -244,16 +242,8 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
   const predictionRegion = routeSiteRegion || (scope === "all" ? "" : scope);
   const predictionIdentity = `${workspaceId}:${predictionRegion}:${routeSiteId}:${selectedModel}:${threshold}`;
   const predictionRequested = requestedIdentity === predictionIdentity;
-  const imageryIdentity = `${workspaceId}:${predictionRegion}:${routeSiteId}`;
-  const handleImageryReady = useCallback(() => setImageryReadyIdentity(imageryIdentity), [imageryIdentity]);
-  const waitingForImagery = predictionRequested && imageryReadyIdentity !== imageryIdentity && imageryTimedOutIdentity !== imageryIdentity;
-  useEffect(() => {
-    if (!waitingForImagery) return;
-    const timer = window.setTimeout(() => setImageryTimedOutIdentity(imageryIdentity), 15000);
-    return () => window.clearTimeout(timer);
-  }, [waitingForImagery, imageryIdentity]);
-  const prediction = useSiteModelPrediction(workspaceId, predictionRegion, routeSiteId, selectedModel, threshold, Boolean(routeSiteId && predictionRequested && !waitingForImagery));
-  const result = predictionRequested && !waitingForImagery && prediction.isSuccess && !prediction.isFetching ? prediction.data : undefined;
+  const prediction = useSiteModelPrediction(workspaceId, predictionRegion, routeSiteId, selectedModel, threshold, Boolean(routeSiteId && predictionRequested));
+  const result = predictionRequested && prediction.isSuccess && !prediction.isFetching ? prediction.data : undefined;
   const mapResult: ModelValidationResult | undefined = result || (routeSiteId && predictionRegion ? {
     region: predictionRegion, site_id: routeSiteId, model: { key: selectedModel, name: selected?.label || "尚未运行预测" },
     prediction: { type: "FeatureCollection", features: [] }, stats: {},
@@ -282,7 +272,7 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
           noOptionsText={siteListLoading ? "正在加载" : "没有可用观测区域"}
         />
         <Box sx={{ width: 180, display: "flex", alignItems: "center", gap: 1 }}><Typography variant="caption">阈值</Typography><Slider min={.05} max={.95} step={.05} value={threshold} onChange={(_, value) => { selectionVersion.current += 1; setRequestedIdentity(""); setThreshold(value as number); }} /><Typography variant="caption">{threshold.toFixed(2)}</Typography></Box>
-        <Button variant="outlined" startIcon={<Dices size={16} />} disabled={!selectedModel || random.isPending || waitingForImagery || prediction.isFetching || models.isLoading} onClick={() => {
+        <Button variant="outlined" startIcon={<Dices size={16} />} disabled={!selectedModel || random.isPending || prediction.isFetching || models.isLoading} onClick={() => {
           const version = ++selectionVersion.current;
           setSitePickerOpen(false);
           setSiteQuery("");
@@ -295,17 +285,15 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
             setRequestedIdentity(`${workspaceId}:${region}:${value.site_id}:${selectedModel}:${threshold}`);
             onRouteResult(value.site_id, region, selectedModel);
           } });
-        }}>{random.isPending ? "正在选择区域" : waitingForImagery ? "加载五光谱影像中" : prediction.isFetching ? "推理中" : "随机验证一个区域"}</Button>
+        }}>{random.isPending ? "正在选择区域" : prediction.isFetching ? "推理中" : "随机验证一个区域"}</Button>
       </Box>
       {models.isLoading ? <LinearProgress sx={{ mt: 1 }} /> : models.isError ? <Alert severity="error" sx={{ mt: 1 }}>{models.error.message}</Alert> : <ModelDetail model={selected} />}
       {random.isError && <Alert severity="error" sx={{ mt: 1 }}>{random.error.message}</Alert>}
-      {waitingForImagery && <Alert severity="info" sx={{ mt: 1 }}>正在优先加载本地影像瓦片，加载后自动开始推理。</Alert>}
-      {imageryTimedOutIdentity === imageryIdentity && imageryReadyIdentity !== imageryIdentity && <Alert severity="warning" sx={{ mt: 1 }}>影像瓦片加载超过15秒，已继续推理；影像仍在后台加载。</Alert>}
       {prediction.isError && <Alert severity="error" sx={{ mt: 1 }}>{prediction.error.message}</Alert>}
     </Box>
     <Box sx={{ minHeight: 0, position: "relative" }}>
       {prediction.isFetching && <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 }} />}
-      {mapResult ? <ValidationWorkspace onImageryReady={handleImageryReady} slopeRequired={requiresSlope(selected)} workspaceId={workspaceId} key={`${mapResult.region}:${mapResult.site_id}`} result={mapResult} hasPrediction={Boolean(result)} threshold={threshold} predictionPending={prediction.isFetching} canPredict={Boolean(selectedModel && routeSiteId && !random.isPending)} onPredict={() => {
+      {mapResult ? <ValidationWorkspace slopeRequired={requiresSlope(selected)} workspaceId={workspaceId} key={`${mapResult.region}:${mapResult.site_id}`} result={mapResult} hasPrediction={Boolean(result)} threshold={threshold} predictionPending={prediction.isFetching} canPredict={Boolean(selectedModel && routeSiteId && !random.isPending)} onPredict={() => {
         random.reset();
         if (predictionRequested) void prediction.refetch();
         else setRequestedIdentity(predictionIdentity);

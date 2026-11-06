@@ -74,7 +74,6 @@ interface SiteMapProps {
   pendingPatchIds?: Set<string>;
   onPatchClick?: (patchId: string) => void;
   patchSourceMeta?: TileMeta;
-  onImageryReady?: () => void;
 }
 
 export interface SiteMapHandle {
@@ -91,7 +90,7 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmIntersection, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta, onImageryReady }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmIntersection, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const basemapTileLoadFunction = createBasemapTileLoadFunction();
@@ -298,38 +297,8 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
 
   useEffect(() => {
     const sourceMeta = patchReviewEnabled && patchSourceMeta ? patchSourceMeta : tileMeta;
-    const source = sourceMeta ? new XYZ({ url: `${sourceMeta.tile_url}${sourceMeta.tile_url.includes("?") ? "&" : "?"}v=${Date.now()}`, tileSize: 256, minZoom: 5, maxZoom: 16 }) : null;
-    let reported = false;
-    let frame = 0;
-    let pending = 0;
-    let loaded = 0;
-    let timer = 0;
-    const onStart = () => { pending++; window.clearTimeout(timer); };
-    const onSettled = (success: boolean) => {
-      pending = Math.max(0, pending - 1);
-      if (success) loaded++;
-      if (reported || !onImageryReady || pending || !loaded) return;
-      // Wait for the initial viewport's tile requests to settle and paint.
-      timer = window.setTimeout(() => {
-        if (pending || reported) return;
-        reported = true;
-        frame = requestAnimationFrame(() => { frame = requestAnimationFrame(onImageryReady); });
-      }, 150);
-    };
-    const onLoaded = () => onSettled(true);
-    const onError = () => onSettled(false);
-    source?.on("tileloadstart", onStart);
-    source?.on("tileloadend", onLoaded);
-    source?.on("tileloaderror", onError);
-    imageLayerRef.current.setSource(source);
-    return () => {
-      source?.un("tileloadstart", onStart);
-      source?.un("tileloadend", onLoaded);
-      source?.un("tileloaderror", onError);
-      window.clearTimeout(timer);
-      cancelAnimationFrame(frame);
-    };
-  }, [patchReviewEnabled, patchSourceMeta, tileMeta, onImageryReady]);
+    imageLayerRef.current.setSource(sourceMeta ? new XYZ({ url: `${sourceMeta.tile_url}${sourceMeta.tile_url.includes("?") ? "&" : "?"}v=${Date.now()}`, tileSize: 256, minZoom: 5, maxZoom: 16 }) : null);
+  }, [patchReviewEnabled, patchSourceMeta, tileMeta]);
 
   return (
     <Box data-testid="site-map" sx={{ position: "relative", height: "100%", minHeight: 360, bgcolor: "#101010" }}>
