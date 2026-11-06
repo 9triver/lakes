@@ -5,7 +5,7 @@ import { workspaceRegionApi } from "../workspaces/api";
 
 const sitePageSize = 200;
 
-export function useSites(workspaceId: string, region: string, query: string) {
+export function useSites(workspaceId: string, region: string, query: string, enabled = true) {
   return useInfiniteQuery({
     queryKey: ["sites", workspaceId, region, query],
     queryFn: ({ pageParam }) => {
@@ -17,7 +17,7 @@ export function useSites(workspaceId: string, region: string, query: string) {
       const loaded = pages.reduce((total, page) => total + page.items.length, 0);
       return loaded < lastPage.total ? loaded : undefined;
     },
-    enabled: Boolean(workspaceId && region),
+    enabled: enabled && Boolean(workspaceId && region),
   });
 }
 

@@ -215,13 +215,21 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
   const [requestedIdentity, setRequestedIdentity] = useState("");
   const [validationRegion, setValidationRegion] = useState(routeSiteRegion || (scope === "all" ? "" : scope));
   const [siteQuery, setSiteQuery] = useState("");
+  const [sitePickerOpen, setSitePickerOpen] = useState(false);
   const regions = useRegions();
-  const validationSites = useSites(workspaceId, validationRegion, siteQuery);
-  const siteOptions = validationSites.data?.pages.flatMap((page) => page.items) || [];
-  const selectedSite = siteOptions.find((site) => site.site_id === routeSiteId) || null;
+  const validationSites = useSites(workspaceId, validationRegion, siteQuery, sitePickerOpen);
+  const currentSite = useSite(routeSiteRegion || (scope === "all" ? "" : scope), routeSiteId, workspaceId);
+  const loadedOptions = validationSites.data?.pages.flatMap((page) => page.items) || [];
+  const selectedSite = currentSite.data?.region === validationRegion ? currentSite.data :
+    loadedOptions.find((site) => site.site_id === routeSiteId && site.region === validationRegion) || null;
+  const siteOptions = selectedSite && !loadedOptions.some((site) => site.site_id === selectedSite.site_id && site.region === selectedSite.region)
+    ? [selectedSite, ...loadedOptions] : loadedOptions;
+  const siteListLoading = sitePickerOpen && validationSites.isFetching;
   useEffect(() => {
     if (routeSiteRegion) setValidationRegion(routeSiteRegion);
-  }, [routeSiteRegion]);
+    setSitePickerOpen(false);
+    setSiteQuery("");
+  }, [routeSiteRegion, routeSiteId]);
   useEffect(() => {
     const items = models.data?.items || [];
     if (!items.some((item) => item.key === selectedModel && !item.error)) {
@@ -249,20 +257,25 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
         <FormControl sx={{ minWidth: 150 }}><InputLabel id="validation-region-label">验证区域</InputLabel><Select labelId="validation-region-label" label="验证区域" value={validationRegion} onChange={(event) => { setValidationRegion(event.target.value); setSiteQuery(""); }}>{(regions.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key}>{item.name} ({item.site_count})</MenuItem>)}</Select></FormControl>
         <Autocomplete
           sx={{ minWidth: { xs: "100%", sm: 280 }, flex: 1 }}
+          open={sitePickerOpen}
+          onOpen={() => setSitePickerOpen(true)}
+          onClose={() => setSitePickerOpen(false)}
           options={siteOptions}
           value={selectedSite}
-          loading={validationSites.isLoading}
+          loading={siteListLoading}
           getOptionLabel={(site) => site.display_name || site.site_id}
           isOptionEqualToValue={(option, value) => option.site_id === value.site_id && option.region === value.region}
           onInputChange={(_, value, reason) => { if (reason === "input") setSiteQuery(value); }}
           onChange={(_, site) => { if (site) { selectionVersion.current += 1; setRequestedIdentity(""); random.reset(); onRouteResult(site.site_id, validationRegion, selectedModel); } }}
-          renderInput={(params) => <TextField {...params} label="选择观测区域" placeholder="搜索或选择 Site" InputProps={{ ...params.InputProps, endAdornment: <>{validationSites.isLoading ? <CircularProgress color="inherit" size={16} /> : null}{params.InputProps.endAdornment}</> }} />}
+          renderInput={(params) => <TextField {...params} label="选择观测区域" placeholder="搜索或选择 Site" InputProps={{ ...params.InputProps, endAdornment: <>{siteListLoading ? <CircularProgress color="inherit" size={16} /> : null}{params.InputProps.endAdornment}</> }} />}
           disabled={!validationRegion}
-          noOptionsText={validationSites.isLoading ? "正在加载" : "没有可用观测区域"}
+          noOptionsText={siteListLoading ? "正在加载" : "没有可用观测区域"}
         />
         <Box sx={{ width: 180, display: "flex", alignItems: "center", gap: 1 }}><Typography variant="caption">阈值</Typography><Slider min={.05} max={.95} step={.05} value={threshold} onChange={(_, value) => { selectionVersion.current += 1; setRequestedIdentity(""); setThreshold(value as number); }} /><Typography variant="caption">{threshold.toFixed(2)}</Typography></Box>
         <Button variant="outlined" startIcon={<Dices size={16} />} disabled={!selectedModel || random.isPending || prediction.isFetching || models.isLoading} onClick={() => {
           const version = ++selectionVersion.current;
+          setSitePickerOpen(false);
+          setSiteQuery("");
           setRequestedIdentity("");
           random.mutate(undefined, { onSuccess: (value) => {
             if (version !== selectionVersion.current) return;

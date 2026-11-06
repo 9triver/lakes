@@ -10,6 +10,7 @@ test("random selection shows map before prediction and clears mask on failure", 
   const pending = new Promise<void>((resolve) => { release = resolve; });
   let predictionRequests = 0;
   let oldRandomRequests = 0;
+  const hunanListRequests: string[] = [];
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (!url.hostname.match(/^(127[.]0[.]0[.]1|localhost)$/)) return route.abort();
@@ -18,6 +19,10 @@ test("random selection shows map before prediction and clears mask on failure", 
     if (url.pathname === "/api/auth/session") return route.fulfill({ json: { authenticated: true, mode: "development", identity: {}, user } });
     if (url.pathname === "/api/workspaces/default") return route.fulfill({ json: { workspace } });
     if (url.pathname === "/api/regions") return route.fulfill({ json: { default: "gansu", items: [{ key: "gansu", name: "甘肃", ready: true, site_count: 1 }, { key: "hunan", name: "湖南", ready: true, site_count: 1 }] } });
+    if (url.pathname === "/api/workspaces/default/regions/hunan/sites") {
+      hunanListRequests.push(url.searchParams.get("q") || "");
+      return route.fulfill({ json: { total: 1, items: [site] } });
+    }
     if (url.pathname.endsWith("/model-validation/models")) return route.fulfill({ json: { default: model.key, items: [model] } });
     if (url.pathname.endsWith("/model-validation/random-target")) {
       expect(url.pathname).toContain("/regions/all/");
@@ -44,6 +49,14 @@ test("random selection shows map before prediction and clears mask on failure", 
   await expect(page.locator(".ol-viewport")).toBeVisible();
   await expect(page.getByText("地图已加载，正在生成预测结果…", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: "模型预测", exact: true })).toHaveCount(0);
+  expect(hunanListRequests).toEqual([]);
+  const picker = page.getByRole("combobox", { name: "选择观测区域", exact: true });
+  await expect(picker).toHaveValue(site.display_name);
+  await picker.click();
+  await expect.poll(() => hunanListRequests.length).toBeGreaterThan(0);
+  await picker.fill("地图");
+  await expect.poll(() => hunanListRequests.includes("地图")).toBe(true);
+  await picker.press("Escape");
   await page.screenshot({ path: "/tmp/lakes-map-first-pending.png", fullPage: true });
   release();
   await expect(page.getByRole("checkbox", { name: "模型预测", exact: true })).toBeChecked();
