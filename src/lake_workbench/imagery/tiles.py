@@ -15,7 +15,7 @@ from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.warp import reproject, transform_bounds
 
 from lake_workbench.geo import boxes_intersect
-from lake_workbench.imagery.display import display_band_indexes, to_display_rgb
+from lake_workbench.imagery.display import display_band_indexes, hunan_display_rgb, to_display_rgb
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.paths import PROJECT_ROOT
 
@@ -51,7 +51,7 @@ def image_cache_key(site, size: int, padding: float, tci_rows: list[dict]) -> st
     return hashlib.sha256(data).hexdigest()[:24]
 
 
-def tile_cache_key(site, z: int, x: int, y: int, padding: float, tci_rows: list[dict]) -> str:
+def tile_cache_key(site, z: int, x: int, y: int, padding: float, tci_rows: list[dict], style: str = "rgb") -> str:
     payload = {
         "render_version": 2,
         "site_id": site.site_id,
@@ -69,6 +69,7 @@ def tile_cache_key(site, z: int, x: int, y: int, padding: float, tci_rows: list[
             for row in sorted(tci_rows, key=lambda item: item["tile"])
         ],
     }
+    if style != 'rgb':payload['display_style'] = style
     data = json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
     return hashlib.sha256(data).hexdigest()[:28]
 
@@ -110,6 +111,8 @@ def render_tci_xyz_tile(
     tci_rows: list[dict],
     bounds_3857: tuple[float, float, float, float],
     tile_size: int = 256,
+    style: str = "rgb",
+    hunan_rgb: bool = False,
 ) -> bytes:
     output = np.zeros((3, tile_size, tile_size), dtype=np.uint8)
     filled = np.zeros((tile_size, tile_size), dtype=bool)
@@ -120,7 +123,7 @@ def render_tci_xyz_tile(
             raster_bounds_3857 = transform_bounds(src.crs, "EPSG:3857", *src.bounds, densify_pts=21)
             if not boxes_intersect(bounds_3857, raster_bounds_3857):
                 continue
-            indexes = display_band_indexes(src, row)
+            indexes = display_band_indexes(src, row, style)
             raw = np.zeros((3, tile_size, tile_size), dtype=np.float32)
             reproject(
                 source=rasterio.band(src, indexes),
@@ -146,7 +149,8 @@ def render_tci_xyz_tile(
                     resampling=Resampling.nearest,
                 )
             nodata = tuple(src.nodatavals[index - 1] for index in indexes)
-            data = to_display_rgb(raw)
+            use_hunan_rgb = hunan_rgb and style == "rgb" and src.count == 5 and row.get("source") in {"local_img", "local_imagery"}
+            data = hunan_display_rgb(raw) if use_hunan_rgb else to_display_rgb(raw)
         valid = valid_pixel_mask(raw, nodata, masks) & ~filled
         if np.any(valid):
             output[:, valid] = data[:, valid]

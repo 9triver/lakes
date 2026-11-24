@@ -7,6 +7,7 @@ from pathlib import Path
 from lake_workbench.models.metadata import model_sort_key, model_training_metadata
 from lake_workbench.models.experiments import checkpoint_description, experimental_models
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.models.routing import routed_models,profile_for as routing_profile_for
 from lake_workbench.utils import clean_optional, display_path
 
 
@@ -70,6 +71,7 @@ class WorkspaceModelRegistry:
                     items.append(item)
             if self.model_root.resolve() == (PROJECT_ROOT / 'data/models').resolve():
                 items.extend(experimental_models(workspace['id']))
+                items.extend(routed_models(workspace['id']))
         unique = {item["key"]: item for item in items}
         items = sorted(unique.values(), key=model_sort_key)
         default = next((item["key"] for item in items if not item.get("error")), items[0]["key"] if items else "")
@@ -92,6 +94,16 @@ class WorkspaceModelRegistry:
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError(f"invalid model key: {key}")
         parts = path.parts
+        if len(parts)==3 and parts[0]=='routing':
+            workspace_id=parts[1]
+            if workspace_id!=self.workspace_id and not self.allow_foreign:raise ValueError('无权使用其他训练工作区的模型')
+            self.workspace_store.get(workspace_id)
+            if self.model_root.resolve()!=(PROJECT_ROOT/'data/models').resolve():raise ValueError('invalid routing registry')
+            selected=next((item for item in routed_models(workspace_id) if item['key']==key),None)
+            if selected is None:raise FileNotFoundError('自动路由模型不存在')
+            resolved=PROJECT_ROOT/selected['path']
+            if routing_profile_for(resolved) is None:raise ValueError('未知自动路由配置')
+            return resolved
         if len(parts) == 4 and parts[0] == 'experiments':
             workspace_id = parts[1]
             if workspace_id != self.workspace_id and not self.allow_foreign:

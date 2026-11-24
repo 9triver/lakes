@@ -6,7 +6,7 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import box
 
 from lake_workbench.geo import padded_bounds
-from lake_workbench.imagery.display import blank_png
+from lake_workbench.imagery.display import blank_png, DISPLAY_STYLES, hunan_rgb_enabled
 from lake_workbench.imagery.mosaic import render_tci_mosaic_png
 from lake_workbench.imagery.tiles import (
     image_cache_key,
@@ -23,13 +23,16 @@ class ImageryRenderingMixin:
         render_bounds = padded_bounds(site.bbox, padding)
         tci_rows = self._tci_rows_for_site(site)
         cache_key = image_cache_key(site, size, padding, tci_rows)
+        hunan_rgb = hunan_rgb_enabled(self.region.key)
+        if hunan_rgb:
+            cache_key += "-hunan-rgb-v1"
         cache_png = self.region.image_cache_dir / f"{cache_key}.png"
         cache_meta = self.region.image_cache_dir / f"{cache_key}.json"
         if cache_png.exists() and cache_meta.exists():
             meta = json.loads(cache_meta.read_text(encoding="utf-8"))
             meta["cached"] = True
             return cache_png.read_bytes(), meta
-        png, meta = render_tci_mosaic_png(tci_rows, render_bounds, size=size)
+        png, meta = render_tci_mosaic_png(tci_rows, render_bounds, size=size, hunan_rgb=hunan_rgb)
         self.region.image_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_png.write_bytes(png)
         cache_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -49,7 +52,8 @@ class ImageryRenderingMixin:
             "tile_url": f"/api{tile_url_prefix}/sites/{site.site_id}/tiles/{{z}}/{{x}}/{{y}}.png",
         }
 
-    def tile_png_for_site(self, site, z: int, x: int, y: int, padding: float = 0.8, tile_size: int = 256, asset: str = "") -> tuple[bytes, dict]:
+    def tile_png_for_site(self, site, z: int, x: int, y: int, padding: float = 0.8, tile_size: int = 256, asset: str = "", style: str = "rgb") -> tuple[bytes, dict]:
+        if style not in DISPLAY_STYLES:raise ValueError("未知影像配色")
         if asset:
             # Resolve only assets belonging to this Site; do not change its active image.
             from lake_workbench.models.comparison import _source
@@ -61,11 +65,14 @@ class ImageryRenderingMixin:
         bounds_4326 = transform_bounds("EPSG:3857", "EPSG:4326", *bounds_3857, densify_pts=21)
         if not box(*bounds_4326).intersects(box(*rows_bounds(rows))):
             return blank_png(tile_size), {"empty": True, "bounds": list(bounds_4326)}
-        cache_key = tile_cache_key(site, z, x, y, padding, rows)
+        cache_key = tile_cache_key(site, z, x, y, padding, rows, style)
+        hunan_rgb = style == "rgb" and hunan_rgb_enabled(self.region.key)
+        if hunan_rgb:
+            cache_key += "-hunan-rgb-v1"
         cache_png = self.region.tile_cache_dir / f"{cache_key}.png"
         if cache_png.exists():
             return cache_png.read_bytes(), {"cached": True, "bounds": list(bounds_4326)}
-        payload = render_tci_xyz_tile(rows, bounds_3857, tile_size=tile_size)
+        payload = render_tci_xyz_tile(rows, bounds_3857, tile_size=tile_size, style=style, hunan_rgb=hunan_rgb)
         self.region.tile_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_png.write_bytes(payload)
         return payload, {"cached": False, "bounds": list(bounds_4326)}

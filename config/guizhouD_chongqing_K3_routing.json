@@ -1,0 +1,62 @@
+{
+  "id": "guizhouD-chongqing-k3-routing-v1",
+  "label": "贵州D＋重庆 · K3自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU",
+  "workspace_id": "default",
+  "region": "all",
+  "k": 3,
+  "input_bands": [
+    "red",
+    "green",
+    "blue",
+    "nir",
+    "slope_degrees"
+  ],
+  "normalization": {
+    "mean": [
+      881.0841674804688,
+      1070.884765625,
+      1128.881591796875,
+      2206.5166015625,
+      13.562028884887695
+    ],
+    "std": [
+      384.1988220214844,
+      279.16986083984375,
+      270.7509765625,
+      829.7327880859375,
+      11.247442245483398
+    ]
+  },
+  "components": [
+    {
+      "cluster": -1,
+      "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+      "sha256": "2a53799329c7f9c823f2cafcd43a3ba3fc5c567b87e2ebe2eb66c94a16750851"
+    },
+    {
+      "cluster": 0,
+      "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster0/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+      "sha256": "496b6f0783bf65584c93ca6eb1d78971292517ecd4d1868511f90e30e18ee673"
+    },
+    {
+      "cluster": 1,
+      "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster1/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+      "sha256": "9efbbd8361518c1c343f03166785da0ba4500dcf59f0cdcf0336833173e44ec9"
+    },
+    {
+      "cluster": 2,
+      "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster2/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+      "sha256": "89f9cc0f0616c2f6fd14302025c4e3286ccf5bd9d0867da809e1f647753b3d32"
+    }
+  ],
+  "router": {
+    "path": "outputs/guizhouD_chongqing_joint_k3_drop_k4_cluster3_20261108/rgb_nir_slope_joint_k3_retained_centers.joblib",
+    "sha256": "a4760a0c62fcf5517ed4658171613133d525ca3b5ec552ae0f9f4ad69f62491d"
+  },
+  "minimum_valid_ratio": 0.8,
+  "tile_size": 256,
+  "stride": 128,
+  "rule_version": "raw25-oldK4-C3-reject-retainedK3-perwindow-cosine-v1",
+  "fallback": "valid_ratio_below_0.8_or_originalK4_cluster3",
+  "rejected_original_cluster": 3
+}

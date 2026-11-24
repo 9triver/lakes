@@ -4,7 +4,16 @@ import type { FeatureCollection, SiteSummary, SiteDetail } from "../../api/types
 import type { TrainingDataset, TrainingEpoch } from "../training/api";
 import { workspaceRegionApi } from "../workspaces/api";
 
+export type ThresholdStrategy = "manual" | "calibrated_adaptive";
+
+export interface RoutingInfo {
+  k?: number; rule?: string; rejected_windows?: number; low_valid_windows?: number; profile_id: string; windows: number; fallback_fraction: number; overlay: string;
+  components: { cluster: number; label: string; windows: number; coverage_fraction: number; color: string }[];
+}
+
 export interface ModelOption {
+  routing_model?: boolean;
+  threshold_calibration?: { id: string; label: string };
   key: string;
   label: string;
   name?: string;
@@ -20,7 +29,7 @@ export interface ModelOption {
   architecture_label?: string;
   best_iou?: number;
   best_epoch?: number;
-  updated_at?: string;
+  updated_at?: string | number;
   error?: string;
   latest?: TrainingEpoch;
   dataset?: TrainingDataset;
@@ -40,9 +49,9 @@ export interface ModelValidationResult {
   region: string;
   site_id: string;
   site?: SiteSummary;
-  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp" | "aer_unet_adapted" | "resddsc_unetpp_adapted"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number };
+  model: { key: string; name: string; path?: string; device?: string; epoch?: number; in_channels?: number; base_channels?: number; model_type?: "unet" | "pixel_mlp" | "aer_unet_adapted" | "resddsc_unetpp_adapted"; model_options?: Record<string, unknown>; architecture_label?: string; threshold?: number; threshold_strategy?: ThresholdStrategy; threshold_selection?: { profile_id?: string; calibrated_threshold?: number } };
   prediction: FeatureCollection;
-  stats: { area_km2?: number; predicted_ratio?: number; threshold?: number };
+  stats: { routing?: RoutingInfo | null; area_km2?: number; predicted_ratio?: number; threshold?: number };
   imagery?: { tile?: string; product?: string; product_name?: string; date?: string; products?: string[]; tiles?: string[] };
   cached?: boolean;
 }
@@ -89,11 +98,11 @@ export function useRandomModelValidation(workspaceId: string, scope: string) {
   } });
 }
 
-export function useSiteModelPrediction(workspaceId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean) {
+export function useSiteModelPrediction(workspaceId: string, region: string, siteId: string, model: string, threshold: number, enabled: boolean, thresholdStrategy: ThresholdStrategy = "manual") {
   return useQuery({
-    queryKey: ["model-prediction", workspaceId, region, siteId, model, threshold],
+    queryKey: ["model-prediction", workspaceId, region, siteId, model, threshold, thresholdStrategy],
     queryFn: () => {
-      const params = new URLSearchParams({ model, threshold: String(threshold) });
+      const params = new URLSearchParams({ model, threshold: String(threshold), threshold_strategy: thresholdStrategy });
       return getJson<ModelValidationResult>(workspaceRegionApi(workspaceId, region, `/sites/${encodeURIComponent(siteId)}/model-prediction?${params}`));
     },
     enabled: enabled && Boolean(workspaceId && region && siteId && model),

@@ -1,0 +1,66 @@
+{
+  "id": "guizhou-D-adaptive-effb0-k4-routing-v1",
+  "label": "贵州D自适应标签版 · K4自动路由 · EfficientNet-B0 U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU",
+  "workspace_id": "default",
+  "region": "guizhou",
+  "k": 4,
+  "input_bands": [
+    "red",
+    "green",
+    "blue",
+    "nir",
+    "slope_degrees"
+  ],
+  "normalization": {
+    "mean": [
+      916.8106689453125,
+      1076.6182861328125,
+      1111.6468505859375,
+      2244.083740234375,
+      13.75646686553955
+    ],
+    "std": [
+      379.76080322265625,
+      264.4751281738281,
+      245.32713317871094,
+      725.91357421875,
+      11.306466102600098
+    ]
+  },
+  "components": [
+    {
+      "cluster": -1,
+      "path": "outputs/guizhou_D_calibrated_effb0_seed42_lr001_batch8_20261109/efficientnet-b0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "86eddd4f7a00e4a0448d0f375ca86ca3ba311b9d5ba2a72a80cbdab7fbb0a6c4"
+    },
+    {
+      "cluster": 0,
+      "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "ed0ddfa327fbfce927ff65f4a4a6d0f1fa1f01b829afea8b144125c893832963"
+    },
+    {
+      "cluster": 1,
+      "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster1/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "7ca5110764354d5d4579c46e08db91caaf6be8159cca22061f4d7885bcb9b402"
+    },
+    {
+      "cluster": 2,
+      "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster2/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "96067627405f46ed57dfedd3f20418fb8f030d4eb89211ddb0577e7dd8897c68"
+    },
+    {
+      "cluster": 3,
+      "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster3/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "e82e4341317b0456a2f99bde6b46650796a24bb26248e619ccb556c2ad53e685"
+    }
+  ],
+  "router": {
+    "path": "outputs/guizhou_D_train_rgb_nir_slope_k_selection_20261107/rgb_nir_slope_D_nonoverlap_k4.joblib",
+    "sha256": "aba27ed14793e53d75131c7a117bce1afe9acf2e7a29593b0e65bd158d040ecf"
+  },
+  "minimum_valid_ratio": 0.8,
+  "tile_size": 256,
+  "stride": 128,
+  "rule_version": "raw25-frozen-GuizhouD-K4-effb0-adaptive-targets-perwindow-cosine-v1",
+  "fallback": "valid_ratio_below_0.8"
+}

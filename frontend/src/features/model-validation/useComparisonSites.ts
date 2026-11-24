@@ -3,6 +3,7 @@ import { workspaceRegionApi } from "../workspaces/api";
 import { streamJson } from "./streamJson";
 
 export interface ComparisonSite {
+  region?: string;
   site_id: string; display_name: string; seed_cached: boolean; slope_cached: boolean;
   imagery_available: boolean; rank: number; cache_checked?: boolean;
 }
@@ -14,12 +15,12 @@ interface SiteEvent {
   items?: ComparisonSite[]; completed?: number; total?: number | null; message?: string;
 }
 
-export function useComparisonSites(workspaceId: string, region: string) {
+export function useComparisonSites(workspaceId: string, region: string, enabled = true) {
   const client = useQueryClient();
   const key = ["comparison-sites-readiness", workspaceId, region];
   return useQuery({
     queryKey: key,
-    enabled: Boolean(workspaceId && region), staleTime: 30000, retry: false,
+    enabled: enabled && Boolean(workspaceId && region), staleTime: 30000, retry: false,
     queryFn: async ({ signal }): Promise<SiteList> => {
       const entries = new Map<string, ComparisonSite>();
       let latest: SiteList = { items: [], total: null, checked: 0, complete: false, message: "正在读取观测区域目录" };

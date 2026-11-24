@@ -13,7 +13,7 @@ import numpy as np
 from lake_workbench.devices import resolve_device
 
 
-SUPPORTED_MODEL_TYPES = ("unet", "pixel_mlp", "aer_unet_adapted", "resddsc_unetpp_adapted")
+SUPPORTED_MODEL_TYPES = ("unet", "deeplabv3plus", "unet_aspp", "pixel_mlp", "aer_unet_adapted", "resddsc_unetpp_adapted")
 PIXEL_MLP_HIDDEN_CHANNELS = (16, 8)
 PIXEL_MLP_INFERENCE_TILE = 512
 
@@ -60,6 +60,15 @@ def model_options(model_type: str, config: dict | None = None) -> dict:
         if len(hidden) != 2 or any(value <= 0 for value in hidden):
             raise ValueError("pixel_mlp hidden_channels must contain two positive integers")
         return {"hidden_channels": hidden}
+    if model_type == "unet_aspp":
+        return {"encoder": "efficientnet-b0", "decoder_channels": [256, 128, 64, 32, 16],
+                "atrous_rates": [1, 2, 3]}
+    if model_type == "deeplabv3plus":
+        encoder = stored.get("encoder", "efficientnet-b0")
+        stride = int(stored.get("encoder_output_stride", 16))
+        if encoder not in {"efficientnet-b0", "tu-xception65"} or stride not in {8, 16}:
+            raise ValueError("Unsupported DeepLabV3+ encoder or output stride")
+        return {"encoder": encoder, "encoder_output_stride": stride}
     if stored.get("encoder"):
         encoder = str(stored["encoder"])
         if encoder not in {"tu-mobilenetv3_large_100", "efficientnet-b0"}:
@@ -74,6 +83,10 @@ def architecture_label(model_type: str, in_channels: int, options: dict) -> str:
     if model_type == "pixel_mlp":
         hidden = options["hidden_channels"]
         return " -> ".join(str(value) for value in [in_channels, *hidden, 1])
+    if model_type == "unet_aspp":
+        return "EfficientNet-B0 + ASPP + U-Net"
+    if model_type == "deeplabv3plus":
+        return f"DeepLabV3+ ({options['encoder']})"
     if options.get("encoder"):
         return f"U-Net ({options['encoder']})"
     return f"U-Net (base {options['base_channels']})"
@@ -150,7 +163,41 @@ def _build_unet(in_channels: int, options: dict):
     return UNet()
 
 
+def _build_deeplabv3plus(in_channels: int, options: dict):
+    from segmentation_models_pytorch import DeepLabV3Plus
+
+    return DeepLabV3Plus(
+        encoder_name=options["encoder"], encoder_weights=None,
+        encoder_output_stride=options["encoder_output_stride"],
+        in_channels=in_channels, classes=1,
+    )
+
+
+def _build_unet_aspp(in_channels: int, options: dict):
+    from segmentation_models_pytorch import Unet
+    from segmentation_models_pytorch.decoders.deeplabv3.decoder import ASPP
+
+    class UnetWithASPP(Unet):
+        def __init__(self):
+            super().__init__(encoder_name=options["encoder"], encoder_weights=None,
+                             in_channels=in_channels, classes=1,
+                             decoder_channels=tuple(options["decoder_channels"]))
+            channels = self.encoder.out_channels[-1]
+            self.aspp = ASPP(channels, channels, options["atrous_rates"],
+                             separable=True, dropout=0.1)
+
+        def forward(self, x):
+            self.check_input_shape(x)
+            features = list(self.encoder(x))
+            features[-1] = self.aspp(features[-1])
+            return self.segmentation_head(self.decoder(features))
+
+    return UnetWithASPP()
+
+
 MODEL_BUILDERS = {
+    "unet_aspp": _build_unet_aspp,
+    "deeplabv3plus": _build_deeplabv3plus,
     "unet": _build_unet,
     "pixel_mlp": _build_pixel_mlp,
 }
@@ -195,6 +242,8 @@ def load_model_checkpoint(path: Path, device: str = "auto") -> LoadedWaterModel:
     init_torch()
     path = path.resolve()
     resolved_device = resolve_device(device, torch)
+    from lake_workbench.models.routing import profile_for,load_routed_model
+    if profile_for(path) is not None:return load_routed_model(path,resolved_device)
     stat = path.stat()
     cache_key = (path, str(resolved_device), stat.st_mtime_ns, stat.st_size)
     with _MODEL_CACHE_LOCK:
@@ -205,6 +254,12 @@ def load_model_checkpoint(path: Path, device: str = "auto") -> LoadedWaterModel:
     # Load weights on CPU first so checkpoints remain portable across CUDA, MPS, and CPU hosts.
     checkpoint = torch.load(path, map_location="cpu")
     config = checkpoint.get("config") or {}
+    if config.get("input_normalization") == (
+        "Per tile RGB/NIR Z-score over valid pixels; slope fixed; invalid optical zero; std floor 1 DN"
+    ):
+        config = {**config, "normalization_mode": "patch_zscore",
+                  "dynamic_channels": [0, 1, 2, 3], "zscore_training_recipe": True}
+
     normalization = checkpoint.get("normalization") or config.get("normalization") or {}
     in_channels = int(config.get("in_channels") or len(normalization.get("mean") or []))
     if in_channels <= 0:
@@ -242,6 +297,9 @@ def load_model_checkpoint(path: Path, device: str = "auto") -> LoadedWaterModel:
 
 def predict_array(model: LoadedWaterModel, image: np.ndarray, valid: np.ndarray | None = None) -> np.ndarray:
     init_torch()
+    if model.config.get("routing_profile") or model.config.get("normalization_mode") == "patch_zscore":
+        from lake_workbench.models.comparison import predict_tiled
+        return predict_tiled(model,image,np.ones(image.shape[1:],bool) if valid is None else valid)
     if image.ndim != 3:
         raise ValueError("image must have shape (bands, height, width)")
     if image.shape[0] < model.in_channels:

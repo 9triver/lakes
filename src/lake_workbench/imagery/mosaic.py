@@ -14,7 +14,7 @@ from rasterio.merge import merge
 from rasterio.windows import from_bounds
 from rasterio.warp import transform_bounds
 
-from lake_workbench.imagery.display import display_band_indexes, to_display_rgb
+from lake_workbench.imagery.display import display_band_indexes, hunan_display_rgb, to_display_rgb
 from lake_workbench.imagery.tiles import mosaic_source_meta
 from lake_workbench.imagery.validity import valid_pixel_mask
 
@@ -23,6 +23,7 @@ def render_tci_mosaic_png(
     tci_rows: list[dict],
     bounds_wgs84: tuple[float, float, float, float],
     size: int,
+    hunan_rgb: bool = False,
 ) -> tuple[bytes, dict]:
     ordered_rows = sorted(tci_rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
     srcs = []
@@ -32,6 +33,7 @@ def render_tci_mosaic_png(
             src = rasterio.open(row["tci_path"])
             srcs.append(src)
             crs_values.add(str(src.crs))
+        use_hunan_rgb = hunan_rgb and all(src.count == 5 and row.get("source") in {"local_img", "local_imagery"} for src, row in zip(srcs, ordered_rows))
         if len(crs_values) != 1:
             png, meta = render_tci_png(
                 ordered_rows[0]["tci_path"],
@@ -39,6 +41,7 @@ def render_tci_mosaic_png(
                 size=size,
                 padding=0,
                 row=ordered_rows[0],
+                hunan_rgb=use_hunan_rgb,
             )
             meta.update(mosaic_fallback_meta(ordered_rows))
             return png, meta
@@ -76,7 +79,7 @@ def render_tci_mosaic_png(
             src.close()
 
     buffer = io.BytesIO()
-    image = Image.fromarray(np.moveaxis(to_display_rgb(mosaic), 0, -1), "RGB")
+    image = Image.fromarray(np.moveaxis((hunan_display_rgb(mosaic) if use_hunan_rgb else to_display_rgb(mosaic)), 0, -1), "RGB")
     image.save(buffer, format="PNG", optimize=True)
     height, width = mosaic.shape[1], mosaic.shape[2]
     left = out_transform.c
@@ -128,6 +131,7 @@ def render_tci_png(
     size: int,
     padding: float,
     row: dict | None = None,
+    hunan_rgb: bool = False,
 ) -> tuple[bytes, dict]:
     with rasterio.open(tci_path) as src:
         transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
@@ -175,7 +179,7 @@ def render_tci_png(
         nodata = tuple(src.nodatavals[index - 1] for index in indexes)
         valid = valid_pixel_mask(data, nodata, masks)
         data = np.where(valid[None, :, :], data, 0)
-        image = Image.fromarray(np.moveaxis(to_display_rgb(data), 0, -1), "RGB")
+        image = Image.fromarray(np.moveaxis((hunan_display_rgb(data) if hunan_rgb else to_display_rgb(data)), 0, -1), "RGB")
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         inverse = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)

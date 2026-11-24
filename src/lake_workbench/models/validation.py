@@ -16,6 +16,7 @@ from lake_workbench.geo import padded_bounds
 from lake_workbench.imagery.mosaic import mosaic_source_meta
 from lake_workbench.imagery.prediction import predict_water_geojson
 from lake_workbench.paths import PROJECT_ROOT
+from lake_workbench.models.thresholds import strategy_identity
 from lake_workbench.models.features import feature_names, OPTICAL
 from lake_workbench.utils import display_path, safe_filename
 
@@ -32,10 +33,11 @@ class ModelValidationMixin:
 
     def model_validation_random(
         self, threshold: float = 0.5, model: Any = None,
-        *, candidates: Iterable[Any] | None = None,
+        *, candidates: Iterable[Any] | None = None, threshold_strategy: str = "manual",
     ) -> dict:
         if model is None:
             raise ValueError("A loaded workspace model is required")
+        if threshold_strategy!="manual":strategy_identity(model.path,threshold_strategy)
         if candidates is None:
             candidates = list(self.sites)
             random.shuffle(candidates)
@@ -45,7 +47,7 @@ class ModelValidationMixin:
             if not rows:
                 continue
             try:
-                prediction = self.model_prediction_for_site(site, threshold=threshold, rows=rows, model=model)
+                prediction = self.model_prediction_for_site(site, threshold=threshold, rows=rows, model=model, **({"threshold_strategy":threshold_strategy} if threshold_strategy!="manual" else {}))
             except ModelInferenceBusy:
                 raise
             except Exception as exc:  # noqa: BLE001 - keep looking for a usable validation target.
@@ -72,9 +74,11 @@ class ModelValidationMixin:
         threshold: float = 0.5,
         rows: list[dict] | None = None,
         model: Any = None,
+        threshold_strategy: str = "manual",
     ) -> dict:
         if model is None:
             raise ValueError("A loaded workspace model is required")
+        strategy_identity(model.path,threshold_strategy)
         # Input channels can include reordered optical bands and derived slope.
         feature_names(model.config,model.in_channels)
         rows = rows or self._model_validation_rows(site, len(OPTICAL))
@@ -82,7 +86,7 @@ class ModelValidationMixin:
             raise FileNotFoundError(f"No active imagery matching model bands for site {site.site_id}")
         rows = sorted(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0), reverse=True)
         prediction_bounds = padded_bounds(site.bbox, 0.8)
-        cache_path = self._model_prediction_cache_path(site, model.path, rows, threshold, prediction_bounds)
+        cache_path = self._model_prediction_cache_path(site, model.path, rows, threshold, prediction_bounds, threshold_strategy)
         if cache_path.exists():
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
             payload["cached"] = True
@@ -90,7 +94,7 @@ class ModelValidationMixin:
 
         row = rows[0]
         prediction, stats = predict_water_geojson(
-            row["tci_path"], model, threshold=threshold, bounds=prediction_bounds
+            row["tci_path"], model, threshold=threshold, bounds=prediction_bounds, **({"threshold_strategy":threshold_strategy} if threshold_strategy!="manual" else {})
         )
         payload = {
             "region": self.region.key,
@@ -107,7 +111,9 @@ class ModelValidationMixin:
                 "model_type": model.model_type,
                 "model_options": model.model_options,
                 "architecture_label": model.architecture_label,
-                "threshold": threshold,
+                "threshold": stats.get("threshold",threshold),
+                "threshold_strategy": threshold_strategy,
+                "threshold_selection": stats.get("threshold_selection"),
             },
             "imagery": {
                 **mosaic_source_meta([row]),
@@ -147,6 +153,7 @@ class ModelValidationMixin:
         rows: list[dict],
         threshold: float,
         prediction_bounds: tuple[float, float, float, float],
+        threshold_strategy: str = "manual",
     ) -> Path:
         payload = {
             "feature_pipeline": "optical5-explicit-features-metric30m-slope-v1",
@@ -165,6 +172,15 @@ class ModelValidationMixin:
                 for row in rows
             ],
         }
+        from lake_workbench.models.routing import dependencies
+        routing_dependencies=dependencies(model_path)
+        if routing_dependencies:
+            payload["routing_dependencies"]=routing_dependencies
+            payload["feature_pipeline"]="routed-native256-overlap128-v1"
+        if threshold_strategy!="manual":
+            payload["threshold"]=None
+            payload["threshold_strategy"]=strategy_identity(model_path,threshold_strategy)
+            payload["feature_pipeline"]="native256-overlap128-calibrated-v1"
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
         return self._model_validation_cache_dir(model_path) / f"{safe_filename(site.site_id)}_{digest}.geojson"
 

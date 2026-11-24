@@ -1,0 +1,61 @@
+{
+  "id": "chongqing-only-k3-routing-v1",
+  "label": "重庆单独 · K3自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU",
+  "workspace_id": "default",
+  "region": "chongqing",
+  "k": 3,
+  "input_bands": [
+    "red",
+    "green",
+    "blue",
+    "nir",
+    "slope_degrees"
+  ],
+  "normalization": {
+    "mean": [
+      823.5955810546875,
+      1061.6588134765625,
+      1156.6143798828125,
+      2146.066162109375,
+      13.249154090881348
+    ],
+    "std": [
+      384.3249206542969,
+      301.08587646484375,
+      305.24072265625,
+      970.7808837890625,
+      11.14469051361084
+    ]
+  },
+  "components": [
+    {
+      "cluster": -1,
+      "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+      "sha256": "d4fe630a142f2b9da2adf820ac212a767d737041996fc36de24d3da20f7d7e35"
+    },
+    {
+      "cluster": 0,
+      "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster0/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+      "sha256": "68bb49a1c44a055d6139fff25e0524b605a60e9d4d066e343c709e4e321359bd"
+    },
+    {
+      "cluster": 1,
+      "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster1/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+      "sha256": "755a3ebd1e60b54cffeecd40f06346baa93f8ebad076ce193c910ff7cefb1eca"
+    },
+    {
+      "cluster": 2,
+      "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster2/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+      "sha256": "3e527e1a4c8423c2064b9d693bd49275980fea535112a59c6a8b703d3cddc8df"
+    }
+  ],
+  "router": {
+    "path": "outputs/chongqing_retained_joint_train_only_kmeans_20261108/chongqing_retained_train_rgb_nir_slope_k3.joblib",
+    "sha256": "2989e073156200ed0e4be80bedea21b6f35599950120b35e37cc64b769bbdcce"
+  },
+  "minimum_valid_ratio": 0.8,
+  "tile_size": 256,
+  "stride": 128,
+  "rule_version": "raw25-chongqing-only-refitK3-perwindow-cosine-v1",
+  "fallback": "valid_ratio_below_0.8"
+}

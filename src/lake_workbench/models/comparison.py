@@ -16,14 +16,16 @@ import pyogrio
 import rasterio
 from PIL import Image
 from rasterio.features import rasterize
-from rasterio.warp import reproject, Resampling, transform_bounds
+from rasterio.warp import calculate_default_transform, reproject, Resampling, transform_bounds
 from rasterio.transform import array_bounds
 from affine import Affine
 from shapely.geometry import mapping
 
 from lake_workbench.imagery.validity import valid_pixel_mask
+from lake_workbench.imagery.display import DISPLAY_STYLES, hunan_display_rgb, hunan_rgb_enabled
 from lake_workbench.models.features import aligned_slope, assemble_features, feature_names
 from lake_workbench.models.runtime import load_model_checkpoint
+from lake_workbench.models.thresholds import select_threshold, strategy_identity, calibration_profile
 from lake_workbench.paths import PROJECT_ROOT
 
 ENGINE_VERSION='native256-overlap128-cosine-v1'
@@ -63,12 +65,15 @@ def png_url(array: np.ndarray, limit: int=768, *, nearest: bool=False) -> str:
     return 'data:image/png;base64,'+base64.b64encode(stream.getvalue()).decode()
 
 
-def rgb_preview(image: np.ndarray, valid: np.ndarray, *, transparent: bool=False) -> str:
+def rgb_preview(image: np.ndarray, valid: np.ndarray, *, transparent: bool=False, style: str='rgb', hunan_rgb: bool=False) -> str:
+    if style not in DISPLAY_STYLES:raise ValueError('未知影像配色')
     rgb=np.zeros((*valid.shape,3),dtype='uint8')
-    for channel,index in enumerate([2,1,0]):
+    for channel,index in enumerate(DISPLAY_STYLES[style]):
         values=image[index,valid]
         low,high=np.percentile(values,[2,98]) if values.size else (0,1)
         rgb[:,:,channel]=(np.clip((image[index]-low)/max(high-low,1),0,1)*255).astype('uint8')
+    if hunan_rgb and style == "rgb":
+        rgb = np.moveaxis(hunan_display_rgb(image[DISPLAY_STYLES["rgb"]]), 0, -1)
     rgb[~valid]=[24,30,38]
     if transparent:
         rgba=np.dstack((rgb,np.where(valid,255,0).astype('uint8')))
@@ -119,7 +124,12 @@ def _starts(size:int,tile:int,stride:int) -> list[int]:
     return positions
 
 
-def predict_tiled(model, image: np.ndarray, valid: np.ndarray, batch_size:int=4) -> np.ndarray:
+def predict_tiled(model, image: np.ndarray, valid: np.ndarray, batch_size:int=4, *, return_routing:bool=False, calibrated_routing:bool=False):
+    config = getattr(model, "config", {})
+    if config.get("routing_profile"):
+        from lake_workbench.models.routing import predict_routed_tiled
+        probability,routing=predict_routed_tiled(model,image,valid,batch_size,calibrated=calibrated_routing)
+        return (probability,routing) if return_routing else probability
     import torch
     height,width=valid.shape
     tile=256;stride=128
@@ -142,12 +152,35 @@ def predict_tiled(model, image: np.ndarray, valid: np.ndarray, batch_size:int=4)
             if not valid[y:y+h,x:x+w].any():continue
             patch=np.zeros((image.shape[0],tile,tile),dtype='float32')
             patch[:,:h,:w]=image[:,y:y+h,x:x+w]
-            patch=(patch-model.mean[:,None,None])/model.std[:,None,None]
+            if config.get("zscore_training_recipe"):
+                patch_valid = np.zeros((tile, tile), dtype=bool)
+                patch_valid[:h, :w] = valid[y:y+h, x:x+w]
+                values = patch[:4, patch_valid]
+                normalized = (patch - model.mean[:, None, None]) / model.std[:, None, None]
+                normalized[:4] = 0
+                normalized[:4, patch_valid] = (
+                    (values - values.mean(axis=1, keepdims=True))
+                    / np.maximum(values.std(axis=1, keepdims=True), 1)
+                )
+                patch = normalized
+            elif config.get("normalization_mode") == "patch_zscore":
+                channels = config["dynamic_channels"]
+                window_valid = valid[y:y+h, x:x+w]
+                values = patch[:, :h, :w][:, window_valid].astype(np.float64)
+                mean = model.mean.astype(np.float64)
+                std = model.std.astype(np.float64)
+                mean[channels] = values[channels].mean(axis=1)
+                std[channels] = np.maximum(values[channels].std(axis=1), 1e-6)
+                patch.fill(0)
+                patch[:, :h, :w][:, window_valid] = (values - mean[:, None]) / std[:, None]
+            else:
+                patch=(patch-model.mean[:,None,None])/model.std[:,None,None]
             patches.append(np.ascontiguousarray(patch));locations.append((y,x,h,w))
             if len(patches)==batch_size:flush()
     flush()
     if np.any(valid & (weights<=0)):raise ValueError('推理拼接遗漏有效像素')
-    return np.divide(total,weights,out=np.zeros_like(total),where=weights>0)
+    probability=np.divide(total,weights,out=np.zeros_like(total),where=weights>0)
+    return (probability,None) if return_routing else probability
 
 
 def _assets(catalog,site) -> list[dict]:
@@ -173,7 +206,8 @@ def _label_path(image_path:Path) -> Path | None:
 
 
 def _signature(path:Path) -> list:
-    return [str(path.resolve()),path.stat().st_mtime_ns,path.stat().st_size]
+    from lake_workbench.models.routing import dependencies
+    return [str(path.resolve()),path.stat().st_mtime_ns,path.stat().st_size,*dependencies(path)]
 
 
 @lru_cache(maxsize=2)
@@ -216,6 +250,12 @@ def _grid(catalog,site,asset:str='',reference:str=SEED_REFERENCE):
     return row,rows,path,image,valid,truth,transform,crs,label,context_id
 
 
+def comparison_preview(catalog,site,asset:str='',style:str='rgb') -> bytes:
+    if style not in DISPLAY_STYLES:raise ValueError('未知影像配色')
+    _,_,_,image,valid,*_=_grid(catalog,site,asset,'none')
+    return base64.b64decode(rgb_preview(image,valid,transparent=True,style=style,hunan_rgb=hunan_rgb_enabled(catalog.region.key)).split(',',1)[1])
+
+
 def comparison_context(catalog,site,asset:str='',reference:str=SEED_REFERENCE) -> dict:
     row,rows,path,image,valid,truth,transform,crs,label,identity=_grid(catalog,site,asset,reference)
     description='没有匹配的参考标签，仅展示预测统计，不计算IoU。'
@@ -237,18 +277,20 @@ def comparison_context(catalog,site,asset:str='',reference:str=SEED_REFERENCE) -
         valid_pixels=int(valid.sum()),reference=dict(available=truth is not None,name=label.name if label else '',
             kind=reference if reference==SEED_REFERENCE else 'local_vector_unverified' if label else 'none',
             description=description,**counts),
-        preview=rgb_preview(image,valid,transparent=True),reference_overlay=reference_overlay,
+        preview=rgb_preview(image,valid,transparent=True,hunan_rgb=hunan_rgb_enabled(catalog.region.key)),reference_overlay=reference_overlay,
         reference_mask=reference_mask_preview(truth,valid,transparent=True) if truth is not None else None,
         ignored_overlay=ignored_mask_preview(truth,valid) if truth is not None else None,
         inference=dict(tile_size=256,stride=128,blending='tapered cosine',counting='native grid, each valid pixel scored once'))
 
 
-def _cache_path(region: str, site_id: str, identity: str, model_path: Path, threshold: float) -> Path:
-    key=hashlib.sha256(json.dumps([ENGINE_VERSION,identity,_signature(model_path),threshold]).encode()).hexdigest()
+def _cache_path(region: str, site_id: str, identity: str, model_path: Path, threshold: float, threshold_strategy: str='manual') -> Path:
+    identity_parts=[ENGINE_VERSION,identity,_signature(model_path),threshold]
+    if threshold_strategy!='manual':identity_parts=[ENGINE_VERSION,identity,_signature(model_path),strategy_identity(model_path,threshold_strategy)]
+    key=hashlib.sha256(json.dumps(identity_parts).encode()).hexdigest()
     return PROJECT_ROOT/'data/model_comparisons'/region/site_id/f'{key}.json'
 
 
-def iter_saved_comparisons(catalog,site,models,asset='',reference=SEED_REFERENCE,threshold=.5):
+def iter_saved_comparisons(catalog,site,models,asset='',reference=SEED_REFERENCE,threshold=.5,threshold_strategy="manual"):
     """Read current cached results incrementally without inference or model loading."""
     if not math.isfinite(threshold) or not 0<threshold<1:
         raise ValueError('阈值必须在0和1之间')
@@ -256,8 +298,8 @@ def iter_saved_comparisons(catalog,site,models,asset='',reference=SEED_REFERENCE
     total=len(models);loaded=0
     yield dict(type='context',context_id=identity,total=total,completed=0,loaded=0)
     for completed,(model_key,model_path) in enumerate(models,1):
-        if model_path.exists():
-            cache=_cache_path(catalog.region.key,site.site_id,identity,model_path,threshold)
+        if model_path.exists() and (threshold_strategy != 'calibrated_adaptive' or calibration_profile(model_path) is not None):
+            cache=_cache_path(catalog.region.key,site.site_id,identity,model_path,threshold,threshold_strategy)
             if cache.exists():
                 result=json.loads(cache.read_text())
                 result['cached']=True;result['model']['key']=model_key
@@ -270,29 +312,48 @@ def iter_saved_comparisons(catalog,site,models,asset='',reference=SEED_REFERENCE
     yield dict(type='complete',context_id=identity,completed=total,total=total,loaded=loaded)
 
 
-def saved_comparisons(catalog,site,models: list[tuple[str,Path]],asset:str='',reference:str=SEED_REFERENCE,threshold:float=.5) -> dict:
+def saved_comparisons(catalog,site,models: list[tuple[str,Path]],asset:str='',reference:str=SEED_REFERENCE,threshold:float=.5,threshold_strategy:str="manual") -> dict:
     results=[];identity=''
-    for event in iter_saved_comparisons(catalog,site,models,asset,reference,threshold):
+    for event in iter_saved_comparisons(catalog,site,models,asset,reference,threshold,threshold_strategy):
         identity=event.get('context_id',identity)
         if event['type']=='result':results.append(event['item'])
     return dict(context_id=identity,items=results)
 
 
-def compare_one(catalog,site,model_path:Path,model_key:str,asset:str='',reference:str=SEED_REFERENCE,threshold:float=.5) -> dict:
+def compare_one(catalog,site,model_path:Path,model_key:str,asset:str='',reference:str=SEED_REFERENCE,threshold:float=.5,threshold_strategy:str='manual') -> dict:
+    strategy_identity(model_path,threshold_strategy)
     threshold=float(threshold)
     if not math.isfinite(threshold) or not 0<threshold<1:raise ValueError('阈值必须在0和1之间')
     row,_,path,image,valid,truth,transform,crs,label,identity=_grid(catalog,site,asset,reference)
-    cache=_cache_path(catalog.region.key,site.site_id,identity,model_path,threshold)
+    cache=_cache_path(catalog.region.key,site.site_id,identity,model_path,threshold,threshold_strategy)
     if cache.exists():
         result=json.loads(cache.read_text());result['cached']=True;result['model']['key']=model_key
-        return result
+        if reference != 'none' or 'map_overlay' in result:
+            return result
     start=time.monotonic()
     model=load_model_checkpoint(model_path)
     names=feature_names(model.config,model.in_channels)
     slope,terrain=(None,None)
     if 'slope_degrees' in names:slope,terrain=aligned_slope(path,valid)
     features=assemble_features(image,names,slope)
-    probability=predict_tiled(model,features,valid)
+    from lake_workbench.models.routing import profile_for
+    route_profile=profile_for(model_path)
+    calibrated_routing=bool(threshold_strategy=='calibrated_adaptive' and route_profile and route_profile.get('per_route_calibration'))
+    # Calibrated route probabilities require their own cache; raw manual inference stays unchanged.
+    probability_identity=[ENGINE_VERSION,identity,_signature(model_path),'probability']
+    if calibrated_routing:probability_identity.append('per_route_calibrated')
+    probability_key=hashlib.sha256(json.dumps(probability_identity).encode()).hexdigest()
+    probability_file=PROJECT_ROOT/'data/model_comparison_probabilities'/catalog.region.key/site.site_id/f'{probability_key}.npz'
+    if probability_file.exists():
+        with np.load(probability_file,allow_pickle=False) as data:
+            probability=data['probability'];routing=json.loads(str(data['routing'].item())) if 'routing' in data else None
+        if probability.shape!=valid.shape or not np.isfinite(probability[valid]).all():raise ValueError('概率缓存无效')
+    else:
+        probability,routing=predict_tiled(model,features,valid,return_routing=True,calibrated_routing=calibrated_routing)
+        probability_file.parent.mkdir(parents=True,exist_ok=True)
+        temporary=probability_file.with_suffix('.tmp.npz');np.savez_compressed(temporary,probability=probability,routing=np.asarray(json.dumps(routing)));temporary.replace(probability_file)
+    threshold_info=select_threshold(probability,valid,model_path,threshold,threshold_strategy)
+    threshold=threshold_info['threshold']
     prediction=(probability>=threshold)&valid
     metrics=scored_metrics(prediction,truth,valid) if truth is not None else None
     errors=None
@@ -308,12 +369,29 @@ def compare_one(catalog,site,model_path:Path,model_key:str,asset:str='',referenc
     else:pixel_area=abs(transform.a*transform.e-transform.b*transform.d)
     result=dict(context_id=identity,site_id=site.site_id,region=catalog.region.key,cached=False,
         model=dict(key=model_key,name=model_path.parent.name,epoch=model.epoch,architecture=model.architecture_label,
-                   input_bands=names,threshold=threshold),
-        metrics=metrics,terrain=terrain,reference_kind=reference if reference==SEED_REFERENCE else 'local_vector_unverified' if truth is not None else 'none',
+                   input_bands=names,threshold=threshold,threshold_strategy=threshold_strategy,threshold_selection=threshold_info),
+        metrics=metrics,terrain=terrain,routing=routing,reference_kind=reference if reference==SEED_REFERENCE else 'local_vector_unverified' if truth is not None else 'none',
         stats=dict(valid_pixels=int(valid.sum()),predicted_pixels=int(prediction.sum()),predicted_ratio=float(prediction.sum()/valid.sum()),
                    area_km2=float(prediction.sum()*pixel_area/1e6) if pixel_area is not None else None,
                    mean_probability=float(probability[valid].mean()),seconds=time.monotonic()-start),
         prediction_overlay=overlay(prediction,(46,153,255,180)),error_overlay=errors)
+    if reference == 'none':
+        height, width = prediction.shape
+        map_transform, cols, rows = calculate_default_transform(
+            crs, 'EPSG:3857', width, height, *array_bounds(height, width, transform),
+        )
+        scale = min(1, 768 / max(cols, rows))
+        map_cols, map_rows = max(1, round(cols * scale)), max(1, round(rows * scale))
+        map_transform *= Affine.scale(cols / map_cols, rows / map_rows)
+        projected = np.zeros((map_rows, map_cols), dtype=np.uint8)
+        reproject(
+            prediction.astype(np.uint8), projected,
+            src_transform=transform, src_crs=crs,
+            dst_transform=map_transform, dst_crs='EPSG:3857',
+            resampling=Resampling.nearest,
+        )
+        result['map_overlay'] = overlay(projected.astype(bool), (46, 153, 255, 255))
+        result['overlay_extent'] = list(array_bounds(map_rows, map_cols, map_transform))
     cache.parent.mkdir(parents=True,exist_ok=True)
     temporary=cache.with_suffix('.tmp');temporary.write_text(json.dumps(result,ensure_ascii=False));temporary.replace(cache)
     return result

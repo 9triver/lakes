@@ -90,6 +90,7 @@ def handle_site_get(handler, path: str, query_string: str) -> bool:
                         y=int(match.group(4)),
                         padding=float(params.get("padding", ["0.8"])[0]),
                         asset=params.get("asset", [""])[0],
+                        style=params.get("style", ["rgb"])[0],
                     )
             except ValueError as exc:
                 handler._error(HTTPStatus.BAD_REQUEST, str(exc))

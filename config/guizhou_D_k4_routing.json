@@ -1,0 +1,65 @@
+{
+  "id": "guizhou-D-k4-routing-v1",
+  "label": "贵州D · K4自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU",
+  "workspace_id": "default",
+  "input_bands": [
+    "red",
+    "green",
+    "blue",
+    "nir",
+    "slope_degrees"
+  ],
+  "normalization": {
+    "mean": [
+      914.2150268554688,
+      1074.821533203125,
+      1109.920654296875,
+      2246.24072265625,
+      13.849020004272461
+    ],
+    "std": [
+      378.4272766113281,
+      263.4925231933594,
+      244.27903747558594,
+      725.5699462890625,
+      11.327409744262695
+    ]
+  },
+  "components": [
+    {
+      "cluster": -1,
+      "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/global_control/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "2872daa04e73273214c1b840e584d2f1accaedd1f3d2b24cc1421a187dc0c1b5"
+    },
+    {
+      "cluster": 0,
+      "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "3a40a0955a5c71a5ae51bc433248d8b34a6599f5494eca08d045b828be4e0cbd"
+    },
+    {
+      "cluster": 1,
+      "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster1/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "76bfb325ca8ddb2ca675c3f9ff7bf2469e3e2a6e6ec2f54aa9cd9dbd8c8370f6"
+    },
+    {
+      "cluster": 2,
+      "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster2/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "953cf738a823ba32886b45e6eda7d48ce5c6e9c3654072acfbf47ce3b7439078"
+    },
+    {
+      "cluster": 3,
+      "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster3/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "sha256": "f2378174e92fd616febcf9567b6f7438bf26ac8d18b77a366fb62e1e046682d4"
+    }
+  ],
+  "router": {
+    "path": "outputs/guizhou_D_train_rgb_nir_slope_k_selection_20261107/rgb_nir_slope_D_nonoverlap_k4.joblib",
+    "sha256": "aba27ed14793e53d75131c7a117bce1afe9acf2e7a29593b0e65bd158d040ecf"
+  },
+  "minimum_valid_ratio": 0.8,
+  "tile_size": 256,
+  "stride": 128,
+  "rule_version": "raw25-nearest-center-perwindow-cosine-v1",
+  "fallback": "valid_ratio_below_0.8",
+  "calibrated_threshold_supported": false
+}

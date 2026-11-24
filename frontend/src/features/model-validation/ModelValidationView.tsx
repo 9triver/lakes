@@ -13,8 +13,9 @@ import { useSentinelTiles } from "../imagery/api";
 import { DEFAULT_SITE_LAYER_VISIBILITY, SiteMap, type BasemapType, type SiteLayerVisibility, type SiteMapHandle } from "../map/SiteMap";
 import { SiteMapToolbar } from "../map/SiteMapToolbar";
 import { TrainingCaptureButton, TrainingCaptureStatus, useTrainingCapture } from "../training-samples/TrainingCapture";
-import { type ModelValidationResult, type ModelOption, useSiteModelPrediction, useRandomModelValidation, useRandomModelValidationTarget, useValidationModels } from "./api";
+import { type ModelValidationResult, type ModelOption, type ThresholdStrategy, useSiteModelPrediction, useRandomModelValidation, useRandomModelValidationTarget, useValidationModels } from "./api";
 import type { GeneratedLabelResults } from "../../api/types";
+import { RoutingSummary } from "./RoutingSummary";
 import { GeneratedLabelStatus, useGeneratedLabel } from "../automatic-labels/GeneratedLabel";
 
 function metric(value?: number, digits = 4) { return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "-"; }
@@ -154,7 +155,7 @@ function ValidationWorkspace({ slopeRequired, workspaceId, result, threshold, ha
     </Box>}
     <SiteMapToolbar
       title={site.data.display_name || siteId}
-      subtitle={predictionPending ? "地图已加载，正在生成预测结果…" : hasPrediction ? `模型 ${result.model.name} · 阈值 ${threshold.toFixed(2)} · 水体像元 ${metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}%` : "地图已加载，点击“模型预测”后生成预测结果"}
+      subtitle={predictionPending ? "地图已加载，正在生成预测结果…" : hasPrediction ? `模型 ${result.model.name} · 阈值 ${threshold.toFixed(4)} · 水体像元 ${metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}%` : "地图已加载，点击“模型预测”后生成预测结果"}
       imageryControl={<ImageryPanel region={region} siteId={siteId} compact onSelectionChange={handleImagery} />}
       predictionAction={<Button variant="contained" disabled={!canPredict || predictionPending || !terrainReady} onClick={onPredict}>{predictionPending ? "预测中" : !terrainReady ? "坡度未就绪" : "模型预测"}</Button>}
       basemap={basemap}
@@ -179,7 +180,7 @@ function ValidationWorkspace({ slopeRequired, workspaceId, result, threshold, ha
     />
     <SiteMap ref={mapRef} site={site.data} basemap={basemap} visibility={layerVisibility} tileMeta={tileMeta.data} sentinelTiles={sentinelTiles.data} osm={osm.data} hydrolakes={hydrolakes.data} contextOsm={context.data?.sources.osm} contextHydro={context.data?.sources.hydrolakes} esa={esa.data} jrc={jrc.data} localLabel={localLabel.data} spectralWater={generatedLabels.spectral_water?.label} spectralOsmIntersection={generatedLabels.spectral_osm_intersection?.label} spectralOsmConsensus={generatedLabels.spectral_osm_consensus?.label} osmSpectralConsensus={generatedLabels.osm_spectral_consensus?.label} modelPrediction={hasPrediction ? result.prediction : undefined} />
     <Box sx={{ maxHeight: "38vh", overflow: "auto" }}>
-      <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{hasPrediction ? `${site.data.display_name || siteId} · 模型 ${result.model.name} · 阈值 ${threshold.toFixed(2)} · 水体像元 ${metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · ${result.model.device || ""}` : `${site.data.display_name || siteId} · 尚未运行模型预测`}</Typography></Box>
+      <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider" }}><Typography variant="body2">{hasPrediction ? `${site.data.display_name || siteId} · 模型 ${result.model.name} · 阈值 ${threshold.toFixed(4)} · 水体像元 ${metric(Number(result.stats.predicted_ratio || 0) * 100, 1)}% · ${result.model.device || ""}` : `${site.data.display_name || siteId} · 尚未运行模型预测`}</Typography></Box>
       <Box sx={{ px: 2, py: 1, bgcolor: "background.paper", borderTop: 1, borderColor: "divider", display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <TrainingCaptureStatus controller={trainingCapture} />
         {layerVisibility.spectralWater && <GeneratedLabelStatus source="spectral_water" result={generatedLabels.spectral_water} pending={spectralWaterGeneration.isPending} error={spectralWaterGeneration.error} />}
@@ -212,10 +213,11 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
   const selectionVersion = useRef(0);
   const [selectedModel, setSelectedModel] = useState("");
   const [threshold, setThreshold] = useState(.5);
+  const [thresholdStrategy, setThresholdStrategy] = useState<ThresholdStrategy>("manual");
   const [requestedIdentity, setRequestedIdentity] = useState("");
   const [validationRegion, setValidationRegion] = useState(routeSiteRegion || (scope === "all" ? "" : scope));
-  const [siteQuery, setSiteQuery] = useState("");
   const [sitePickerOpen, setSitePickerOpen] = useState(false);
+  const [siteQuery, setSiteQuery] = useState("");
   const regions = useRegions();
   const validationSites = useSites(workspaceId, validationRegion, siteQuery, sitePickerOpen);
   const currentSite = useSite(routeSiteRegion || (scope === "all" ? "" : scope), routeSiteId, workspaceId);
@@ -239,10 +241,11 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
     }
   }, [models.data, routeModel, selectedModel]);
   const selected = models.data?.items.find((item) => item.key === selectedModel);
+  const effectiveStrategy = selected?.threshold_calibration ? thresholdStrategy : "manual";
   const predictionRegion = routeSiteRegion || (scope === "all" ? "" : scope);
-  const predictionIdentity = `${workspaceId}:${predictionRegion}:${routeSiteId}:${selectedModel}:${threshold}`;
+  const predictionIdentity = `${workspaceId}:${predictionRegion}:${routeSiteId}:${selectedModel}:${threshold}:${effectiveStrategy}`;
   const predictionRequested = requestedIdentity === predictionIdentity;
-  const prediction = useSiteModelPrediction(workspaceId, predictionRegion, routeSiteId, selectedModel, threshold, Boolean(routeSiteId && predictionRequested));
+  const prediction = useSiteModelPrediction(workspaceId, predictionRegion, routeSiteId, selectedModel, threshold, Boolean(routeSiteId && predictionRequested), effectiveStrategy);
   const result = predictionRequested && prediction.isSuccess && !prediction.isFetching ? prediction.data : undefined;
   const mapResult: ModelValidationResult | undefined = result || (routeSiteId && predictionRegion ? {
     region: predictionRegion, site_id: routeSiteId, model: { key: selectedModel, name: selected?.label || "尚未运行预测" },
@@ -252,7 +255,7 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
     <Box sx={{ p: { xs: 1.5, sm: 2 }, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
         <IconButton sx={{ display: { md: "none" } }} onClick={onBack}><ArrowLeft size={19} /></IconButton>
-        <FormControl sx={{ minWidth: { xs: 230, sm: 300 }, flex: 1 }}><InputLabel id="model-weight-label">模型权重</InputLabel><Select id="model-weight" labelId="model-weight-label" label="模型权重" value={selectedModel} onChange={(event) => { const model = event.target.value; setSelectedModel(model); selectionVersion.current += 1; setRequestedIdentity(""); random.reset(); onRouteModel(model); }}>{(models.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key} disabled={Boolean(item.error)}>{item.label}{Number.isFinite(Number(item.best_iou)) ? ` · IoU ${metric(item.best_iou)}` : ""}{item.error ? " · 不可用" : ""}</MenuItem>)}</Select></FormControl>
+        <FormControl sx={{ minWidth: { xs: 230, sm: 300 }, flex: 1 }}><InputLabel id="model-weight-label">模型权重</InputLabel><Select id="model-weight" labelId="model-weight-label" label="模型权重" value={selectedModel} onChange={(event) => { const model = event.target.value; setSelectedModel(model); setThresholdStrategy("manual"); selectionVersion.current += 1; setRequestedIdentity(""); random.reset(); onRouteModel(model); }}>{(models.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key} disabled={Boolean(item.error)}>{item.label}{Number.isFinite(Number(item.best_iou)) ? ` · IoU ${metric(item.best_iou)}` : ""}{item.error ? " · 不可用" : ""}</MenuItem>)}</Select></FormControl>
         {allowForeignModels && <ToggleButtonGroup exclusive size="small" value={visibility} onChange={(_, value) => { if (value) { setVisibility(value); setSelectedModel(""); } }}><ToggleButton value="current">当前工作区</ToggleButton><ToggleButton value="all">全部工作区</ToggleButton></ToggleButtonGroup>}
         <FormControl sx={{ minWidth: 150 }}><InputLabel id="validation-region-label">验证区域</InputLabel><Select labelId="validation-region-label" label="验证区域" value={validationRegion} onChange={(event) => { setValidationRegion(event.target.value); setSiteQuery(""); }}>{(regions.data?.items || []).map((item) => <MenuItem key={item.key} value={item.key}>{item.name} ({item.site_count})</MenuItem>)}</Select></FormControl>
         <Autocomplete
@@ -271,29 +274,32 @@ export function ModelValidationView({ workspaceId, scope, routeSiteId = "", rout
           disabled={!validationRegion}
           noOptionsText={siteListLoading ? "正在加载" : "没有可用观测区域"}
         />
-        <Box sx={{ width: 180, display: "flex", alignItems: "center", gap: 1 }}><Typography variant="caption">阈值</Typography><Slider min={.05} max={.95} step={.05} value={threshold} onChange={(_, value) => { selectionVersion.current += 1; setRequestedIdentity(""); setThreshold(value as number); }} /><Typography variant="caption">{threshold.toFixed(2)}</Typography></Box>
+        <TextField select size="small" label="阈值策略" value={effectiveStrategy} sx={{ minWidth: 190 }} onChange={(event) => { selectionVersion.current += 1; setRequestedIdentity(""); setThresholdStrategy(event.target.value as ThresholdStrategy); }}>
+          <MenuItem value="manual">手动阈值</MenuItem><MenuItem value="calibrated_adaptive" disabled={!selected?.threshold_calibration}>校准后自适应</MenuItem>
+        </TextField>
+        {effectiveStrategy === "manual" && <Box sx={{ width: 180, display: "flex", alignItems: "center", gap: 1 }}><Typography variant="caption">阈值</Typography><Slider min={.05} max={.95} step={.05} value={threshold} onChange={(_, value) => { selectionVersion.current += 1; setRequestedIdentity(""); setThreshold(value as number); }} /><Typography variant="caption">{threshold.toFixed(2)}</Typography></Box>}
         <Button variant="outlined" startIcon={<Dices size={16} />} disabled={!selectedModel || random.isPending || prediction.isFetching || models.isLoading} onClick={() => {
           const version = ++selectionVersion.current;
-          setSitePickerOpen(false);
-          setSiteQuery("");
           setRequestedIdentity("");
           random.mutate(undefined, { onSuccess: (value) => {
             if (version !== selectionVersion.current) return;
             const region = value.site.region || value.region;
             const siteKey = ["site", workspaceId, region, value.site_id];
             if (!queryClient.getQueryData(siteKey)) queryClient.setQueryData(siteKey, value.site);
-            setRequestedIdentity(`${workspaceId}:${region}:${value.site_id}:${selectedModel}:${threshold}`);
+            setRequestedIdentity(`${workspaceId}:${region}:${value.site_id}:${selectedModel}:${threshold}:${effectiveStrategy}`);
             onRouteResult(value.site_id, region, selectedModel);
           } });
         }}>{random.isPending ? "正在选择区域" : prediction.isFetching ? "推理中" : "随机验证一个区域"}</Button>
       </Box>
       {models.isLoading ? <LinearProgress sx={{ mt: 1 }} /> : models.isError ? <Alert severity="error" sx={{ mt: 1 }}>{models.error.message}</Alert> : <ModelDetail model={selected} />}
+      {effectiveStrategy === "calibrated_adaptive" && <Alert severity="info" sx={{ mt: 1 }}>使用该模型专属的冻结校准参数，根据当前预测范围的概率图选择阈值；预测后显示实际阈值。</Alert>}
+      {result?.stats.routing && <Box sx={{ mt: 1, maxHeight: 360, overflow: "auto" }}><RoutingSummary routing={result.stats.routing} /></Box>}
       {random.isError && <Alert severity="error" sx={{ mt: 1 }}>{random.error.message}</Alert>}
       {prediction.isError && <Alert severity="error" sx={{ mt: 1 }}>{prediction.error.message}</Alert>}
     </Box>
     <Box sx={{ minHeight: 0, position: "relative" }}>
       {prediction.isFetching && <LinearProgress sx={{ position: "absolute", top: 0, left: 0, right: 0, zIndex: 2 }} />}
-      {mapResult ? <ValidationWorkspace slopeRequired={requiresSlope(selected)} workspaceId={workspaceId} key={`${mapResult.region}:${mapResult.site_id}`} result={mapResult} hasPrediction={Boolean(result)} threshold={threshold} predictionPending={prediction.isFetching} canPredict={Boolean(selectedModel && routeSiteId && !random.isPending)} onPredict={() => {
+      {mapResult ? <ValidationWorkspace slopeRequired={requiresSlope(selected)} workspaceId={workspaceId} key={`${mapResult.region}:${mapResult.site_id}`} result={mapResult} hasPrediction={Boolean(result)} threshold={result?.model.threshold ?? threshold} predictionPending={prediction.isFetching} canPredict={Boolean(selectedModel && routeSiteId && !random.isPending)} onPredict={() => {
         random.reset();
         if (predictionRequested) void prediction.refetch();
         else setRequestedIdentity(predictionIdentity);

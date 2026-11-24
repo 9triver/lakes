@@ -1,0 +1,71 @@
+{
+  "id": "hunan-E-k5-routing-v1",
+  "label": "湖南E · K5自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU",
+  "workspace_id": "default",
+  "region": "hunan",
+  "k": 5,
+  "input_bands": [
+    "red",
+    "green",
+    "blue",
+    "nir",
+    "slope_degrees"
+  ],
+  "normalization": {
+    "mean": [
+      711.9413511335741,
+      874.976177524368,
+      600.3846635928641,
+      2742.9330513315135,
+      3.034458146849427
+    ],
+    "std": [
+      587.1623920622246,
+      514.0616965095053,
+      546.4411285663256,
+      1480.9296119762494,
+      5.516933706501192
+    ]
+  },
+  "components": [
+    {
+      "cluster": -1,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "8b842d2cfbffab131616502f51a2b3174ef7f6b4e6148df9a1a2e0645083a840"
+    },
+    {
+      "cluster": 0,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster0/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "8cd286704a9a866b7a600d7975c3e5fd01bf4114249b025a54d0f3e5513b09b0"
+    },
+    {
+      "cluster": 1,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster1/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "be26f3e22e80254264a0efbde73cb3cb413b9f6fe4cf9bf08ca5d5cec856af22"
+    },
+    {
+      "cluster": 2,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster2/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "a796ce3f206681541501f508de39ba727ec1f82131ceb049f1a24af3fd3e59d5"
+    },
+    {
+      "cluster": 3,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster3/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "6e9034159d96bca662c0db2f77ff91a92da4e8af9e10d863eb0bab03af86e73b"
+    },
+    {
+      "cluster": 4,
+      "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster4/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "sha256": "5128ca6aa4820f314fc9b91cdd906d1ed8bdc15f3cadbf93a7dc068f99150549"
+    }
+  ],
+  "router": {
+    "path": "outputs/hunan_DE_train_only_rgb_nir_slope_kmeans_20261108/hunan_DE_train_rgb_nir_slope_k5.joblib",
+    "sha256": "4a0f84309fc087f7560e70c9baac4a8bbf76a43c87bffd3885aa93b509b05357"
+  },
+  "minimum_valid_ratio": 0.8,
+  "tile_size": 256,
+  "stride": 128,
+  "rule_version": "raw25-hunan-DE-K5-perwindow-cosine-v1",
+  "fallback": "valid_ratio_below_0.8"
+}

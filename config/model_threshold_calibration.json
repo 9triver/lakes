@@ -1,0 +1,316 @@
+{
+  "version": 2,
+  "profiles": [
+    {
+      "id": "guizhou-D-global-platt-soft-iou-v1",
+      "label": "贵州D Global · 校准后自适应",
+      "model_path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/global_control/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "model_sha256": "2872daa04e73273214c1b840e584d2f1accaedd1f3d2b24cc1421a187dc0c1b5",
+      "a": 1.1431369504078523,
+      "b": -1.7105530537612839,
+      "fixed_validation_threshold": 0.755,
+      "source": "Guizhou D validation, frozen20261107",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-ab6135b63d5f03f8-calibrated-v1",
+      "label": "贵州C · K-means · 原U-Net · 四光谱＋坡度 · K=4 专家0 · 训练999 patch · seed42 · lr0.001 · 最高验证IoU 95.56% · 校准后自适应",
+      "model_path": "outputs/guizhou_C_slope_k4_experts_server_seed42_lr001_batch8_20261105/k4_expert_cluster0/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "47fb0ec5850103444a75cc92ac31dd1b93374ac2808422f734bca7ec620f3b31",
+      "a": 0.7586554866256352,
+      "b": -4.6534678918181855,
+      "fixed_validation_threshold": 0.99,
+      "source": "贵州C验证集·已知0/1·空间去重",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-4ef5897c486623a1-calibrated-v1",
+      "label": "贵州C · K-means · 原U-Net · 四光谱＋坡度 · K=4 专家1 · 训练744 patch · seed42 · lr0.001 · 最高验证IoU 97.54% · 校准后自适应",
+      "model_path": "outputs/guizhou_C_slope_k4_experts_server_seed42_lr001_batch8_20261105/k4_expert_cluster1/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "8bce424dbbae4df4e2ee2251433b98d526f2d7833864a78590bc79762dc20271",
+      "a": 1.0532848660742709,
+      "b": -3.3946602577514575,
+      "fixed_validation_threshold": 0.95,
+      "source": "贵州C验证集·已知0/1·空间去重",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-19c40eda8a1ab01f-calibrated-v1",
+      "label": "贵州C · K-means · 原U-Net · 四光谱＋坡度 · K=4 专家2 · 训练509 patch · seed42 · lr0.001 · 最高验证IoU 97.88% · 校准后自适应",
+      "model_path": "outputs/guizhou_C_slope_k4_experts_server_seed42_lr001_batch8_20261105/k4_expert_cluster2/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "983e4e77d428f1151680c3e3d9b605e49940a9fe5fd142a3d73adff3194a0e6c",
+      "a": 1.4181105363210798,
+      "b": -6.287909263844718,
+      "fixed_validation_threshold": 0.99,
+      "source": "贵州C验证集·已知0/1·空间去重",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-15f8ad9cba00c41b-calibrated-v1",
+      "label": "贵州C · K-means · 原U-Net · 四光谱＋坡度 · K=4 专家3 · 训练59 patch · seed42 · lr0.001 · 最高验证IoU 65.83% · 校准后自适应",
+      "model_path": "outputs/guizhou_C_slope_k4_experts_server_seed42_lr001_batch8_20261105/k4_expert_cluster3/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "901dd6c21d09f4389953e95c8683797083e7d80383a4ccf897db47e6540f18af",
+      "a": 8.49072924371464,
+      "b": -5.669261308370442,
+      "fixed_validation_threshold": 0.63,
+      "source": "贵州C验证集·已知0/1·空间去重",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-D-k4-200196f097ae5a2b-calibrated-v1",
+      "label": "贵州D · K4自动路由 · 校准后自适应",
+      "model_path": "config/guizhou_D_k4_routing.json",
+      "model_sha256": "672443c19255d4c13bdec05d5636959fbf667f9ce26d18930fba0c1118ff8e0c",
+      "a": 1.4968129019450591,
+      "b": -1.7260910594672823,
+      "fixed_validation_threshold": 0.595,
+      "source": "贵州D验证集·教师稠密0/1·空间去重·路由融合后",
+      "rule_version": "calibrated-soft-iou-ties-v1",
+      "dependencies": [
+        {
+          "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/global_control/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "2872daa04e73273214c1b840e584d2f1accaedd1f3d2b24cc1421a187dc0c1b5"
+        },
+        {
+          "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "3a40a0955a5c71a5ae51bc433248d8b34a6599f5494eca08d045b828be4e0cbd"
+        },
+        {
+          "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster1/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "76bfb325ca8ddb2ca675c3f9ff7bf2469e3e2a6e6ec2f54aa9cd9dbd8c8370f6"
+        },
+        {
+          "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster2/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "953cf738a823ba32886b45e6eda7d48ce5c6e9c3654072acfbf47ce3b7439078"
+        },
+        {
+          "path": "outputs/guizhou_D_k4_experts_seed42_lr001_batch8_20261107/k4_expert_cluster3/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "f2378174e92fd616febcf9567b6f7438bf26ac8d18b77a366fb62e1e046682d4"
+        },
+        {
+          "path": "outputs/guizhou_D_train_rgb_nir_slope_k_selection_20261107/rgb_nir_slope_D_nonoverlap_k4.joblib",
+          "sha256": "aba27ed14793e53d75131c7a117bce1afe9acf2e7a29593b0e65bd158d040ecf"
+        }
+      ]
+    },
+    {
+      "id": "guizhouD-chongqing-global-platt-soft-iou-v1",
+      "label": "贵州D＋重庆 · Global · 原U-Net · 四光谱＋坡度 · seed42 · 最高验证IoU93.24% · 校准后自适应",
+      "model_path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+      "model_sha256": "2a53799329c7f9c823f2cafcd43a3ba3fc5c567b87e2ebe2eb66c94a16750851",
+      "a": 1.39435658762041,
+      "b": -1.2169569530228337,
+      "fixed_validation_threshold": 0.71,
+      "source": "贵州D＋重庆单日期联合验证集753patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhouD-chongqing-k3-platt-soft-iou-v1",
+      "label": "贵州D＋重庆 · K3自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU · 校准后自适应",
+      "model_path": "config/guizhouD_chongqing_K3_routing.json",
+      "model_sha256": "6f76b0c40bde22265967653544d81015fac0f6b1f1a1b5f14c4d863f54a3f0b0",
+      "a": 1.3095064476635587,
+      "b": -2.432091768821473,
+      "fixed_validation_threshold": 0.86,
+      "source": "贵州D＋重庆单日期联合验证集753patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1",
+      "dependencies": [
+        {
+          "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+          "sha256": "2a53799329c7f9c823f2cafcd43a3ba3fc5c567b87e2ebe2eb66c94a16750851"
+        },
+        {
+          "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster0/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+          "sha256": "496b6f0783bf65584c93ca6eb1d78971292517ecd4d1868511f90e30e18ee673"
+        },
+        {
+          "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster1/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+          "sha256": "9efbbd8361518c1c343f03166785da0ba4500dcf59f0cdcf0336833173e44ec9"
+        },
+        {
+          "path": "outputs/guizhouD_chongqing_K3_seed42_lr001_batch8_20261108_k3_expert_cluster2/rgb_nir_slope/runs/seed_42/GCQ_K3_teacher_dense/best.pt",
+          "sha256": "89f9cc0f0616c2f6fd14302025c4e3286ccf5bd9d0867da809e1f647753b3d32"
+        },
+        {
+          "path": "outputs/guizhouD_chongqing_joint_k3_drop_k4_cluster3_20261108/rgb_nir_slope_joint_k3_retained_centers.joblib",
+          "sha256": "a4760a0c62fcf5517ed4658171613133d525ca3b5ec552ae0f9f4ad69f62491d"
+        }
+      ]
+    },
+    {
+      "id": "chongqing-only-global-platt-soft-iou-v1",
+      "label": "重庆单独K3 · Global · 原U-Net · 四光谱＋坡度 · seed42 · 最高验证IoU93.66% · 校准后自适应",
+      "model_path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+      "model_sha256": "d4fe630a142f2b9da2adf820ac212a767d737041996fc36de24d3da20f7d7e35",
+      "a": 1.8703916573619919,
+      "b": -1.8575876693049724,
+      "fixed_validation_threshold": 0.72,
+      "source": "重庆单独单日期验证集317patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "chongqing-only-k3-platt-soft-iou-v1",
+      "label": "重庆单独 · K3自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU · 校准后自适应",
+      "model_path": "config/chongqing_only_K3_routing.json",
+      "model_sha256": "645d27d67f6f6e0ae8673d847b9715b47f31a9f7d0af47ca191b8d4e92556633",
+      "a": 1.4067316627678401,
+      "b": -0.6177186201607613,
+      "fixed_validation_threshold": 0.57,
+      "source": "重庆单独单日期验证集317patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1",
+      "dependencies": [
+        {
+          "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+          "sha256": "d4fe630a142f2b9da2adf820ac212a767d737041996fc36de24d3da20f7d7e35"
+        },
+        {
+          "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster0/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+          "sha256": "68bb49a1c44a055d6139fff25e0524b605a60e9d4d066e343c709e4e321359bd"
+        },
+        {
+          "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster1/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+          "sha256": "755a3ebd1e60b54cffeecd40f06346baa93f8ebad076ce193c910ff7cefb1eca"
+        },
+        {
+          "path": "outputs/chongqing_only_K3_seed42_lr001_batch8_20261108_k3_expert_cluster2/rgb_nir_slope/runs/seed_42/CQ_K3_teacher_dense/best.pt",
+          "sha256": "3e527e1a4c8423c2064b9d693bd49275980fea535112a59c6a8b703d3cddc8df"
+        },
+        {
+          "path": "outputs/chongqing_retained_joint_train_only_kmeans_20261108/chongqing_retained_train_rgb_nir_slope_k3.joblib",
+          "sha256": "2989e073156200ed0e4be80bedea21b6f35599950120b35e37cc64b769bbdcce"
+        }
+      ]
+    },
+    {
+      "id": "hunan-E-global-platt-soft-iou-v1",
+      "label": "湖南E · Global · 原U-Net · 四光谱＋坡度 · seed42 · 最高验证IoU97.08% · 校准后自适应",
+      "model_path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+      "model_sha256": "8b842d2cfbffab131616502f51a2b3174ef7f6b4e6148df9a1a2e0645083a840",
+      "a": 0.958374113882479,
+      "b": -1.5610308989576893,
+      "fixed_validation_threshold": 0.86,
+      "source": "湖南E验证集3256patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "hunan-E-k5-platt-soft-iou-v1",
+      "label": "湖南E · K5自动路由 · 原U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU · 校准后自适应",
+      "model_path": "config/hunan_E_K5_routing.json",
+      "model_sha256": "9e5324049cd8fb8d747359f5dd2328f4b8be47b6f697c6678411a4935701261f",
+      "a": 1.2120949860721233,
+      "b": -1.5124423885667233,
+      "fixed_validation_threshold": 0.785,
+      "source": "湖南E验证集3256patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1",
+      "dependencies": [
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_global_control/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "8b842d2cfbffab131616502f51a2b3174ef7f6b4e6148df9a1a2e0645083a840"
+        },
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster0/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "8cd286704a9a866b7a600d7975c3e5fd01bf4114249b025a54d0f3e5513b09b0"
+        },
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster1/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "be26f3e22e80254264a0efbde73cb3cb413b9f6fe4cf9bf08ca5d5cec856af22"
+        },
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster2/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "a796ce3f206681541501f508de39ba727ec1f82131ceb049f1a24af3fd3e59d5"
+        },
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster3/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "6e9034159d96bca662c0db2f77ff91a92da4e8af9e10d863eb0bab03af86e73b"
+        },
+        {
+          "path": "outputs/hunan_E_K5_seed42_lr001_batch8_20261108_k5_expert_cluster4/rgb_nir_slope/runs/seed_42/Hunan_E_K5/best.pt",
+          "sha256": "5128ca6aa4820f314fc9b91cdd906d1ed8bdc15f3cadbf93a7dc068f99150549"
+        },
+        {
+          "path": "outputs/hunan_DE_train_only_rgb_nir_slope_kmeans_20261108/hunan_DE_train_rgb_nir_slope_k5.joblib",
+          "sha256": "4a0f84309fc087f7560e70c9baac4a8bbf76a43c87bffd3885aa93b509b05357"
+        }
+      ]
+    },
+    {
+      "id": "guizhou-D-adaptive-effb0-global-platt-soft-iou-v1",
+      "label": "贵州D自适应标签版EfficientNet-B0 · Global · EfficientNet-B0 U-Net · 四光谱＋坡度 · seed42 · 最高验证IoU96.42% · 校准后自适应",
+      "model_path": "outputs/guizhou_D_calibrated_effb0_seed42_lr001_batch8_20261109/efficientnet-b0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "model_sha256": "86eddd4f7a00e4a0448d0f375ca86ca3ba311b9d5ba2a72a80cbdab7fbb0a6c4",
+      "a": 1.15389683538629,
+      "b": -0.954657875057004,
+      "fixed_validation_threshold": 0.655,
+      "source": "贵州D自适应标签版EfficientNet-B0验证集436patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-D-adaptive-effb0-k4-platt-soft-iou-v1",
+      "label": "贵州D自适应标签版 · K4自动路由 · EfficientNet-B0 U-Net · 四光谱＋坡度 · seed42 · 各组件最高验证IoU · 校准后自适应",
+      "model_path": "config/guizhou_D_adaptive_effb0_K4_routing.json",
+      "model_sha256": "074f51d002ef6cac53ecd87c274eceb8a02a4566a45c340dbe73bd1995959ecc",
+      "a": 1.89971233860439,
+      "b": -1.4965781798226934,
+      "fixed_validation_threshold": 0.555,
+      "source": "贵州D自适应标签版EfficientNet-B0验证集436patch·教师稠密0/1·地理去重·原始样本融合概率",
+      "rule_version": "calibrated-soft-iou-ties-v1",
+      "dependencies": [
+        {
+          "path": "outputs/guizhou_D_calibrated_effb0_seed42_lr001_batch8_20261109/efficientnet-b0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "86eddd4f7a00e4a0448d0f375ca86ca3ba311b9d5ba2a72a80cbdab7fbb0a6c4"
+        },
+        {
+          "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster0/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "ed0ddfa327fbfce927ff65f4a4a6d0f1fa1f01b829afea8b144125c893832963"
+        },
+        {
+          "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster1/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "7ca5110764354d5d4579c46e08db91caaf6be8159cca22061f4d7885bcb9b402"
+        },
+        {
+          "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster2/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "96067627405f46ed57dfedd3f20418fb8f030d4eb89211ddb0577e7dd8897c68"
+        },
+        {
+          "path": "outputs/guizhou_D_adaptive_effb0_K4_experts_20261109_k4_expert_cluster3/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+          "sha256": "e82e4341317b0456a2f99bde6b46650796a24bb26248e619ccb556c2ad53e685"
+        },
+        {
+          "path": "outputs/guizhou_D_train_rgb_nir_slope_k_selection_20261107/rgb_nir_slope_D_nonoverlap_k4.joblib",
+          "sha256": "aba27ed14793e53d75131c7a117bce1afe9acf2e7a29593b0e65bd158d040ecf"
+        }
+      ]
+    },
+    {
+      "id": "hunan-E-seedzero-effb0-11774-platt-soft-iou-v1",
+      "label": "湖南E · 11774patch · EfficientNet-B0 Global · 四光谱＋坡度 · 种子255转0 · 校准后自适应",
+      "model_path": "outputs/hunan_E_seedzero_effb0_11774_seed42_lr001_batch8_20261118_global_control/rgb_nir_slope/runs/seed_42/seed255_to_zero/best.pt",
+      "model_sha256": "4c74c7f3bbef5cdf6ce12b601dad3cd8e3e31953fab3e5eac1e0ab32424ff800",
+      "a": 1.2014124194705422,
+      "b": 3.1565341023116047,
+      "fixed_validation_threshold": 0.065,
+      "source": "湖南E验证3256patch·原光谱∩OSM高置信0/1·空间去重·256/128余弦融合",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-aspp-dynamic-rgb-nir-fixed-slope-v1",
+      "label": "贵州C · EffB0＋ASPP · 四光谱动态 · 坡度固定 · 校准后自适应",
+      "model_path": "outputs/guizhou_C_effb0_aspp_dynamic_pair_20261120/slope_fixed/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "b878f54b9a669c30f2cb592fcecefcb677311ddbd7035720469cdb4b8df75fea",
+      "a": 0.8921346820748295,
+      "b": -3.412867998636302,
+      "source": "贵州C验证集已知0/1 · 空间去重 · 256/128融合",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-C-aspp-dynamic-all-v1",
+      "label": "贵州C · EffB0＋ASPP · 四光谱及坡度动态 · 校准后自适应",
+      "model_path": "outputs/guizhou_C_effb0_aspp_dynamic_pair_20261120/slope_dynamic/rgb_nir_slope/runs/seed_42/C_overlap_grouped/best.pt",
+      "model_sha256": "b0691881b7a0e316fbecf0d0c7e609962f1df31079e4e77f953ebb233a3cdfc6",
+      "a": 0.8529419565940741,
+      "b": -2.4841958424373702,
+      "source": "贵州C验证集已知0/1 · 空间去重 · 256/128融合",
+      "rule_version": "calibrated-soft-iou-ties-v1"
+    }
+  ]
+}

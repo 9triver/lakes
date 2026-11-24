@@ -20,6 +20,7 @@ from shapely.validation import make_valid
 from lake_workbench.geo import boxes_intersect, transform_geom
 from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.models.runtime import predict_array
+from lake_workbench.models.thresholds import select_threshold, strategy_identity
 from lake_workbench.models.features import OPTICAL, aligned_slope, assemble_features, feature_names
 from lake_workbench.paths import PROJECT_ROOT
 
@@ -39,8 +40,11 @@ def predict_water_geojson(
     model: Any,
     threshold: float = 0.5,
     bounds: tuple[float, float, float, float] | None = None,
+    threshold_strategy: str = "manual",
 ) -> tuple[dict, dict]:
+    strategy_identity(model.path,threshold_strategy)
     threshold = float(threshold)
+    routed=bool(model.config.get("routing_profile"))
     names = feature_names(model.config, model.in_channels)
     source_channels = len(OPTICAL)
     terrain = None
@@ -65,7 +69,7 @@ def predict_water_geojson(
         transform_scale = Affine.identity()
         read_height = int(window.height) if window is not None else src.height
         read_width = int(window.width) if window is not None else src.width
-        if max(read_height, read_width) > MODEL_VALIDATION_MAX_DIM:
+        if threshold_strategy=="manual" and not routed and max(read_height, read_width) > MODEL_VALIDATION_MAX_DIM:
             scale = MODEL_VALIDATION_MAX_DIM / max(read_height, read_width)
             out_height = max(1, int(round(read_height * scale)))
             out_width = max(1, int(round(read_width * scale)))
@@ -101,7 +105,17 @@ def predict_water_geojson(
                 raise ValueError('坡度未覆盖全部有效预测像素，无法完成单模型地图预测')
             slope = np.nan_to_num(slope, nan=0.)
         features = assemble_features(image, names, slope)
-        probability = predict_array(model, features, valid=valid)
+        routing=None
+        if routed or threshold_strategy=='calibrated_adaptive':
+            from lake_workbench.models.comparison import predict_tiled
+            from lake_workbench.models.routing import profile_for
+            route_profile=profile_for(model.path)
+            calibrated_routing=bool(threshold_strategy=='calibrated_adaptive' and route_profile and route_profile.get('per_route_calibration'))
+            probability,routing=predict_tiled(model,features,valid,return_routing=True,calibrated_routing=calibrated_routing)
+        else:
+            probability = predict_array(model, features, valid=valid)
+        threshold_info=select_threshold(probability,valid,model.path,threshold,threshold_strategy)
+        threshold=threshold_info['threshold']
         predicted = (probability >= threshold) & valid
         src_crs = src.crs
 
@@ -153,6 +167,9 @@ def predict_water_geojson(
             )
 
     stats = {
+        "routing": routing,
+        "threshold_strategy": threshold_strategy,
+        "threshold_selection": threshold_info,
         "input_bands": names,
         "terrain": terrain,
         "threshold": threshold,
