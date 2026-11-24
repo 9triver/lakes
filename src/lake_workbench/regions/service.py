@@ -207,18 +207,43 @@ class RegionService:
             })
         return {"workspace_id": workspace_id, "region": "all", "items": items}
 
-    def random_model_validation_target(self) -> dict:
-        """Select an imagery Site without loading weights, raster indexes or DEMs."""
+    def random_model_validation_target(self, region="") -> dict:
+        """Draw from the materialized index, rechecking only sampled sites."""
         from shapely.geometry import mapping
-        for region_key, catalog, site in _random_site_candidates(self.catalogs, site_loader=_metadata_validation_sites):
-            if int(site.properties.get("image_count") or 0) <= 0:
+        from lake_workbench.models.preparation import _slope_ready
+        from lake_workbench.models.random_site_index import indexed_sites
+
+        index = indexed_sites()
+        scope = (region,) if region and region != "all" else self.catalogs
+        candidates = [
+            (key, site_id)
+            for key in scope if key in self.catalogs
+            for site_id in index.get(key, ())
+        ]
+        random.shuffle(candidates)
+        metadata = {}
+        for region_key, site_id in candidates:
+            catalog = self.catalogs[region_key]
+            if region_key not in metadata:
+                metadata[region_key] = {site.site_id: site for site in _metadata_validation_sites(catalog)}
+            site = metadata[region_key].get(site_id)
+            if site is None:
+                continue
+            rows = catalog._model_validation_rows(site, 5)
+            if not rows:
+                continue
+            active = max(rows, key=lambda row: float(row.get("valid_ratio", 0) or 0))
+            try:
+                if not _slope_ready(Path(active["tci_path"])):
+                    continue
+            except (OSError, ValueError, EOFError):
                 continue
             return dict(region=region_key, site_id=site.site_id, site=dict(
                 site_id=site.site_id, region=region_key, region_name=catalog.region.name,
                 display_name=site.display_name, coverage_area_km2=site.area_km2,
                 bbox=list(site.bbox), geometry=mapping(site.geometry),
                 image_count=int(site.properties.get("image_count") or 0)))
-        raise FileNotFoundError("No observation site with imagery metadata is available")
+        raise FileNotFoundError("所选区域没有当前影像已缓存坡度的站点")
 
     def all_model_validation_random_loaded(self, model, threshold: float, model_key: str) -> dict:
         errors = []

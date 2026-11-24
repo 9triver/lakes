@@ -3,7 +3,7 @@ import { useComparisonSites } from "./useComparisonSites";
 import { isRgbNirSlope } from "./modelSelection";
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, MenuItem, Slider, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
+import { Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress, Collapse, Dialog, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, MenuItem, Slider, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { ChevronLeft, ChevronRight, Download, Play, Square, X, ZoomIn, ZoomOut } from "lucide-react";
 import { getJson } from "../../api/client";
 import { RoutingSummary } from "./RoutingSummary";
@@ -90,7 +90,7 @@ export function ModelComparisonView({ workspaceId, scope, routeSiteId = "", rout
   const [asset, setAsset] = useState("");
   const [reference, setReference] = useState("spectral_osm_intersection");
   const [threshold, setThreshold] = useState(.5);
-  const [thresholdStrategy, setThresholdStrategy] = useState<ThresholdStrategy>("manual");
+  const [thresholdStrategy, setThresholdStrategy] = useState<ThresholdStrategy>("calibrated_adaptive");
   const [thresholdDraft, setThresholdDraft] = useState(.5);
   const [thresholdEditing, setThresholdEditing] = useState(false);
   const thresholdCommitTimer = useRef<ReturnType<typeof window.setTimeout> | undefined>(undefined);
@@ -102,6 +102,7 @@ export function ModelComparisonView({ workspaceId, scope, routeSiteId = "", rout
   const [completedOnly, setCompletedOnly] = useState(true);
   const [selection, setSelection] = useState<string[]>([]);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
+  const [metricsOpen, setMetricsOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [loadingSaved, setLoadingSaved] = useState(false);
   const [active, setActive] = useState("");
@@ -380,13 +381,18 @@ export function ModelComparisonView({ workspaceId, scope, routeSiteId = "", rout
         value={savedProgress.total ? Math.min(100, savedProgress.completed / savedProgress.total * 100) : 100} />
     </Box>}
     {globalError && <Alert severity="error">{globalError}</Alert>}
-    {!!outcomes.length && <Typography variant="caption" color="text.secondary">指标表与视觉对照按{sortLabels[sortMetric]}{sortDirection === "desc" ? "从高到低" : "从低到高"}排列；缺失排序指标的结果置后。</Typography>}
-    {!!outcomes.length && <TableContainer sx={{ bgcolor: "background.paper", mb: 2, maxHeight: 430 }}><Table size="small" stickyHeader aria-label="模型比较指标"><TableHead><TableRow>
-      {["模型 / 权重", "轮次", "原模型最高验证IoU", "IoU", "F1", "Precision", "Recall", "误报 FP", "漏检 FN", "评分像素", "全图预测面积 km²", "实际阈值"].map((label) => <TableCell key={label} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}
-    </TableRow></TableHead><TableBody>{orderedOutcomes.map((item) => <TableRow key={item.key} data-model-key={item.key}><TableCell sx={{ minWidth: 280, maxWidth: 420, overflowWrap: "anywhere" }}>{option(item.key)?.label || item.key}{item.error && <Typography variant="caption" color="error" display="block">{item.error}</Typography>}</TableCell><TableCell>{item.result?.model.epoch ?? "—"}</TableCell>
-      {[highestValidationIou(option(item.key)), item.result?.metrics?.iou, item.result?.metrics?.f1, item.result?.metrics?.precision, item.result?.metrics?.recall].map((value, i) => <TableCell key={i}>{percentage(value)}</TableCell>)}
-      <TableCell>{number(item.result?.metrics?.fp, 0)}</TableCell><TableCell>{number(item.result?.metrics?.fn, 0)}</TableCell><TableCell>{number(item.result?.metrics?.scored_pixels, 0)}</TableCell><TableCell>{number(item.result?.stats.area_km2)}</TableCell><TableCell>{number(item.result?.model.threshold ?? threshold, 4)}</TableCell>
-    </TableRow>)}</TableBody></Table></TableContainer>}
+    {!!outcomes.length && <Box sx={{ mb: 2 }}>
+      <Button size="small" variant="outlined" aria-expanded={metricsOpen} aria-controls="comparison-metrics" onClick={() => setMetricsOpen((open) => !open)}>指标表</Button>
+      <Collapse id="comparison-metrics" in={metricsOpen} sx={{ mt: metricsOpen ? 1 : 0 }}>
+        <Typography variant="caption" color="text.secondary">指标表与视觉对照按{sortLabels[sortMetric]}{sortDirection === "desc" ? "从高到低" : "从低到高"}排列；缺失排序指标的结果置后。</Typography>
+        <TableContainer sx={{ bgcolor: "background.paper", mb: 2, maxHeight: 430 }}><Table size="small" stickyHeader aria-label="模型比较指标"><TableHead><TableRow>
+          {["模型 / 权重", "轮次", "原模型最高验证IoU", "IoU", "F1", "Precision", "Recall", "误报 FP", "漏检 FN", "评分像素", "全图预测面积 km²", "实际阈值"].map((label) => <TableCell key={label} sx={{ whiteSpace: "nowrap" }}>{label}</TableCell>)}
+        </TableRow></TableHead><TableBody>{orderedOutcomes.map((item) => <TableRow key={item.key} data-model-key={item.key}><TableCell sx={{ minWidth: 280, maxWidth: 420, overflowWrap: "anywhere" }}>{option(item.key)?.label || item.key}{item.error && <Typography variant="caption" color="error" display="block">{item.error}</Typography>}</TableCell><TableCell>{item.result?.model.epoch ?? "—"}</TableCell>
+          {[highestValidationIou(option(item.key)), item.result?.metrics?.iou, item.result?.metrics?.f1, item.result?.metrics?.precision, item.result?.metrics?.recall].map((value, i) => <TableCell key={i}>{percentage(value)}</TableCell>)}
+          <TableCell>{number(item.result?.metrics?.fp, 0)}</TableCell><TableCell>{number(item.result?.metrics?.fn, 0)}</TableCell><TableCell>{number(item.result?.metrics?.scored_pixels, 0)}</TableCell><TableCell>{number(item.result?.stats.area_km2)}</TableCell><TableCell>{number(item.result?.model.threshold ?? threshold, 4)}</TableCell>
+        </TableRow>)}</TableBody></Table></TableContainer>
+      </Collapse>
+    </Box>}
     {context.data && <>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap", mb: 1 }}>
         <Typography variant="subtitle1">同范围视觉对照</Typography>

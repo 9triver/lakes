@@ -30,13 +30,14 @@ interface ModelWorkbenchProps {
 export function ModelWorkbench({ workspaceId, scope, regionOptions = [], onScopeChange, stage, defaults = {}, selectedRunId = "", onRunSelect, onStageChange, onTrainingDataGenerated, ...validationProps }: ModelWorkbenchProps) {
   const [validationMode,setValidationMode]=useState('single');
   const [galleryMenu, setGalleryMenu] = useState<HTMLElement | null>(null);
+  const [comparisonOpened, setComparisonOpened] = useState(false);
   const comparisonProps = useRef(validationProps);
   if (validationMode === "compare") comparisonProps.current = validationProps;
   const switchValidationMode = (value: string | null) => {
     if (!value) return;
-    if (value === "compare" && validationMode !== "compare") {
-      const previous = comparisonProps.current;
-      previous.onRouteResult(previous.routeSiteId || "", previous.routeSiteRegion || scope, "");
+    if (value === "compare") {
+      comparisonProps.current = validationProps;
+      setComparisonOpened(true);
     }
     setValidationMode(value);
   };
@@ -67,7 +68,12 @@ export function ModelWorkbench({ workspaceId, scope, regionOptions = [], onScope
       </>}
     </Box>
     <Box sx={{ minHeight: 0, overflow: "hidden" }}>
-      {stage === "train" ? <TrainingView workspaceId={workspaceId} scope={scope} regionOptions={regionOptions} onScopeChange={onScopeChange} defaults={defaults} selectedRunId={selectedRunId} onRunSelect={onRunSelect} /> : validationMode === "compare" ? <ModelComparisonView workspaceId={workspaceId} scope={scope} {...comparisonProps.current} /> : <ModelValidationView workspaceId={workspaceId} scope={scope} onTrainingDataGenerated={onTrainingDataGenerated} {...validationProps} />}
+      {stage === "train" ? <TrainingView workspaceId={workspaceId} scope={scope} regionOptions={regionOptions} onScopeChange={onScopeChange} defaults={defaults} selectedRunId={selectedRunId} onRunSelect={onRunSelect} /> : <>
+        {comparisonOpened && <Box sx={{ height: "100%", display: validationMode === "compare" ? "block" : "none" }}>
+          <ModelComparisonView workspaceId={workspaceId} scope={scope} {...comparisonProps.current} />
+        </Box>}
+        {validationMode === "single" && <ModelValidationView workspaceId={workspaceId} scope={scope} onTrainingDataGenerated={onTrainingDataGenerated} {...validationProps} />}
+      </>}
     </Box>
   </Box>;
 }

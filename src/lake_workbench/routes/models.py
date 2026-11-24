@@ -130,7 +130,7 @@ def handle_model_get(handler, path: str, query_string: str) -> bool:
         handler._json(workspace_registry.list("all", visibility))
     elif path == "/api/all/model-validation/random-target":
         try:
-            handler._json(handler.__class__.region_service.random_model_validation_target())
+            handler._json(handler.__class__.region_service.random_model_validation_target(params.get("region", [""])[0]))
         except FileNotFoundError as exc:
             handler._error(HTTPStatus.NOT_FOUND, str(exc))
     elif path == "/api/all/model-validation/random":

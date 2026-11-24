@@ -3,6 +3,10 @@ import { Box, Typography } from "@mui/material";
 import Map from "ol/Map";
 import View from "ol/View";
 import GeoJSON from "ol/format/GeoJSON";
+import Polygon from "ol/geom/Polygon";
+import MultiPolygon from "ol/geom/MultiPolygon";
+import { getRenderPixel } from "ol/render";
+import { apply as applyTransform } from "ol/transform";
 import { defaults as defaultInteractions } from "ol/interaction/defaults";
 import TileLayer from "ol/layer/Tile";
 import VectorLayer from "ol/layer/Vector";
@@ -15,6 +19,7 @@ import type { FeatureCollection, GeoJsonLayer, SiteDetail, SentinelTile, TileMet
 import { createBasemapTileLoadFunction } from "./basemapCache";
 
 export type BasemapType = "osm" | "satellite" | "none";
+export type ImageryStyle = "rgb" | "nir" | "swir";
 
 const OSM_BASEMAP_TILE_URL = "https://tile.openstreetmap.de/{z}/{x}/{y}.png";
 
@@ -53,6 +58,8 @@ export const DEFAULT_SITE_LAYER_VISIBILITY: SiteLayerVisibility = {
 interface SiteMapProps {
   site: SiteDetail;
   basemap: BasemapType;
+  clipSatelliteToSite?: boolean;
+  imageryStyle?: ImageryStyle;
   visibility: SiteLayerVisibility;
   tileMeta?: TileMeta;
   sentinelTiles?: SentinelTile[];
@@ -68,6 +75,8 @@ interface SiteMapProps {
   spectralOsmConsensus?: FeatureCollection | null;
   osmSpectralConsensus?: FeatureCollection | null;
   modelPrediction?: FeatureCollection;
+  predictionColor?: string;
+  predictionOpacity?: number;
   patches?: TrainingPatch[];
   patchReviewEnabled?: boolean;
   activePatchId?: string;
@@ -90,7 +99,7 @@ function vectorStyle(stroke: string, fill: string) {
   return new Style({ stroke: new Stroke({ color: stroke, width: 2 }), fill: new Fill({ color: fill }) });
 }
 
-export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmIntersection, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
+export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap({ site, basemap, clipSatelliteToSite = false, imageryStyle = "rgb", visibility, tileMeta, sentinelTiles, osm, hydrolakes, contextOsm, contextHydro, esa, jrc, localLabel, spectralWater, spectralOsmIntersection, spectralOsmConsensus, osmSpectralConsensus, modelPrediction, predictionColor = "#ff3b30", predictionOpacity, patches = [], patchReviewEnabled = false, activePatchId = "", pendingPatchIds = new Set(), onPatchClick, patchSourceMeta }, ref) {
   const targetRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
   const basemapTileLoadFunction = createBasemapTileLoadFunction();
@@ -131,7 +140,12 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
   const spectralOsmIntersectionLayerRef = useRef(new VectorLayer({ source: spectralOsmIntersectionSourceRef.current, style: vectorStyle("#1976d2", "rgba(25,118,210,.28)") }));
   const spectralOsmConsensusLayerRef = useRef(new VectorLayer({ source: spectralOsmConsensusSourceRef.current, style: vectorStyle("#00a896", "rgba(0,168,150,.30)") }));
   const osmSpectralConsensusLayerRef = useRef(new VectorLayer({ source: osmSpectralConsensusSourceRef.current, style: vectorStyle("#7b61ff", "rgba(123,97,255,.28)") }));
-  const predictionLayerRef = useRef(new VectorLayer({ source: predictionSourceRef.current, style: vectorStyle("#ff3b30", "rgba(255,59,48,.32)") }));
+  const predictionLayerRef = useRef(new VectorLayer({ source: predictionSourceRef.current, style: vectorStyle(predictionColor, `${predictionColor}52`) }));
+  useEffect(() => {
+    const fill = predictionOpacity === undefined ? `${predictionColor}52` : predictionColor;
+    predictionLayerRef.current.setStyle(vectorStyle(predictionColor, fill));
+    predictionLayerRef.current.setOpacity(predictionOpacity ?? 1);
+  }, [predictionColor, predictionOpacity]);
   const patchLayerRef = useRef(new VectorLayer({ source: patchSourceRef.current, style: (feature) => {
     const included = Boolean(feature.get("included"));
     const pending = Boolean(feature.get("pending"));
@@ -206,6 +220,58 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
     map.on("click", handleClick);
     return () => { map.un("click", handleClick); };
   }, [onPatchClick, patchReviewEnabled]);
+
+  useEffect(() => {
+    if (!clipSatelliteToSite || !site.geometry) return;
+    const geometry = new GeoJSON().readGeometry(site.geometry, {
+      dataProjection: "EPSG:4326",
+      featureProjection: "EPSG:3857",
+    });
+    if (!(geometry instanceof Polygon || geometry instanceof MultiPolygon)) return;
+
+    const layer = satelliteBasemapLayerRef.current;
+    const source = layer.getSource();
+    if (!source) return;
+    const tileGrid = source.getTileGrid();
+    const originalUrl = source.getTileUrlFunction();
+    const originalKey = source.getKey();
+    const polygons = geometry instanceof Polygon ? [geometry.getCoordinates()] : geometry.getCoordinates();
+    layer.setExtent(geometry.getExtent());
+    source.setTileUrlFunction((coordinate, pixelRatio, projection) => {
+      if (!tileGrid || !geometry.intersectsExtent(tileGrid.getTileCoordExtent(coordinate))) return undefined;
+      return originalUrl.call(source, coordinate, pixelRatio, projection);
+    }, `${originalKey}:site:${site.site_id}`);
+
+    layer.on("prerender", clip);
+    layer.on("postrender", restore);
+    function clip(event: Parameters<typeof getRenderPixel>[0]) {
+      const context = event.context;
+      if (!(context instanceof CanvasRenderingContext2D) || !event.frameState) return;
+      context.save();
+      context.beginPath();
+      for (const polygon of polygons) {
+        for (const ring of polygon) {
+          ring.forEach((coordinate, index) => {
+            const pixel = applyTransform(event.frameState!.coordinateToPixelTransform, coordinate.slice());
+            const [x, y] = getRenderPixel(event, pixel);
+            if (index === 0) context.moveTo(x, y);
+            else context.lineTo(x, y);
+          });
+          context.closePath();
+        }
+      }
+      context.clip("evenodd");
+    }
+    function restore(event: Parameters<typeof getRenderPixel>[0]) {
+      if (event.context instanceof CanvasRenderingContext2D && event.frameState) event.context.restore();
+    }
+    return () => {
+      layer.un("prerender", clip);
+      layer.un("postrender", restore);
+      layer.setExtent(undefined);
+      source.setTileUrlFunction(originalUrl, originalKey);
+    };
+  }, [clipSatelliteToSite, site.geometry, site.site_id]);
 
   useEffect(() => {
     osmBasemapLayerRef.current.setVisible(basemap === "osm");
@@ -297,8 +363,11 @@ export const SiteMap = forwardRef<SiteMapHandle, SiteMapProps>(function SiteMap(
 
   useEffect(() => {
     const sourceMeta = patchReviewEnabled && patchSourceMeta ? patchSourceMeta : tileMeta;
-    imageLayerRef.current.setSource(sourceMeta ? new XYZ({ url: `${sourceMeta.tile_url}${sourceMeta.tile_url.includes("?") ? "&" : "?"}v=${Date.now()}`, tileSize: 256, minZoom: 5, maxZoom: 16 }) : null);
-  }, [patchReviewEnabled, patchSourceMeta, tileMeta]);
+    const style = patchReviewEnabled && patchSourceMeta ? "rgb" : imageryStyle;
+    const params = new URLSearchParams({ v: String(Date.now()) });
+    if (style !== "rgb") params.set("style", style);
+    imageLayerRef.current.setSource(sourceMeta ? new XYZ({ url: `${sourceMeta.tile_url}${sourceMeta.tile_url.includes("?") ? "&" : "?"}${params}`, tileSize: 256, minZoom: 5, maxZoom: 16 }) : null);
+  }, [patchReviewEnabled, patchSourceMeta, tileMeta, imageryStyle]);
 
   return (
     <Box data-testid="site-map" sx={{ position: "relative", height: "100%", minHeight: 360, bgcolor: "#101010" }}>

@@ -21,3 +21,27 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 src/lake_workbench/static/
+
+# Server-local backups, deployment scratch files, and generated run artifacts.
+/.backups/
+/.tmp/
+/outputs/
+/reports/
+/nohup.out
+
+# Keep experiment source, configuration, and documentation; exclude datasets,
+# checkpoints, compiled extensions, and generated results.
+/experiments/**
+!/experiments/**/
+!/experiments/**/*.py
+!/experiments/**/*.sh
+!/experiments/**/*.md
+!/experiments/**/*.toml
+!/experiments/**/*.yaml
+!/experiments/**/*.yml
+!/experiments/**/*.ipynb
+!/experiments/**/*.c
+!/experiments/**/*.cpp
+!/experiments/**/*.h
+!/experiments/**/*.cu
+!/experiments/**/*.cuh

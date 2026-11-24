@@ -22,6 +22,7 @@ from lake_workbench.imagery.validity import valid_pixel_mask
 from lake_workbench.models.comparison import _source, comparison_context, SEED_REFERENCE, _REFERENCE_LOCK
 from lake_workbench.models.features import aligned_slope, dem_name, _valid_dem
 from lake_workbench.models.slope_cache import slope_cache_paths
+from lake_workbench.models.random_site_index import remember_slope_ready
 from lake_workbench.models.preparation_progress import report, reporting
 from lake_workbench.paths import PROJECT_ROOT
 
@@ -173,6 +174,7 @@ def _run(job,catalog,site,workspace_id,workspace_dir,asset,reference,row,path):
                     image=src.read();valid=valid_pixel_mask(image,src.nodatavals,src.read_masks())
                 del image
                 aligned_slope(path,valid)
+                remember_slope_ready(catalog.region.key, site.site_id)
                 with _LOCK:
                     job['status']='ready'
                     _SITE_CACHE.pop((workspace_id,catalog.region.key),None)

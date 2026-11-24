@@ -86,8 +86,8 @@ export interface RandomModelValidationTarget {
 }
 
 export function useRandomModelValidationTarget(workspaceId: string) {
-  return useMutation({ mutationFn: () => getJson<RandomModelValidationTarget>(
-    workspaceRegionApi(workspaceId, "all", "/model-validation/random-target"),
+  return useMutation({ mutationFn: (region: string) => getJson<RandomModelValidationTarget>(
+    workspaceRegionApi(workspaceId, "all", `/model-validation/random-target?${new URLSearchParams({ region })}`),
   ) });
 }
 

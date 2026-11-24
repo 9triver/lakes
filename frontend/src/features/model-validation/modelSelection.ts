@@ -23,6 +23,8 @@ function validationIou(model: ModelOption): number {
 
 export function preferredValidationModel(items: ModelOption[], fallback = ""): string {
   const available = items.filter((model) => !model.error);
+  const preferred = available.find((model) => model.path === "outputs/guizhou_D_unet_aspp_effb0_adaptive_teacher_20261119_global_control/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt");
+  if (preferred) return preferred.key;
   const slope = available.filter(isRgbNirSlope).sort((a, b) => {
     const aScore = validationIou(a); const bScore = validationIou(b);
     if (aScore !== bScore) return bScore > aScore ? 1 : -1;

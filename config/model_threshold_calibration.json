@@ -311,6 +311,17 @@
       "b": -2.4841958424373702,
       "source": "贵州C验证集已知0/1 · 空间去重 · 256/128融合",
       "rule_version": "calibrated-soft-iou-ties-v1"
+    },
+    {
+      "id": "guizhou-D-unet-aspp-effb0-adaptive-v1",
+      "label": "贵州D · EfficientNet-B0＋ASPP＋U-Net Decoder · 四光谱＋坡度 · 校准后自适应",
+      "model_path": "outputs/guizhou_D_unet_aspp_effb0_adaptive_teacher_20261119_global_control/rgb_nir_slope/runs/seed_42/D_teacher_dense/best.pt",
+      "model_sha256": "86192004c29fece6da9d0bafb8126f38235912c6330793931c56e9eb56c9f5e1",
+      "a": 0.683772297645434,
+      "b": -1.2723571541481373,
+      "fixed_validation_threshold": 0.585,
+      "source": "贵州验证436patch·原高置信0/1·空间去重·256/128融合",
+      "rule_version": "calibrated-soft-iou-ties-v1"
     }
   ]
 }
