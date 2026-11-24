@@ -14,6 +14,7 @@ test("random selection shows map before prediction and clears mask on failure", 
   let predictionRequests = 0;
   let oldRandomRequests = 0;
   const hunanListRequests: string[] = [];
+  let comparisonListRequests = 0;
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (!url.hostname.match(/^(127[.]0[.]0[.]1|localhost)$/)) return route.abort();
@@ -23,6 +24,7 @@ test("random selection shows map before prediction and clears mask on failure", 
       return route.fulfill({ contentType: "image/png", body: pixel });
     }
     if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname.endsWith("/model-comparison/sites")) { comparisonListRequests++; return route.fulfill({ body: '' }); }
     if (url.pathname === "/api/auth/session") return route.fulfill({ json: { authenticated: true, mode: "development", identity: {}, user } });
     if (url.pathname === "/api/workspaces/default") return route.fulfill({ json: { workspace } });
     if (url.pathname === "/api/regions") return route.fulfill({ json: { default: "gansu", items: [{ key: "gansu", name: "甘肃", ready: true, site_count: 1 }, { key: "hunan", name: "湖南", ready: true, site_count: 1 }] } });
@@ -49,7 +51,8 @@ test("random selection shows map before prediction and clears mask on failure", 
     return route.fulfill({ json: { total: 0, items: [], assets: [], runs: [], facets: {}, type: "FeatureCollection", features: [] } });
   });
   await page.goto("#/users/default/workspaces/default/regions/gansu/models/validate", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "单模型地图", exact: true }).click();
+  await expect(page.getByRole("button", { name: "单模型地图", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(comparisonListRequests).toBe(0);
   await page.getByRole("button", { name: "随机验证一个区域", exact: true }).click();
   await expect.poll(() => tileRequests).toBeGreaterThan(0);
   // Tile responses are still blocked: inference must start independently.

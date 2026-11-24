@@ -28,7 +28,7 @@ interface ModelWorkbenchProps {
 }
 
 export function ModelWorkbench({ workspaceId, scope, regionOptions = [], onScopeChange, stage, defaults = {}, selectedRunId = "", onRunSelect, onStageChange, onTrainingDataGenerated, ...validationProps }: ModelWorkbenchProps) {
-  const [validationMode,setValidationMode]=useState('compare');
+  const [validationMode,setValidationMode]=useState('single');
   const comparisonProps = useRef(validationProps);
   if (validationMode === "compare") comparisonProps.current = validationProps;
   const switchValidationMode = (value: string | null) => {
@@ -46,10 +46,10 @@ export function ModelWorkbench({ workspaceId, scope, regionOptions = [], onScope
         <Tab value="train" label="训练" />
         <Tab value="validate" label="验证" />
       </Tabs>
-      {stage === "validate" && <ToggleButtonGroup size="small" exclusive value={validationMode} onChange={(_,value)=>switchValidationMode(value)}><ToggleButton value="compare">多模型对比</ToggleButton><ToggleButton value="single">单模型地图</ToggleButton></ToggleButtonGroup>}
+      {stage === "validate" && <ToggleButtonGroup size="small" exclusive value={validationMode} onChange={(_,value)=>switchValidationMode(value)}><ToggleButton value="single">单模型地图</ToggleButton><ToggleButton value="compare">多模型对比</ToggleButton></ToggleButtonGroup>}
     </Box>
     <Box sx={{ minHeight: 0, overflow: "hidden" }}>
-      {stage === "train" ? <TrainingView workspaceId={workspaceId} scope={scope} regionOptions={regionOptions} onScopeChange={onScopeChange} defaults={defaults} selectedRunId={selectedRunId} onRunSelect={onRunSelect} /> : <><Box sx={{ height: "100%", display: validationMode === "compare" ? "block" : "none" }}><ModelComparisonView workspaceId={workspaceId} scope={scope} {...comparisonProps.current} /></Box>{validationMode === "single" && <ModelValidationView workspaceId={workspaceId} scope={scope} onTrainingDataGenerated={onTrainingDataGenerated} {...validationProps} />}</>}
+      {stage === "train" ? <TrainingView workspaceId={workspaceId} scope={scope} regionOptions={regionOptions} onScopeChange={onScopeChange} defaults={defaults} selectedRunId={selectedRunId} onRunSelect={onRunSelect} /> : validationMode === "compare" ? <ModelComparisonView workspaceId={workspaceId} scope={scope} {...comparisonProps.current} /> : <ModelValidationView workspaceId={workspaceId} scope={scope} onTrainingDataGenerated={onTrainingDataGenerated} {...validationProps} />}
     </Box>
   </Box>;
 }

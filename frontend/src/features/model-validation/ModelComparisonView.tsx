@@ -26,7 +26,7 @@ interface Preparation {
   error?: string; warning?: string;
   progress: Record<string, { stage: string; message: string; completed?: number | null; total?: number | null }>;
 }
-const readinessLabel = (item: ComparisonSite) => item.cache_checked === false ? "缓存状态检查中（可先选择）" : item.seed_cached && item.slope_cached ? "坡度＋高置信种子已缓存" : item.seed_cached ? "高置信种子已缓存" : item.imagery_available ? item.slope_cached ? "坡度已缓存，种子待生成" : "待准备" : "无可用影像";
+const readinessLabel = (item: ComparisonSite) => item.cache_checked === false ? "未自动检查（可直接选择）" : item.seed_cached && item.slope_cached ? "坡度＋高置信种子已缓存" : item.seed_cached ? "高置信种子已缓存" : item.imagery_available ? item.slope_cached ? "坡度已缓存，种子待生成" : "待准备" : "无可用影像";
 const readinessGroups = ["坡度＋高置信种子已缓存", "高置信种子已缓存", "其他区域"];
 interface Result {
   context_id: string; cached: boolean;
@@ -270,7 +270,7 @@ export function ModelComparisonView({ workspaceId, scope, routeSiteId = "", rout
         isOptionEqualToValue={(a, b) => a.site_id === b.site_id}
         noOptionsText={sites.isFetching ? "正在读取区域目录…" : "没有匹配区域"}
         onChange={(_, value) => { setAsset(""); onRouteResult(value?.site_id || "", region, ""); }}
-        renderInput={(params) => <TextField {...params} size="small" label="选择观测区域" helperText={sites.isFetching ? `已显示 ${options.length} 个区域，可先选择；缓存已检查 ${sites.data?.checked || 0}/${sites.data?.total ?? "待统计"}` : `全部区域可选（${options.length}个）；按坡度＋种子、种子、其他排序`} />} />
+        renderInput={(params) => <TextField {...params} size="small" label="选择观测区域" helperText={sites.isFetching ? `已显示 ${options.length} 个区域，可先选择；缓存已检查 ${sites.data?.checked || 0}/${sites.data?.total == null ? "待统计" : Math.min(10, sites.data.total)}` : `全部区域可选（${options.length}个）；仅自动检查前${sites.data?.checked || 0}个区域，其余未自动检查`} />} />
       {context.data && <TextField select label="共同影像" size="small" disabled={running} value={asset || context.data.imagery.asset} onChange={(event) => setAsset(event.target.value)} sx={{ minWidth: 230 }}>
         {context.data.assets.map((item) => <MenuItem key={item.key} value={item.key}>{item.name}</MenuItem>)}
       </TextField>}
@@ -280,9 +280,9 @@ export function ModelComparisonView({ workspaceId, scope, routeSiteId = "", rout
       <Box sx={{ minWidth: 170, px: 1 }}><Typography variant="caption">共同阈值 {thresholdDraft.toFixed(2)}{thresholdEditing ? " · 调整中" : ""}</Typography><Slider aria-label="共同阈值" disabled={running && !loadingSaved} value={thresholdDraft} min={.05} max={.95} step={.05} onChange={(_, value) => changeThreshold(value as number)} onChangeCommitted={(_, value) => commitThreshold(value as number)} /></Box>
     </Box>
     {sites.isFetching && <Box role="status" aria-live="polite" sx={{ mb: 1.5 }}>
-      <Typography variant="caption" color="text.secondary">{sites.data?.total == null ? "正在读取区域目录…" : `区域列表已可选择；正在检查缓存 ${sites.data.checked}/${sites.data.total}`}</Typography>
+      <Typography variant="caption" color="text.secondary">{sites.data?.total == null ? "正在读取区域目录…" : `区域列表已可选择；正在检查缓存 ${sites.data.checked}/${Math.min(10, sites.data.total)}（仅前10个）`}</Typography>
       <LinearProgress sx={{ mt: .5 }} variant={sites.data?.total == null ? "indeterminate" : "determinate"}
-        value={sites.data?.total ? Math.min(100, sites.data.checked / sites.data.total * 100) : 100} />
+        value={sites.data?.total ? Math.min(100, sites.data.checked / Math.min(10, sites.data.total) * 100) : 100} />
     </Box>}
     {sites.isError && <Alert severity="error">区域缓存检查中断，已显示区域仍可选择：{sites.error.message}<Button size="small" onClick={() => void sites.refetch()}>重试检查</Button></Alert>}
     {routeSiteId && (preparing || context.isError || preparation.data?.warning) && <Box sx={{ p: 1.5, mb: 1, border: 1, borderColor: "divider", bgcolor: "background.paper" }}>

@@ -101,27 +101,25 @@ def iter_comparison_sites(catalog,workspace_id,workspace_dir=None):
     with _LOCK:cached=_SITE_CACHE.get(cache_key)
     if cached and time.monotonic()-cached[0]<30:
         result=cached[1]
-        yield dict(type='sites',items=result['items'],completed=result['total'],total=result['total'])
-        yield dict(type='complete',completed=result['total'],total=result['total'])
+        yield dict(type='sites',items=result['items'],completed=result['checked'],total=result['total'])
+        yield dict(type='complete',completed=result['checked'],total=result['total'])
         return
     directory=_comparison_directory(catalog);total=len(directory)
     initial=[dict(**item,region=catalog.region.key,seed_cached=False,slope_cached=False,imagery_available=False,rank=2,cache_checked=False) for item in directory]
     yield dict(type='sites',items=initial,completed=0,total=total)
-    sites=catalog.sites
-    if {site.site_id for site in sites}!={item['site_id'] for item in directory}:
-        total=len(sites)
-        initial=[dict(site_id=site.site_id,display_name=site.display_name,region=catalog.region.key,seed_cached=False,slope_cached=False,imagery_available=False,rank=2,cache_checked=False) for site in sites]
-        yield dict(type='sites',items=initial,completed=0,total=total)
-    items=[];batch=[]
-    for completed,site in enumerate(sites,1):
-        item=_comparison_site(catalog,site,workspace_dir);items.append(item);batch.append(item)
-        if len(batch)>=20 or completed==total:
-            yield dict(type='batch',items=batch,completed=completed,total=total)
-            batch=[]
-    items.sort(key=lambda item:(item['rank'],item['display_name'] or item['site_id'],item['site_id']))
-    result=dict(items=items,total=total,cache_basis='current_default_imagery')
+    # Keep every site selectable, but bound automatic readiness I/O to ten sites.
+    items_by_id={item['site_id']:item for item in initial}
+    checked=0
+    for entry in directory[:10]:
+        site=catalog.get_site(entry['site_id'])
+        item=_comparison_site(catalog,site,workspace_dir) if site is not None else dict(items_by_id[entry['site_id']],cache_checked=True)
+        items_by_id[entry['site_id']]=item
+        checked+=1
+        yield dict(type='batch',items=[item],completed=checked,total=total)
+    items=sorted(items_by_id.values(),key=lambda item:(item['rank'],item['display_name'] or item['site_id'],item['site_id']))
+    result=dict(items=items,total=total,checked=checked,cache_basis='current_default_imagery')
     with _LOCK:_SITE_CACHE[cache_key]=(time.monotonic(),result)
-    yield dict(type='complete',completed=total,total=total)
+    yield dict(type='complete',completed=checked,total=total,message=f'已自动检查前{checked}个区域，其余区域未自动检查')
 
 
 def comparison_sites(catalog,workspace_id,workspace_dir=None):
